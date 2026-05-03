@@ -1,0 +1,97 @@
+--- /mnt/data/prev_fixed/.github/workflows/deploy-testflight.yml	2026-05-02 08:24:59.000000000 +0000
++++ /mnt/data/work/.github/workflows/deploy-testflight.yml	2026-05-02 08:32:35.980815595 +0000
+@@ -37,6 +37,10 @@
+             'open("project.yml", "w").write(content)' \
+             > patch_version.py
+           python3 patch_version.py "$BUILD_NUMBER"
++          # Remove stale icon PNGs that are not referenced by Contents.json.
++          # These show up as Xcode "unassigned children" and can survive local
++          # copy/merge operations even when the current asset catalog is valid.
++          python3 -c 'import json; from pathlib import Path; appicon=Path("Assets.xcassets/AppIcon.appiconset"); contents=appicon/"Contents.json"; data=json.loads(contents.read_text()) if contents.exists() else {"images": []}; keep={i["filename"] for i in data.get("images", []) if i.get("filename")}; [p.unlink() or print(f"Removed stale AppIcon file: {p.name}") for p in (appicon.iterdir() if appicon.is_dir() else []) if p.is_file() and p.name != "Contents.json" and p.name not in keep]'
+           xcodegen generate --spec project.yml
+           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" Hyperion/Info.plist
+           echo "Final Info.plist CFBundleVersion:"
+--- /mnt/data/prev_fixed/build.yml	2026-05-02 08:24:59.000000000 +0000
++++ /mnt/data/work/build.yml	2026-05-02 08:32:35.980332356 +0000
+@@ -37,6 +37,10 @@
+             'open("project.yml", "w").write(content)' \
+             > patch_version.py
+           python3 patch_version.py "$BUILD_NUMBER"
++          # Remove stale icon PNGs that are not referenced by Contents.json.
++          # These show up as Xcode "unassigned children" and can survive local
++          # copy/merge operations even when the current asset catalog is valid.
++          python3 -c 'import json; from pathlib import Path; appicon=Path("Assets.xcassets/AppIcon.appiconset"); contents=appicon/"Contents.json"; data=json.loads(contents.read_text()) if contents.exists() else {"images": []}; keep={i["filename"] for i in data.get("images", []) if i.get("filename")}; [p.unlink() or print(f"Removed stale AppIcon file: {p.name}") for p in (appicon.iterdir() if appicon.is_dir() else []) if p.is_file() and p.name != "Contents.json" and p.name not in keep]'
+           xcodegen generate --spec project.yml
+           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" Hyperion/Info.plist
+           echo "Final Info.plist CFBundleVersion:"
+--- /mnt/data/prev_fixed/Hyperion/HyperionApp.swift	2026-05-02 08:18:30.000000000 +0000
++++ /mnt/data/work/Hyperion/HyperionApp.swift	2026-05-02 08:31:44.474088079 +0000
+@@ -34,7 +34,6 @@
+     // MARK: - UIKit appearance proxies
+ 
+     private static func configureAppearance() {
+-        let base    = UIColor(Color.roonBase)
+         let surface = UIColor(Color.roonSurface)
+ 
+         // Navigation bar — fully transparent so it contributes zero visual
+--- /mnt/data/prev_fixed/Hyperion/PlayerViewModel.swift	2026-05-02 08:23:40.000000000 +0000
++++ /mnt/data/work/Hyperion/PlayerViewModel.swift	2026-05-02 08:31:55.241946383 +0000
+@@ -457,7 +457,6 @@
+     func removeFromQueue(at index: Int) {
+         guard queue.indices.contains(index) else { return }
+ 
+-        let removedTrack = queue[index]
+         queue.remove(at: index)
+ 
+         if queue.isEmpty { clearQueue(); return }
+@@ -586,7 +585,11 @@
+         activateAudioSession()
+ 
+         let asset = AVURLAsset(url: streamURL, options: [
+-            AVURLAssetHTTPHeaderFieldsKey: [
++            // AVURLAssetHTTPHeaderFieldsKey is intentionally passed as its
++            // raw string key. Some newer SDK overlays no longer expose the
++            // Swift constant, but AVFoundation still accepts the documented
++            // option dictionary key at runtime.
++            "AVURLAssetHTTPHeaderFieldsKey": [
+                 "User-Agent": "Hyperion iOS",
+                 "Accept":     "audio/flac,audio/mpeg,audio/mp4,audio/aac,audio/wav,audio/*,*/*"
+             ]
+@@ -597,11 +600,15 @@
+         playerItem = item
+ 
+         // KVO: item readiness & failure.
+-        statusObservation = item.observe(\.status, options: [.new]) {
+-            [weak self, weak item] _, _ in
++        statusObservation = item.observe(
++            \AVPlayerItem.status,
++            options: NSKeyValueObservingOptions.new
++        ) { [weak self, weak item]
++            (observedItem: AVPlayerItem, _: NSKeyValueObservedChange<AVPlayerItem.Status>) in
+             Task { @MainActor [weak self, weak item] in
+                 guard let self,
+-                      let observedItem = item,
++                      let expectedItem = item,
++                      expectedItem === observedItem,
+                       playbackID == self.activePlaybackID,
+                       observedItem === self.playerItem else { return }
+ 
+@@ -639,12 +646,14 @@
+         // once the asset is loaded so the progress bar and time display are
+         // accurate to the actual stream.
+         durationObservation = item.observe(
+-            \.duration,
+-            options: [.new]
+-        ) { [weak self, weak item] _, _ in
++            \AVPlayerItem.duration,
++            options: NSKeyValueObservingOptions.new
++        ) { [weak self, weak item]
++            (observedItem: AVPlayerItem, _: NSKeyValueObservedChange<CMTime>) in
+             Task { @MainActor [weak self, weak item] in
+                 guard let self,
+-                      let observedItem = item,
++                      let expectedItem = item,
++                      expectedItem === observedItem,
+                       playbackID == self.activePlaybackID,
+                       observedItem === self.playerItem else { return }
+                 let secs = observedItem.duration.seconds

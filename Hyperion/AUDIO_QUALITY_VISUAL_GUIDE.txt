@@ -1,0 +1,289 @@
+═══════════════════════════════════════════════════════════════════════════════
+ROON-STYLE AUDIO QUALITY — VISUAL REFERENCE GUIDE
+═══════════════════════════════════════════════════════════════════════════════
+
+BADGE APPEARANCE:
+─────────────────
+
+Location: Top-right of Now Playing view (next to album name)
+
+Normal State:
+┌──────────────────────┐
+│ NOW PLAYING   🟢 Lossless ▶ │
+│ Album Name                  │
+└──────────────────────┘
+
+Color Codes:
+  🟢 Green (Lossless)   — No degradation, pristine quality
+  🟡 Amber (Converted)  — Some conversion but generally good
+  🔴 Red (Limited)      — Wireless or lossy device
+  ⚪ Gray (Unknown)     — Can't determine quality
+
+Animation:
+  Lossless playback shows pulsing ring animation on the green dot
+
+
+SIGNAL PATH MODAL:
+──────────────────
+
+Open by tapping the badge. Shows full vertical signal path.
+
+Layout Example:
+
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ 🟢 Lossless                         X   ┃
+┃ Audio Signal Path                       ┃
+┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫
+┃                                         ┃
+┃ 🎵 Source           FLAC            ✓  ┃
+┃ │                                      ┃
+┃ 🌐 Streaming        Lyrion Server   ✓  ┃
+┃ │                                      ┃
+┃ ▶  Decode           Lossless decode ✓  ┃
+┃ │                                      ┃
+┃ 〰  Bit Depth        24-bit          ✓  ┃
+┃ │                                      ┃
+┃ 〰  Sample Rate      48.0 kHz        ✓  ┃
+┃ │                                      ┃
+┃ 🔊 Volume           Full scale      ✓  ┃
+┃ │                                      ┃
+┃ 🎧 Output           Headphones      ✓  ┃
+┃ │                                      ┃
+┃ ✓  Verification     Bit-perfect end-to-end ✓ │
+┃                                      ┃
+┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫
+┃ Real-time data from playback engine     ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
+Icons & Meanings:
+  🎵 Source        — Input file format
+  🌐 Streaming     — Server/source type
+  ▶  Decode        — Decoding method
+  〰  Bit Depth     — Bit resolution
+  〰  Sample Rate   — Sampling frequency
+  🔊 Volume        — Current volume level
+  🎧 Output        — Audio device type
+  ✓  Verification  — End-to-end quality check
+
+
+STATUS BADGES:
+───────────────
+
+Right side of each step shows status:
+
+┌─────────────────┐
+│ ✓ Lossless      │  (green)   Perfect quality
+├─────────────────┤
+│ ◊ Enhanced      │  (purple)  Optimized
+├─────────────────┤
+│ ⚠ Converted     │  (amber)   Some loss
+├─────────────────┤
+│ ✗ Limited       │  (red)     Lossy/wireless
+├─────────────────┤
+│ ? Unknown       │  (gray)    Can't determine
+└─────────────────┘
+
+
+REAL-WORLD EXAMPLES:
+────────────────────
+
+SCENARIO 1: LOSSLESS PLAYBACK
+────────────────────────────
+
+User plays FLAC album, wired headphones, full volume.
+
+Badge: 🟢 Lossless (pulsing animation)
+
+Signal Path:
+  ✓ Source         FLAC
+  ✓ Streaming      Lyrion Server
+  ✓ Decode         Lossless decode
+  ✓ Bit Depth      24-bit
+  ✓ Sample Rate    48.0 kHz (no conversion)
+  ✓ Volume         Full scale (100%)
+  ✓ Output         Headphones
+  ✓ Verification   Bit-perfect end-to-end
+
+
+SCENARIO 2: LOSSY COMPRESSED
+──────────────────────────────
+
+User plays MP3 file on same setup.
+
+Badge: 🟡 Converted (amber)
+
+Signal Path:
+  ⚠ Source         MP3
+  ✓ Streaming      Lyrion Server
+  ⚠ Decode         Lossy decode
+  ✓ Bit Depth      16-bit
+  ✓ Sample Rate    44.1 kHz
+  ✓ Volume         Full scale (100%)
+  ✓ Output         Headphones
+  ✗ Verification   No (lossy source)
+
+
+SCENARIO 3: WIRELESS DEVICE
+─────────────────────────────
+
+User connects Bluetooth speaker, plays FLAC.
+
+Badge: 🔴 Limited (red)
+
+Signal Path:
+  ✓ Source         FLAC
+  ✓ Streaming      Lyrion Server
+  ✓ Decode         Lossless decode
+  ✓ Bit Depth      24-bit
+  ✓ Sample Rate    48.0 kHz
+  ✓ Volume         Full scale
+  ✗ Output         Bluetooth (lossy codecs)
+  ✗ Verification   No (Bluetooth is lossy)
+
+
+SCENARIO 4: VOLUME ADJUSTMENT
+───────────────────────────────
+
+User lowers volume to 40%, everything else same.
+
+Badge: 🟡 Converted (amber) — quality drops due to low volume
+
+Signal Path:
+  ✓ Source         FLAC
+  ✓ Streaming      Lyrion Server
+  ✓ Decode         Lossless decode
+  ✓ Bit Depth      24-bit
+  ✓ Sample Rate    48.0 kHz
+  ⚠ Volume         40% (reduced headroom)
+  ✓ Output         Headphones
+  ⚠ Verification   Reduced headroom
+
+
+COLOR PALETTE:
+────────────────
+
+Lossless:
+  Primary:    Green     #34D85C  (or Color(red: 0.2, green: 0.85, blue: 0.4))
+  Light:      Green 15% opacity for backgrounds
+
+Enhanced:
+  Primary:    Purple    #7B6CF6
+  Light:      Purple 15% opacity
+
+Converted:
+  Primary:    Amber     #F2C024  (or Color(red: 0.95, green: 0.75, blue: 0.2))
+  Light:      Amber 15% opacity
+
+Limited:
+  Primary:    Red       #FF3B30
+  Light:      Red 15% opacity
+
+Unknown:
+  Primary:    Gray      (roonTertiary)
+  Light:      Gray 15% opacity
+
+
+ANIMATION DETAILS:
+────────────────
+
+Pulsing Ring (Lossless):
+  - Outer ring grows to 1.2× scale
+  - Opacity fades from 0.6 to 0
+  - Duration: 1.5 seconds
+  - Repeats infinitely
+  - Only shown for Lossless status
+
+Transition:
+  - Badge updates smoothly when route/track/volume changes
+  - Modal reflects live state when opened
+  - No delay between change and display update
+
+
+INTERACTION FLOW:
+──────────────────
+
+User Journey:
+
+1. User taps quality badge
+   ↓
+2. Modal animates up with current signal path
+   ↓
+3. User reads 8-step signal path
+   ↓
+4. User unplugs headphones / connects Bluetooth
+   ↓
+5. Modal updates in real-time to show new route
+   ↓
+6. User sees "Output: Bluetooth" with 🔴 Limited status
+   ↓
+7. User taps X to close modal
+   ↓
+8. Back to Now Playing, badge now shows 🔴 Limited
+
+
+ACCESSIBILITY:
+────────────────
+
+VoiceOver Labels:
+
+Badge:
+  Label: "Audio quality: Lossless"
+  Hint: "Double tap to view signal path details"
+
+Modal Header:
+  Label: "Lossless Audio Signal Path"
+
+Each Step:
+  Label: "[Step Title]: [Subtitle]"
+  Value: "[Status Label]"
+
+Examples:
+  "Source: FLAC — Lossless"
+  "Output: Headphones — Lossless"
+
+
+PERFORMANCE CHARACTERISTICS:
+────────────────────────────
+
+Badge Update Speed:
+  ✓ Instant — no network latency
+  ✓ Responsive — updates during playback
+  ✓ Smooth — uses SwiftUI @ObservedObject
+
+Modal Open Speed:
+  ✓ <100ms to display
+  ✓ Zero load time — all data pre-calculated
+  ✓ Smooth sheet animation
+
+Memory Footprint:
+  ✓ Negligible — no persistent storage
+  ✓ Calculated on-demand
+  ✓ No caching (always live)
+
+
+TESTING VISUAL CHECKLIST:
+─────────────────────────
+
+□ Badge appears in Now Playing nav bar
+□ Badge shows correct color for file type
+  □ 🟢 Green for FLAC/WAV/ALAC
+  □ 🟡 Amber for MP3/AAC
+  □ 🔴 Red for Bluetooth playback
+□ Badge has pulsing animation for lossless
+□ Tapping badge opens modal
+□ Modal shows 8 steps with icons, titles, subtitles
+□ Modal shows status badges on right (✓/⚠/✗)
+□ Steps have vertical connector lines
+□ Footer shows "Real-time data from playback engine"
+□ Tapping X dismisses modal
+□ Badge updates when track changes
+□ Badge updates when route changes (headphones ↔ Bluetooth)
+□ Badge updates when volume changes
+□ Modal reflects latest state when reopened
+□ Text is readable on dark background
+□ Colors match Roon aesthetic
+
+
+═══════════════════════════════════════════════════════════════════════════════
+END OF VISUAL GUIDE
+═══════════════════════════════════════════════════════════════════════════════

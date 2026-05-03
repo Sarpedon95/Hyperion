@@ -1,0 +1,424 @@
+Only in work: .github
+Only in work: Assets.xcassets
+diff -ru orig/Hyperion/ConnectionManager.swift work/Hyperion/ConnectionManager.swift
+--- orig/Hyperion/ConnectionManager.swift	2026-05-02 08:18:30.000000000 +0000
++++ work/Hyperion/ConnectionManager.swift	2026-05-02 08:23:05.893374775 +0000
+@@ -1,10 +1,8 @@
+ import Foundation
++import Combine
+ import Network
+ 
+-// BUG FIX: The original imported Combine at the top but never used it —
+-// ConnectionManager is an ObservableObject driven entirely by @Published and
+-// manual Task bridging, with no Combine pipelines or sink subscribers.
+-// Removed to keep the dependency surface minimal.
++// ConnectionManager uses ObservableObject/@Published, which live in Combine.
+ 
+ @MainActor
+ final class ConnectionManager: ObservableObject {
+@@ -26,7 +24,7 @@
+     var tailscaleURL: String = ""
+     var proxyURL: String     = ""
+ 
+-    private let monitor      = NWPathMonitor()
++    private var monitor: NWPathMonitor?
+     private let monitorQueue = DispatchQueue(label: "com.hyperion.ConnectionMonitor")
+     private var isMonitoring = false
+ 
+@@ -85,21 +83,27 @@
+ 
+     func startMonitoring() {
+         guard !isMonitoring else { return }
+-        isMonitoring = true
+ 
++        let monitor = NWPathMonitor()
++        self.monitor = monitor
+         monitor.pathUpdateHandler = { [weak self] _ in
+             Task { @MainActor [weak self] in
+                 self?.scheduleReconnect()
+             }
+         }
+         monitor.start(queue: monitorQueue)
++        isMonitoring = true
+     }
+ 
+     /// Call if the app is going to the background for an extended period and
+     /// wants to stop receiving path-change callbacks.
++    ///
++    /// NWPathMonitor instances cannot be restarted after `cancel()`, so we
++    /// discard the old monitor and create a fresh one in `startMonitoring()`.
+     func stopMonitoring() {
+         guard isMonitoring else { return }
+-        monitor.cancel()
++        monitor?.cancel()
++        monitor = nil
+         isMonitoring = false
+     }
+ 
+diff -ru orig/Hyperion/ContentView.swift work/Hyperion/ContentView.swift
+--- orig/Hyperion/ContentView.swift	2026-05-02 08:18:30.000000000 +0000
++++ work/Hyperion/ContentView.swift	2026-05-02 08:23:13.554827455 +0000
+@@ -249,9 +249,16 @@
+     private func loadArtwork(for requestedCoverid: String?) async {
+         guard let requestedCoverid, !requestedCoverid.isEmpty,
+               let url = LyrionAPI.shared.artworkURL(coverid: requestedCoverid) else {
+-            image = nil; loadedCoverid = nil; return
++            image = nil
++            loadedCoverid = nil
++            return
+         }
+         if requestedCoverid == loadedCoverid { return }
++
++        // Avoid showing stale artwork while a newly navigated row/card is loading.
++        image = nil
++        loadedCoverid = nil
++
+         let loaded = await PlayerViewModel.shared.loadImage(from: url)
+         guard !Task.isCancelled, self.coverid == requestedCoverid else { return }
+         image         = loaded
+diff -ru orig/Hyperion/Info.plist work/Hyperion/Info.plist
+--- orig/Hyperion/Info.plist	2026-05-02 08:18:30.000000000 +0000
++++ work/Hyperion/Info.plist	2026-05-02 08:24:03.499806580 +0000
+@@ -17,9 +17,9 @@
+ 	<key>CFBundlePackageType</key>
+ 	<string>APPL</string>
+ 	<key>CFBundleShortVersionString</key>
+-	<string>1.0</string>
++	<string>$(MARKETING_VERSION)</string>
+ 	<key>CFBundleVersion</key>
+-	<string>1</string>
++	<string>$(CURRENT_PROJECT_VERSION)</string>
+ 	<key>LSRequiresIPhoneOS</key>
+ 	<true/>
+ 	<key>NSAppTransportSecurity</key>
+@@ -56,5 +56,14 @@
+ 	<array>
+ 		<string>UIInterfaceOrientationPortrait</string>
+ 	</array>
++	<key>CFBundleDisplayName</key>
++	<string>Hyperion</string>
++	<key>UISupportedInterfaceOrientations~ipad</key>
++	<array>
++		<string>UIInterfaceOrientationPortrait</string>
++		<string>UIInterfaceOrientationPortraitUpsideDown</string>
++		<string>UIInterfaceOrientationLandscapeLeft</string>
++		<string>UIInterfaceOrientationLandscapeRight</string>
++	</array>
+ </dict>
+ </plist>
+diff -ru orig/Hyperion/LibraryView.swift work/Hyperion/LibraryView.swift
+--- orig/Hyperion/LibraryView.swift	2026-05-02 08:18:30.000000000 +0000
++++ work/Hyperion/LibraryView.swift	2026-05-02 08:23:51.308362311 +0000
+@@ -314,16 +314,31 @@
+             isLoading = true
+             loadError = nil
+             do {
+-                let loaded = try await library.getTracksForWork(work.work_id)
++                let loaded: [Track]
++                if work.work_id > 0 {
++                    loaded = try await library.getTracksForWork(work.work_id)
++                } else if let albumIDString = work.album_id,
++                          let albumID = Int(albumIDString) {
++                    let groups = try await library.getWorkGroupsForAlbum(albumID)
++                    loaded = groups.first {
++                        $0.workTitle.localizedCaseInsensitiveCompare(work.work) == .orderedSame
++                    }?.tracks ?? []
++                } else {
++                    loaded = []
++                }
++
+                 guard !Task.isCancelled else { return }
+                 tracks    = loaded
+                 workGroup = loaded.isEmpty ? nil : WorkGroup(
+-                    id:        work.work_id,
++                    id:        work.work_id > 0 ? work.work_id : (loaded.first?.id ?? 0),
+                     workTitle: work.work,
+                     composer:  work.composer,
+                     tracks:    loaded,
+                     coverid:   loaded.first?.coverid
+                 )
++                if loaded.isEmpty {
++                    loadError = "No playable tracks were found for this work."
++                }
+             } catch is CancellationError {
+                 return
+             } catch {
+diff -ru orig/Hyperion/LibraryViewModel.swift work/Hyperion/LibraryViewModel.swift
+--- orig/Hyperion/LibraryViewModel.swift	2026-05-02 08:18:30.000000000 +0000
++++ work/Hyperion/LibraryViewModel.swift	2026-05-02 08:22:55.596897682 +0000
+@@ -1,4 +1,5 @@
+ import Foundation
++import Combine
+ import UIKit
+ 
+ @MainActor
+diff -ru orig/Hyperion/NowPlayingView.swift work/Hyperion/NowPlayingView.swift
+--- orig/Hyperion/NowPlayingView.swift	2026-05-02 08:18:30.000000000 +0000
++++ work/Hyperion/NowPlayingView.swift	2026-05-02 08:23:13.555248861 +0000
+@@ -574,6 +574,7 @@
+             }
+         }
+         .task(id: coverid) {
++            image = nil
+             guard let url = LyrionAPI.shared.artworkURL(coverid: coverid) else { return }
+             let loaded = await PlayerViewModel.shared.loadImage(from: url)
+             guard !Task.isCancelled else { return }
+diff -ru orig/Hyperion/PlayerViewModel.swift work/Hyperion/PlayerViewModel.swift
+--- orig/Hyperion/PlayerViewModel.swift	2026-05-02 08:18:30.000000000 +0000
++++ work/Hyperion/PlayerViewModel.swift	2026-05-02 08:23:40.796202253 +0000
+@@ -1,4 +1,5 @@
+ import Foundation
++import Combine
+ import AVFoundation
+ import MediaPlayer
+ import UIKit
+@@ -371,11 +372,9 @@
+         // we only mutate shuffle state when the queue is genuinely empty AND
+         // we're turning shuffle on (which is a no-op anyway).
+         if isShuffle {
+-            if let original = originalQueueBeforeShuffle {
+-                let playingTrack  = currentTrack
+-                let currentIDs    = Set(queue.map(\.id))
+-                let restored      = original.filter { currentIDs.contains($0.id) }
+-                queue             = restored
++            if let restored = filteredOriginalQueuePreservingCounts() {
++                let playingTrack = currentTrack
++                queue = restored
+                 if let playingTrack,
+                    let restoredIndex = queue.firstIndex(where: { $0.id == playingTrack.id }) {
+                     currentIndex = restoredIndex
+@@ -387,6 +386,10 @@
+         }
+ 
+         guard !queue.isEmpty else { return }
++        guard queue.indices.contains(currentIndex) else {
++            currentIndex = 0
++            return
++        }
+ 
+         originalQueueBeforeShuffle = queue
+         isShuffle = true
+@@ -400,6 +403,21 @@
+ 
+     func cycleRepeat() { repeatMode = (repeatMode + 1) % 3 }
+ 
++    private func filteredOriginalQueuePreservingCounts() -> [Track]? {
++        guard let original = originalQueueBeforeShuffle else { return nil }
++        var remainingCounts: [Int: Int] = [:]
++        for track in queue { remainingCounts[track.id, default: 0] += 1 }
++
++        var filtered: [Track] = []
++        filtered.reserveCapacity(queue.count)
++        for track in original {
++            guard let count = remainingCounts[track.id], count > 0 else { continue }
++            filtered.append(track)
++            remainingCounts[track.id] = count - 1
++        }
++        return filtered
++    }
++
+     // MARK: - Queue management
+ 
+     func clearQueue() {
+@@ -457,8 +475,8 @@
+             }
+         }
+ 
+-        if let original = originalQueueBeforeShuffle {
+-            originalQueueBeforeShuffle = original.filter { $0.id != removedTrack.id }
++        if originalQueueBeforeShuffle != nil {
++            originalQueueBeforeShuffle = filteredOriginalQueuePreservingCounts()
+         }
+     }
+ 
+@@ -489,9 +507,8 @@
+             currentIndex = newIndex
+         }
+ 
+-        if let original = originalQueueBeforeShuffle {
+-            let queueIDs = Set(queue.map(\.id))
+-            originalQueueBeforeShuffle = original.filter { queueIDs.contains($0.id) }
++        if originalQueueBeforeShuffle != nil {
++            originalQueueBeforeShuffle = filteredOriginalQueuePreservingCounts()
+         }
+     }
+ 
+@@ -569,7 +586,7 @@
+         activateAudioSession()
+ 
+         let asset = AVURLAsset(url: streamURL, options: [
+-            "AVURLAssetHTTPHeaderFieldsKey": [
++            AVURLAssetHTTPHeaderFieldsKey: [
+                 "User-Agent": "Hyperion iOS",
+                 "Accept":     "audio/flac,audio/mpeg,audio/mp4,audio/aac,audio/wav,audio/*,*/*"
+             ]
+diff -ru orig/Hyperion/fix_appstore_validation.sh work/Hyperion/fix_appstore_validation.sh
+--- orig/Hyperion/fix_appstore_validation.sh	2026-05-02 08:18:30.000000000 +0000
++++ work/Hyperion/fix_appstore_validation.sh	2026-05-02 08:24:19.531495449 +0000
+@@ -33,13 +33,11 @@
+ 
+   echo "Patching $plist"
+ 
+-  # Force all required iPhone/iPad orientations.
++  # Keep the phone app portrait-only, while declaring the full iPad set that
++  # App Store validation expects when an iPhone app can run in compatibility mode.
+   "$PLISTBUDDY" -c "Delete :UISupportedInterfaceOrientations" "$plist" >/dev/null 2>&1 || true
+   "$PLISTBUDDY" -c "Add :UISupportedInterfaceOrientations array" "$plist"
+   "$PLISTBUDDY" -c "Add :UISupportedInterfaceOrientations:0 string UIInterfaceOrientationPortrait" "$plist"
+-  "$PLISTBUDDY" -c "Add :UISupportedInterfaceOrientations:1 string UIInterfaceOrientationPortraitUpsideDown" "$plist"
+-  "$PLISTBUDDY" -c "Add :UISupportedInterfaceOrientations:2 string UIInterfaceOrientationLandscapeLeft" "$plist"
+-  "$PLISTBUDDY" -c "Add :UISupportedInterfaceOrientations:3 string UIInterfaceOrientationLandscapeRight" "$plist"
+ 
+   "$PLISTBUDDY" -c "Delete :UISupportedInterfaceOrientations~ipad" "$plist" >/dev/null 2>&1 || true
+   "$PLISTBUDDY" -c "Add :UISupportedInterfaceOrientations~ipad array" "$plist"
+diff -ru orig/Hyperion/fix_hyperion_appstore_bundle.sh work/Hyperion/fix_hyperion_appstore_bundle.sh
+--- orig/Hyperion/fix_hyperion_appstore_bundle.sh	2026-05-02 08:18:30.000000000 +0000
++++ work/Hyperion/fix_hyperion_appstore_bundle.sh	2026-05-02 08:24:27.460849276 +0000
+@@ -60,13 +60,15 @@
+ }
+ 
+ add_or_replace_orientations() {
+-  local plist="$1" key="$2"
++  local plist="$1" key="$2"; shift 2
+   "$PLISTBUDDY" -c "Delete :$key" "$plist" >/dev/null 2>&1 || true
+   "$PLISTBUDDY" -c "Add :$key array" "$plist"
+-  "$PLISTBUDDY" -c "Add :$key:0 string UIInterfaceOrientationPortrait" "$plist"
+-  "$PLISTBUDDY" -c "Add :$key:1 string UIInterfaceOrientationPortraitUpsideDown" "$plist"
+-  "$PLISTBUDDY" -c "Add :$key:2 string UIInterfaceOrientationLandscapeLeft" "$plist"
+-  "$PLISTBUDDY" -c "Add :$key:3 string UIInterfaceOrientationLandscapeRight" "$plist"
++  local index=0
++  local orientation
++  for orientation in "$@"; do
++    "$PLISTBUDDY" -c "Add :$key:$index string $orientation" "$plist"
++    index=$((index + 1))
++  done
+ }
+ 
+ patch_plist() {
+@@ -74,8 +76,13 @@
+   [[ -f "$plist" ]] || { echo "ERROR: Info.plist not found: $plist" >&2; exit 1; }
+ 
+   echo "Patching plist: $plist"
+-  add_or_replace_orientations "$plist" "UISupportedInterfaceOrientations"
+-  add_or_replace_orientations "$plist" "UISupportedInterfaceOrientations~ipad"
++  add_or_replace_orientations "$plist" "UISupportedInterfaceOrientations" \
++    UIInterfaceOrientationPortrait
++  add_or_replace_orientations "$plist" "UISupportedInterfaceOrientations~ipad" \
++    UIInterfaceOrientationPortrait \
++    UIInterfaceOrientationPortraitUpsideDown \
++    UIInterfaceOrientationLandscapeLeft \
++    UIInterfaceOrientationLandscapeRight
+   add_or_replace_bool "$plist" "UIRequiresFullScreen" "true"
+   add_or_replace_string "$plist" "UILaunchStoryboardName" "LaunchScreen"
+ 
+@@ -123,17 +130,22 @@
+ plist_path = sys.argv[1]
+ with open(plist_path, 'rb') as f:
+     p = plistlib.load(f)
+-required = [
++required_phone = ['UIInterfaceOrientationPortrait']
++required_ipad = [
+     'UIInterfaceOrientationPortrait',
+     'UIInterfaceOrientationPortraitUpsideDown',
+     'UIInterfaceOrientationLandscapeLeft',
+     'UIInterfaceOrientationLandscapeRight',
+ ]
+ errors = []
+-for key in ['UISupportedInterfaceOrientations', 'UISupportedInterfaceOrientations~ipad']:
++checks = {
++    'UISupportedInterfaceOrientations': required_phone,
++    'UISupportedInterfaceOrientations~ipad': required_ipad,
++}
++for key, expected in checks.items():
+     value = p.get(key)
+-    if value != required:
+-        errors.append(f'{key} is {value!r}, expected {required!r}')
++    if value != expected:
++        errors.append(f'{key} is {value!r}, expected {expected!r}')
+ if p.get('UILaunchStoryboardName') != 'LaunchScreen':
+     errors.append(f"UILaunchStoryboardName is {p.get('UILaunchStoryboardName')!r}, expected 'LaunchScreen'")
+ if p.get('UIRequiresFullScreen') is not True:
+@@ -183,7 +195,7 @@
+     entitlements=""
+   fi
+ 
+-  find "$app_dir" -type d \( -name "*.framework" -o -name "*.appex" -o -name "*.dylib" \) -print0 | while IFS= read -r -d '' item; do
++  find "$app_dir" \( -type d \( -name "*.framework" -o -name "*.appex" \) -o -type f -name "*.dylib" \) -print0 | while IFS= read -r -d '' item; do
+     codesign --force --sign "$IDENTITY" "$item"
+   done
+ 
+diff -ru orig/Hyperion/verify_ipa_before_upload.sh work/Hyperion/verify_ipa_before_upload.sh
+--- orig/Hyperion/verify_ipa_before_upload.sh	2026-05-02 08:18:30.000000000 +0000
++++ work/Hyperion/verify_ipa_before_upload.sh	2026-05-02 08:24:19.531813762 +0000
+@@ -19,16 +19,21 @@
+ plist_path, app_dir = sys.argv[1], sys.argv[2]
+ with open(plist_path, 'rb') as f:
+     p = plistlib.load(f)
+-required = [
++required_phone = ['UIInterfaceOrientationPortrait']
++required_ipad = [
+     'UIInterfaceOrientationPortrait',
+     'UIInterfaceOrientationPortraitUpsideDown',
+     'UIInterfaceOrientationLandscapeLeft',
+     'UIInterfaceOrientationLandscapeRight',
+ ]
+ errors = []
+-for key in ['UISupportedInterfaceOrientations', 'UISupportedInterfaceOrientations~ipad']:
+-    if p.get(key) != required:
+-        errors.append(f'{key} missing/wrong: {p.get(key)!r}')
++checks = {
++    'UISupportedInterfaceOrientations': required_phone,
++    'UISupportedInterfaceOrientations~ipad': required_ipad,
++}
++for key, expected in checks.items():
++    if p.get(key) != expected:
++        errors.append(f'{key} missing/wrong: {p.get(key)!r}, expected {expected!r}')
+ if p.get('UILaunchStoryboardName') != 'LaunchScreen':
+     errors.append(f"UILaunchStoryboardName missing/wrong: {p.get('UILaunchStoryboardName')!r}")
+ if not os.path.isdir(os.path.join(app_dir, 'LaunchScreen.storyboardc')):
+Only in work: Hyperion_REVIEW_PATCH.diff
+diff -ru orig/build.yml work/build.yml
+--- orig/build.yml	2026-05-02 08:25:53.246804624 +0000
++++ work/build.yml	2026-05-02 08:24:59.157954045 +0000
+@@ -1,6 +1,6 @@
+ name: Deploy to TestFlight
+ 
+-on:
++"on":
+   push:
+     branches: [main]
+ 
+@@ -79,6 +79,11 @@
+             CODE_SIGN_IDENTITY="iPhone Distribution" \
+             CURRENT_PROJECT_VERSION=${{ github.run_number }}
+ 
++      - name: Patch and verify archived app bundle
++        run: |
++          chmod +x Hyperion/fix_hyperion_appstore_bundle.sh Hyperion/verify_ipa_before_upload.sh
++          Hyperion/fix_hyperion_appstore_bundle.sh Hyperion.xcarchive
++
+       - name: Export IPA
+         env:
+           TEAM_ID: ${{ secrets.TEAM_ID }}
+@@ -109,6 +114,13 @@
+             -exportOptionsPlist ExportOptions.plist \
+             -exportPath ./build
+ 
++      - name: Verify exported IPA
++        run: |
++          IPA_PATH="$(find ./build -maxdepth 1 -name '*.ipa' | head -n 1)"
++          test -n "$IPA_PATH"
++          Hyperion/verify_ipa_before_upload.sh "$IPA_PATH"
++          echo "IPA_PATH=$IPA_PATH" >> "$GITHUB_ENV"
++
+       - name: Upload to TestFlight
+         env:
+           APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+@@ -124,6 +136,6 @@
+           # supported CLI path until Apple ships a dedicated xcrun uploadtool.
+           xcrun altool --upload-app \
+             --type ios \
+-            --file ./build/Hyperion.ipa \
++            --file "$IPA_PATH" \
+             --apiKey "$APP_STORE_CONNECT_API_KEY_ID" \
+             --apiIssuer "$APP_STORE_CONNECT_API_ISSUER_ID"

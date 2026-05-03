@@ -1,0 +1,478 @@
+diff --git a/Hyperion/CHANGELOG.md b/Hyperion/CHANGELOG.md
+index 44948bc..7497561 100644
+--- a/Hyperion/CHANGELOG.md
++++ b/Hyperion/CHANGELOG.md
+@@ -1,4 +1,12 @@
+ 
++## 2026-05-02 — Search repair and matching polish
++
++- **FIX — album-name search restored**: broad LMS search now parses both canonical album rows and lightweight `album_id`/`albu` search rows, then hydrates matches through the albums endpoint so search results include usable album metadata.
++- **FIX — resilient album search fallbacks**: album search now combines direct album search, broad catalog search, artist/composer album lookup, and a bounded server-side album scan for LMS installations whose search preferences miss mid-title matches.
++- **POLISH — locale-stable search matching**: album, composer, and work filters now share one diacritic-insensitive, width-insensitive, stable-locale matcher so searches behave consistently on devices using Turkish or other locale-specific casing rules.
++- **PERFORMANCE — duplicate broad search removed**: the search tab no longer runs an extra catalog search after the album search path has already done the same work.
++
++
+ ## Build fix follow-up
+ 
+ - Fixed Swift concurrency compilation errors introduced in the LyrPlay-style remote probing pass.
+diff --git a/Hyperion/LibraryView.swift b/Hyperion/LibraryView.swift
+index e5b3eea..d8ce543 100644
+--- a/Hyperion/LibraryView.swift
++++ b/Hyperion/LibraryView.swift
+@@ -93,9 +93,13 @@ struct ComposerListView: View {
+     @State private var searchText: String = ""
+ 
+     private var filtered: [Composer] {
+-        searchText.isEmpty
+-            ? library.composers
+-            : library.composers.filter { $0.artist.localizedCaseInsensitiveContains(searchText) }
++        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
++        guard !trimmed.isEmpty else { return library.composers }
++        let folded = SearchTextNormalizer.folded(trimmed)
++        let tokens = SearchTextNormalizer.tokens(from: trimmed)
++        return library.composers.filter {
++            SearchTextNormalizer.matchesFoldedQuery($0.artist, foldedQuery: folded, tokens: tokens)
++        }
+     }
+ 
+     var body: some View {
+@@ -165,9 +169,14 @@ struct WorkListView: View {
+     @State private var isLoading: Bool = true
+ 
+     private var filtered: [Work] {
+-        searchText.isEmpty
+-            ? works
+-            : works.filter { $0.work.localizedCaseInsensitiveContains(searchText) }
++        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
++        guard !trimmed.isEmpty else { return works }
++        let folded = SearchTextNormalizer.folded(trimmed)
++        let tokens = SearchTextNormalizer.tokens(from: trimmed)
++        return works.filter {
++            SearchTextNormalizer.matchesFoldedQuery($0.work, foldedQuery: folded, tokens: tokens) ||
++            SearchTextNormalizer.matchesFoldedQuery($0.composer ?? "", foldedQuery: folded, tokens: tokens)
++        }
+     }
+ 
+     var body: some View {
+@@ -541,12 +550,14 @@ struct AlbumListView: View {
+     // Client-side search filter on already-loaded albums.
+     // Server search is handled by SearchView; this is just a quick local filter.
+     private var displayedAlbums: [Album] {
+-        guard !searchText.isEmpty else { return library.albums }
+-        let q = searchText.lowercased()
++        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
++        guard !trimmed.isEmpty else { return library.albums }
++        let folded = SearchTextNormalizer.folded(trimmed)
++        let tokens = SearchTextNormalizer.tokens(from: trimmed)
+         return library.albums.filter {
+-            $0.album.lowercased().contains(q) ||
+-            ($0.artist?.lowercased().contains(q) ?? false) ||
+-            ($0.composer?.lowercased().contains(q) ?? false)
++            SearchTextNormalizer.matchesFoldedQuery($0.album, foldedQuery: folded, tokens: tokens) ||
++            SearchTextNormalizer.matchesFoldedQuery($0.artist ?? "", foldedQuery: folded, tokens: tokens) ||
++            SearchTextNormalizer.matchesFoldedQuery($0.composer ?? "", foldedQuery: folded, tokens: tokens)
+         }
+     }
+ 
+diff --git a/Hyperion/LibraryViewModel.swift b/Hyperion/LibraryViewModel.swift
+index 0ad5889..c4c3eb4 100644
+--- a/Hyperion/LibraryViewModel.swift
++++ b/Hyperion/LibraryViewModel.swift
+@@ -297,27 +297,12 @@ final class LibraryViewModel: ObservableObject {
+         let tokens: [String]
+ 
+         init(_ raw: String) {
+-            self.folded = Self.fold(raw)
+-            self.tokens = raw
+-                .split(whereSeparator: \.isWhitespace)
+-                .map { Self.fold(String($0)) }
++            self.folded = SearchTextNormalizer.folded(raw)
++            self.tokens = SearchTextNormalizer.tokens(from: raw)
+         }
+ 
+         func matches(_ text: String) -> Bool {
+-            let foldedText = Self.fold(text)
+-            if foldedText.contains(folded) { return true }
+-
+-            // Token path: require every token to appear in the target text.
+-            // This handles multi-word queries typed in any order and also
+-            // handles a token matching from the middle of a title.
+-            guard tokens.count > 1 else { return false }
+-            return tokens.allSatisfy { foldedText.contains($0) }
+-        }
+-
+-        static func fold(_ value: String) -> String {
+-            value
+-                .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+-                .lowercased()
++            SearchTextNormalizer.matchesFoldedQuery(text, foldedQuery: folded, tokens: tokens)
+         }
+     }
+ 
+@@ -410,17 +395,12 @@ final class LibraryViewModel: ObservableObject {
+             return all
+         }
+ 
+-        async let catalogTask: (works: [Work], albums: [Album])? =
+-            try? LyrionAPI.shared.searchCatalog(term: trimmed, count: 100)
+-
+         let serverAlbums = await serverAlbumsTask
+         guard !Task.isCancelled else { return ([], [], []) }
+ 
+         let serverWorkBatches = (try? await directWorksTask) ?? []
+         guard !Task.isCancelled else { return ([], [], []) }
+ 
+-        let catalog = await catalogTask
+-
+         serverAlbums.forEach { mergeAlbum($0) }
+ 
+         for batch in serverWorkBatches {
+@@ -429,18 +409,6 @@ final class LibraryViewModel: ObservableObject {
+                 Self.matches(text: $0.composer ?? "", needle: needle)
+             }.forEach { mergeWork($0) }
+         }
+-
+-        catalog?.albums.filter {
+-            Self.matches(text: $0.album,            needle: needle) ||
+-            Self.matches(text: $0.artist   ?? "",   needle: needle) ||
+-            Self.matches(text: $0.composer ?? "",   needle: needle)
+-        }.forEach { mergeAlbum($0) }
+-
+-        catalog?.works.filter {
+-            Self.matches(text: $0.work,           needle: needle) ||
+-            Self.matches(text: $0.composer ?? "", needle: needle)
+-        }.forEach { mergeWork($0) }
+-
+         // ── 5. Sort and cap ──
+ 
+         let sortedComposers = foundComposers.sorted {
+@@ -450,8 +418,8 @@ final class LibraryViewModel: ObservableObject {
+             $0.work.localizedCaseInsensitiveCompare($1.work) == .orderedAscending
+         }
+         let sortedAlbums = foundAlbums.sorted { lhs, rhs in
+-            let lExact = Self.SearchNeedle.fold(lhs.album).contains(needle.folded)
+-            let rExact = Self.SearchNeedle.fold(rhs.album).contains(needle.folded)
++            let lExact = SearchTextNormalizer.folded(lhs.album).contains(needle.folded)
++            let rExact = SearchTextNormalizer.folded(rhs.album).contains(needle.folded)
+             if lExact != rExact { return lExact }
+             return lhs.album.localizedCaseInsensitiveCompare(rhs.album) == .orderedAscending
+         }
+diff --git a/Hyperion/LyrionAPI.swift b/Hyperion/LyrionAPI.swift
+index 3670117..4424e4e 100644
+--- a/Hyperion/LyrionAPI.swift
++++ b/Hyperion/LyrionAPI.swift
+@@ -189,11 +189,14 @@ final class LyrionAPI {
+         let trimmed = term.trimmingCharacters(in: .whitespacesAndNewlines)
+         guard !trimmed.isEmpty else { return ([], []) }
+ 
+-        let result = try await request(params: [
+-            "search", 0, count, "term:\(trimmed)", "tags:\(trackTags)"
+-        ])
+-        let albums = Self.parseAlbums(result["albums_loop"] as? [[String: Any]] ?? [])
+-        return (works: [], albums: albums)
++        // The LMS `search` command only accepts `term:`. It returns album hits
++        // as lightweight album_id/title rows on some builds and as albums_loop
++        // rows on others, so parse both shapes and then hydrate by album_id to
++        // recover artwork/artist/year for the UI.
++        let result = try await request(params: ["search", 0, count, "term:\(trimmed)"])
++        let albumHints = Self.parseSearchAlbums(result)
++        let hydrated = try await hydrateAlbums(albumHints, desiredCount: count)
++        return (works: [], albums: hydrated)
+     }
+ 
+     // MARK: - Core JSON-RPC
+@@ -348,6 +351,35 @@ final class LyrionAPI {
+         return Self.parseAlbums(arr)
+     }
+ 
++    /// Hydrates one or more LMS album IDs through the canonical albums query.
++    /// This is used after broad search, whose album rows often only contain
++    /// `album_id` and a title. LMS accepts a comma-separated `album_id:` list.
++    func getAlbumsByIDs(_ ids: [Int], count: Int = 100) async throws -> [Album] {
++        try Task.checkCancellation()
++        var unique: [Int] = []
++        var seen = Set<Int>()
++        for id in ids where seen.insert(id).inserted { unique.append(id) }
++        guard !unique.isEmpty else { return [] }
++
++        var hydrated: [Album] = []
++        hydrated.reserveCapacity(min(unique.count, count))
++
++        var index = 0
++        while index < unique.count && hydrated.count < count {
++            try Task.checkCancellation()
++            let chunk = Array(unique[index..<min(index + 50, unique.count)])
++            let joined = chunk.map(String.init).joined(separator: ",")
++            let result = try await request(params: [
++                "albums", 0, chunk.count, "album_id:\(joined)", "tags:aljySC"
++            ])
++            let arr = result["albums_loop"] as? [[String: Any]] ?? []
++            hydrated.append(contentsOf: Self.parseAlbums(arr))
++            index += chunk.count
++        }
++
++        return Array(hydrated.prefix(count))
++    }
++
+     /// Best-effort server-side play-history lookup.  Hyperion also keeps its
+     /// own local playback history, so this method is only a merge source.
+     ///
+@@ -404,7 +436,12 @@ final class LyrionAPI {
+         }
+     }
+ 
+-    /// Album-title search with broad-search fallback.
++    /// Album-title search with layered fallbacks.
++    ///
++    /// Search must be dependable even when a user's LMS build returns sparse
++    /// broad-search rows or when the server's "Search Within Words" setting
++    /// prevents a mid-title match. We therefore combine canonical album search,
++    /// broad search, artist search, and a bounded client-side album scan.
+     func searchAlbums(term: String, count: Int = 100) async throws -> [Album] {
+         try Task.checkCancellation()
+         let trimmed = term.trimmingCharacters(in: .whitespacesAndNewlines)
+@@ -412,19 +449,51 @@ final class LyrionAPI {
+ 
+         var results: [Album] = []
+         var seen = Set<Int>()
++        let folded = SearchTextNormalizer.folded(trimmed)
++        let tokens = SearchTextNormalizer.tokens(from: trimmed)
+ 
+         func merge(_ albums: [Album]) {
+             for album in albums where seen.insert(album.id).inserted {
+                 results.append(album)
++                if results.count >= count { break }
+             }
+         }
+ 
+-        // Primary: LMS albums command with search: param (prefix-matches album title).
+-        merge((try? await getAlbums(start: 0, count: count, search: trimmed)) ?? [])
+-        // Secondary: broad catalog search (searches titles via different LMS path).
+-        merge(((try? await searchCatalog(term: trimmed, count: count))?.albums) ?? [])
+-        // Tertiary: artist-scoped album fetch — finds albums by artist/composer name.
+-        merge((try? await getAlbumsByArtist(term: trimmed, count: count)) ?? [])
++        func matching(_ albums: [Album]) -> [Album] {
++            albums.filter {
++                SearchTextNormalizer.matchesFoldedQuery($0.album, foldedQuery: folded, tokens: tokens) ||
++                SearchTextNormalizer.matchesFoldedQuery($0.artist ?? "", foldedQuery: folded, tokens: tokens) ||
++                SearchTextNormalizer.matchesFoldedQuery($0.composer ?? "", foldedQuery: folded, tokens: tokens)
++            }
++        }
++
++        // 1. Canonical LMS album-title search.
++        merge(matching((try? await getAlbums(start: 0, count: count, search: trimmed)) ?? []))
++
++        // 2. Broad LMS search. This is important because `search` returns album
++        // hits independently from the albums browser and can work when album
++        // search is affected by server preferences.
++        if results.count < count {
++            merge(matching(((try? await searchCatalog(term: trimmed, count: count))?.albums) ?? []))
++        }
++
++        // 3. Artist/composer-name album lookup.
++        if results.count < count {
++            merge(matching((try? await getAlbumsByArtist(term: trimmed, count: count)) ?? []))
++        }
++
++        // 4. Bounded local server scan. This is the safety net for album-name
++        // searches on LMS installations where the server-side search command
++        // does not find mid-title or punctuation-normalized matches.
++        if results.isEmpty {
++            merge(try await scanAlbumsForMatch(
++                foldedQuery: folded,
++                tokens: tokens,
++                desiredCount: count,
++                maxScanned: 5_000
++            ))
++        }
++
+         return results
+     }
+ 
+@@ -469,6 +538,64 @@ final class LyrionAPI {
+         }
+     }
+ 
++    private func hydrateAlbums(_ hints: [Album], desiredCount: Int) async throws -> [Album] {
++        guard !hints.isEmpty else { return [] }
++
++        var merged: [Album] = []
++        var seen = Set<Int>()
++
++        func merge(_ albums: [Album]) {
++            for album in albums where seen.insert(album.id).inserted {
++                merged.append(album)
++                if merged.count >= desiredCount { break }
++            }
++        }
++
++        let ids = hints.map(\.id)
++        if !ids.isEmpty {
++            merge((try? await getAlbumsByIDs(ids, count: desiredCount)) ?? [])
++        }
++        // Keep lightweight search rows as a fallback if hydration failed or LMS
++        // returned fewer hydrated rows than the broad search identified.
++        if merged.count < desiredCount { merge(hints) }
++        return Array(merged.prefix(desiredCount))
++    }
++
++    private func scanAlbumsForMatch(
++        foldedQuery: String,
++        tokens: [String],
++        desiredCount: Int,
++        maxScanned: Int
++    ) async throws -> [Album] {
++        try Task.checkCancellation()
++        guard desiredCount > 0, !foldedQuery.isEmpty else { return [] }
++
++        var found: [Album] = []
++        var seen = Set<Int>()
++        var start = 0
++        let batchSize = 250
++
++        while start < maxScanned && found.count < desiredCount {
++            try Task.checkCancellation()
++            let requestCount = min(batchSize, maxScanned - start)
++            let batch = try await getAlbums(start: start, count: requestCount, sort: .album)
++            if batch.isEmpty { break }
++
++            for album in batch where seen.insert(album.id).inserted {
++                let matches = SearchTextNormalizer.matchesFoldedQuery(album.album, foldedQuery: foldedQuery, tokens: tokens) ||
++                    SearchTextNormalizer.matchesFoldedQuery(album.artist ?? "", foldedQuery: foldedQuery, tokens: tokens) ||
++                    SearchTextNormalizer.matchesFoldedQuery(album.composer ?? "", foldedQuery: foldedQuery, tokens: tokens)
++                if matches { found.append(album) }
++                if found.count >= desiredCount { break }
++            }
++
++            if batch.count < requestCount { break }
++            start += batch.count
++        }
++
++        return found
++    }
++
+     func testConnection() async -> Bool {
+         do {
+             _ = try await request(params: ["version", "?"])
+@@ -534,20 +661,53 @@ final class LyrionAPI {
+ 
+     nonisolated private static func parseAlbums(_ array: [[String: Any]]) -> [Album] {
+         array.compactMap { dict in
+-            guard let id    = JSON.int(dict["id"] ?? dict["album_id"]),
+-                  let album = dict["album"] as? String else { return nil }
++            guard let id = JSON.int(dict["id"] ?? dict["album_id"]),
++                  let album = Self.albumTitle(from: dict) else { return nil }
+             return Album(
+                 id:               id,
+                 album:            album,
+-                artist:           Self.normalizeString(dict["artist"] as? String) ?? Self.normalizeString(dict["albumartist"] as? String),
++                artist:           Self.normalizeString(JSON.string(dict["artist"] ?? dict["albumartist"] ?? dict["contributor"])),
+                 year:             JSON.int(dict["year"]),
+-                artwork_track_id: JSON.string(dict["artwork_track_id"] ?? dict["coverid"]),
+-                composer:         Self.normalizeString(dict["composer"] as? String),
+-                isClassical:      JSON.int(dict["isClassical"])
++                artwork_track_id: JSON.string(dict["artwork_track_id"] ?? dict["coverid"] ?? dict["coverart"]),
++                composer:         Self.normalizeString(JSON.string(dict["composer"])),
++                isClassical:      JSON.int(dict["isClassical"] ?? dict["classical"])
+             )
+         }
+     }
+ 
++    nonisolated private static func parseSearchAlbums(_ result: [String: Any]) -> [Album] {
++        var albums: [Album] = []
++        var seen = Set<Int>()
++
++        func merge(_ incoming: [Album]) {
++            for album in incoming where seen.insert(album.id).inserted {
++                albums.append(album)
++            }
++        }
++
++        for key in ["albums_loop", "album_loop", "albums"] {
++            if let rows = result[key] as? [[String: Any]] {
++                merge(Self.parseAlbums(rows))
++            }
++        }
++
++        // Some older JSON/RPC wrappers flatten a single broad-search album row.
++        if let single = Self.parseAlbums([result]).first {
++            merge([single])
++        }
++
++        return albums
++    }
++
++    nonisolated private static func albumTitle(from dict: [String: Any]) -> String? {
++        for key in ["album", "albu", "title", "name"] {
++            if let value = JSON.string(dict[key])?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty {
++                return value
++            }
++        }
++        return nil
++    }
++
+     nonisolated private static func parseTracks(_ array: [[String: Any]]) -> [Track] {
+         array.compactMap { dict in
+             guard let id = JSON.int(dict["id"]) else { return nil }
+diff --git a/Hyperion/Models.swift b/Hyperion/Models.swift
+index a896f3b..6c230c9 100644
+--- a/Hyperion/Models.swift
++++ b/Hyperion/Models.swift
+@@ -127,6 +127,44 @@ struct WorkGroup: Identifiable, Hashable, Codable {
+     }
+ }
+ 
++
++// MARK: - Search text normalization
++
++/// Locale-stable, diacritic-insensitive matching used by both the search tab
++/// and in-list filters. Keeping this in one place prevents Turkish-device
++/// locale casing surprises (I/ı) and makes album/composer/work matching behave
++/// consistently across the app.
++enum SearchTextNormalizer {
++    private static let stableLocale = Locale(identifier: "en_US_POSIX")
++
++    static func folded(_ value: String) -> String {
++        value
++            .folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: stableLocale)
++            .lowercased(with: stableLocale)
++            .trimmingCharacters(in: .whitespacesAndNewlines)
++    }
++
++    static func tokens(from value: String) -> [String] {
++        folded(value)
++            .split(whereSeparator: \.isWhitespace)
++            .map(String.init)
++    }
++
++    static func matches(_ text: String, query: String) -> Bool {
++        let foldedQuery = folded(query)
++        guard !foldedQuery.isEmpty else { return true }
++        return matchesFoldedQuery(text, foldedQuery: foldedQuery, tokens: tokens(from: query))
++    }
++
++    static func matchesFoldedQuery(_ text: String, foldedQuery: String, tokens: [String]) -> Bool {
++        let foldedText = folded(text)
++        if foldedText.contains(foldedQuery) { return true }
++        guard tokens.count > 1 else { return false }
++        return tokens.allSatisfy { foldedText.contains($0) }
++    }
++}
++
++
+ struct QueueWorkGroup: Identifiable, Hashable {
+     struct QueueTrackItem: Hashable {
+         let index: Int
+diff --git a/Hyperion/SearchAndSettingsView.swift b/Hyperion/SearchAndSettingsView.swift
+index 2104e4d..28b7012 100644
+--- a/Hyperion/SearchAndSettingsView.swift
++++ b/Hyperion/SearchAndSettingsView.swift
+@@ -139,7 +139,7 @@ struct SearchSuggestionsView: View {
+ 
+     private var pinnedComposers: [Composer] {
+         pinnedNames.compactMap { name in
+-            library.composers.first { $0.artist.localizedCaseInsensitiveContains(name) }
++            library.composers.first { SearchTextNormalizer.matches($0.artist, query: name) }
+         }
+     }
+ 

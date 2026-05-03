@@ -1,0 +1,380 @@
+diff --git a/Hyperion/PlayerViewModel.swift b/Hyperion/PlayerViewModel.swift
+index 4fc10b9..6875250 100644
+--- a/Hyperion/PlayerViewModel.swift
++++ b/Hyperion/PlayerViewModel.swift
+@@ -68,6 +68,9 @@ final class PlayerViewModel: ObservableObject {
+     private var interruptionObserver: NSObjectProtocol?
+     private var routeChangeObserver: NSObjectProtocol?
+     private var memoryWarningObserver: NSObjectProtocol?
++    private var lifecycleObservers: [NSObjectProtocol] = []
++    private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
++    private var lastNowPlayingRefreshUptime: TimeInterval = 0
+ 
+     private let artworkCache = NSCache<NSString, UIImage>()
+     private var artworkLoadTasks: [String: Task<UIImage?, Never>] = [:]
+@@ -92,6 +95,7 @@ final class PlayerViewModel: ObservableObject {
+ 
+         setupRemoteControls()
+         setupAudioObservers()
++        setupAppLifecycleObservers()
+ 
+         memoryWarningObserver = NotificationCenter.default.addObserver(
+             forName: UIApplication.didReceiveMemoryWarningNotification,
+@@ -170,25 +174,42 @@ final class PlayerViewModel: ObservableObject {
+ 
+     private func setupAudioSession() {
+         do {
+-            // BUG FIX: The original passed .allowBluetoothA2DP and .allowAirPlay
+-            // as options to a .playback session.  .playback already implies both
+-            // of those for A2DP / AirPlay; they're only meaningful for
+-            // .playAndRecord mode.  Removed to keep the session clean.
++            let session = AVAudioSession.sharedInstance()
++            // Long-form playback is the most reliable route policy for a music
++            // app: it keeps the session eligible for lock-screen/background audio
++            // and gives AirPlay / Control Center the expected media behavior.
+             // mixWithOthers is intentionally NOT set — we want exclusive audio.
+-            try AVAudioSession.sharedInstance().setCategory(
++            try session.setCategory(
+                 .playback,
+-                mode: .default
++                mode: .default,
++                policy: .longFormAudio,
++                options: []
+             )
+         } catch {
+             lastPlaybackErrorDescription = error.localizedDescription
+         }
+     }
+ 
+-    func activateAudioSession() {
+-        try? AVAudioSession.sharedInstance().setActive(true)
++    @discardableResult
++    func activateAudioSession() -> Bool {
++        do {
++            // Re-apply the category before activation. Some route changes and
++            // interruptions can leave the session in a different effective state;
++            // making this idempotent keeps remote-control and background starts
++            // reliable without doing heavy work.
++            setupAudioSession()
++            try AVAudioSession.sharedInstance().setActive(true)
++            return true
++        } catch {
++            lastPlaybackErrorDescription = error.localizedDescription
++            self.error = "Audio session failed: \(error.localizedDescription)"
++            return false
++        }
+     }
+ 
+-    private func deactivateAudioSession() {
++    private func deactivateAudioSession(force: Bool = false) {
++        guard force || !isPlaying else { return }
++        endBackgroundPlaybackTask()
+         // notifyOthersOnDeactivation lets Music / Podcasts resume when we stop.
+         try? AVAudioSession.sharedInstance().setActive(
+             false,
+@@ -196,6 +217,78 @@ final class PlayerViewModel: ObservableObject {
+         )
+     }
+ 
++    // MARK: - App lifecycle / background playback
++
++    private func setupAppLifecycleObservers() {
++        let center = NotificationCenter.default
++
++        lifecycleObservers.append(center.addObserver(
++            forName: UIApplication.didEnterBackgroundNotification,
++            object: nil,
++            queue: .main
++        ) { [weak self] _ in
++            Task { @MainActor [weak self] in self?.handleDidEnterBackground() }
++        })
++
++        lifecycleObservers.append(center.addObserver(
++            forName: UIApplication.willEnterForegroundNotification,
++            object: nil,
++            queue: .main
++        ) { [weak self] _ in
++            Task { @MainActor [weak self] in self?.handleWillEnterForeground() }
++        })
++
++        lifecycleObservers.append(center.addObserver(
++            forName: UIApplication.willTerminateNotification,
++            object: nil,
++            queue: .main
++        ) { [weak self] _ in
++            Task { @MainActor [weak self] in self?.handleWillTerminate() }
++        })
++    }
++
++    private func handleDidEnterBackground() {
++        guard isPlaying else { return }
++        activateAudioSession()
++        player?.play()
++        refreshNowPlayingPlaybackState(force: true)
++
++        // If the app is backgrounded while a new stream is still being prepared,
++        // ask iOS for a short grace period. Once AVPlayer is actually playing,
++        // the `audio` background mode carries the long-running playback.
++        if isLoading { beginBackgroundPlaybackTask(reason: "prepare-stream") }
++    }
++
++    private func handleWillEnterForeground() {
++        endBackgroundPlaybackTask()
++        refreshNowPlayingPlaybackState(force: true)
++    }
++
++    private func handleWillTerminate() {
++        refreshNowPlayingPlaybackState(force: true)
++        endBackgroundPlaybackTask()
++    }
++
++    private func beginBackgroundPlaybackTask(reason: String) {
++        guard backgroundTaskID == .invalid else { return }
++        guard UIApplication.shared.applicationState != .active else { return }
++
++        backgroundTaskID = UIApplication.shared.beginBackgroundTask(
++            withName: "HyperionAudio-\(reason)"
++        ) { [weak self] in
++            Task { @MainActor [weak self] in
++                self?.endBackgroundPlaybackTask()
++            }
++        }
++    }
++
++    private func endBackgroundPlaybackTask() {
++        guard backgroundTaskID != .invalid else { return }
++        let taskID = backgroundTaskID
++        backgroundTaskID = .invalid
++        UIApplication.shared.endBackgroundTask(taskID)
++    }
++
+     // MARK: - Audio observers
+ 
+     private func setupAudioObservers() {
+@@ -226,12 +319,15 @@ final class PlayerViewModel: ObservableObject {
+             guard isPlaying else { return }
+             isPlaying = false
+             isPaused  = true
+-            refreshNowPlayingPlaybackState()
++            refreshNowPlayingPlaybackState(force: true)
+ 
+         case .ended:
+             guard let optionsRaw = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt else { return }
+             let options = AVAudioSession.InterruptionOptions(rawValue: optionsRaw)
+-            if options.contains(.shouldResume) { resume() }
++            if options.contains(.shouldResume) {
++                activateAudioSession()
++                resume()
++            }
+ 
+         @unknown default: break
+         }
+@@ -247,7 +343,17 @@ final class PlayerViewModel: ObservableObject {
+     // MARK: - Lock screen / remote controls
+ 
+     private func setupRemoteControls() {
++        UIApplication.shared.beginReceivingRemoteControlEvents()
++
+         let cc = MPRemoteCommandCenter.shared()
++        cc.playCommand.removeTarget(nil)
++        cc.pauseCommand.removeTarget(nil)
++        cc.togglePlayPauseCommand.removeTarget(nil)
++        cc.nextTrackCommand.removeTarget(nil)
++        cc.previousTrackCommand.removeTarget(nil)
++        cc.changePlaybackPositionCommand.removeTarget(nil)
++
++        MPNowPlayingInfoCenter.default().playbackState = .stopped
+ 
+         // BUG FIX: The original targets used Task { @MainActor } which returns
+         // immediately (before the async work completes) always with .success.
+@@ -353,7 +459,8 @@ final class PlayerViewModel: ObservableObject {
+         player?.pause()
+         isPlaying = false
+         isPaused  = true
+-        refreshNowPlayingPlaybackState()
++        endBackgroundPlaybackTask()
++        refreshNowPlayingPlaybackState(force: true)
+     }
+ 
+     func resume() {
+@@ -362,11 +469,11 @@ final class PlayerViewModel: ObservableObject {
+             playCurrentTrack()
+             return
+         }
+-        activateAudioSession()
++        guard activateAudioSession() else { return }
+         player?.play()
+         isPlaying = true
+         isPaused  = false
+-        refreshNowPlayingPlaybackState()
++        refreshNowPlayingPlaybackState(force: true)
+     }
+ 
+     func togglePlayPause() { isPlaying ? pause() : resume() }
+@@ -386,7 +493,7 @@ final class PlayerViewModel: ObservableObject {
+         guard !queue.isEmpty else { return }
+         if currentTime > 3 {
+             seek(to: 0)
+-            refreshNowPlayingPlaybackState()
++            refreshNowPlayingPlaybackState(force: true)
+             return
+         }
+         guard currentIndex > 0 else { seek(to: 0); return }
+@@ -413,7 +520,7 @@ final class PlayerViewModel: ObservableObject {
+ 
+         currentTime = clamped
+         progress    = duration > 0 ? clamped / duration : 0
+-        refreshNowPlayingPlaybackState()
++        refreshNowPlayingPlaybackState(force: true)
+     }
+ 
+     func setVolume(_ value: Float) {
+@@ -489,7 +596,11 @@ final class PlayerViewModel: ObservableObject {
+         lastPlaybackErrorDescription = nil
+         activePlaybackID = UUID()
+         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+-        deactivateAudioSession()
++        MPNowPlayingInfoCenter.default().playbackState = .stopped
++        endBackgroundPlaybackTask()
++        isPlaying = false
++        isPaused  = false
++        deactivateAudioSession(force: true)
+ 
+         queue                      = []
+         currentIndex               = 0
+@@ -642,7 +753,13 @@ final class PlayerViewModel: ObservableObject {
+         durationObservation?.invalidate()
+         durationObservation = nil
+ 
+-        activateAudioSession()
++        guard activateAudioSession() else {
++            isLoading = false
++            isPlaying = false
++            isPaused  = false
++            return
++        }
++        if autoPlay { beginBackgroundPlaybackTask(reason: "load-stream") }
+ 
+         let asset = AVURLAsset(url: streamURL, options: [
+             "AVURLAssetHTTPHeaderFieldsKey": LyrionAPI.shared.httpHeaders(
+@@ -650,7 +767,8 @@ final class PlayerViewModel: ObservableObject {
+             )
+         ])
+         let item = AVPlayerItem(asset: asset)
+-        item.preferredForwardBufferDuration = 30
++        item.preferredForwardBufferDuration = 60
++        item.canUseNetworkResourcesForLiveStreamingWhilePaused = true
+         playerItem = item
+ 
+         // KVO: item readiness & failure.
+@@ -677,6 +795,13 @@ final class PlayerViewModel: ObservableObject {
+                             toleranceAfter:  .zero
+                         )
+                     }
++                    if autoPlay {
++                        self.activateAudioSession()
++                        self.player?.play()
++                        self.isPlaying = true
++                        self.isPaused  = false
++                    }
++                    self.endBackgroundPlaybackTask()
+                     // Record local play history when the stream actually becomes
+                     // playable. This fixes Hyperion's Recently Played section for
+                     // direct AVPlayer playback, which LMS does not always log.
+@@ -686,10 +811,11 @@ final class PlayerViewModel: ObservableObject {
+                     // start, but at that point the asset duration hasn't loaded
+                     // yet.  Re-call here once the item is ready so the lock
+                     // screen / CarPlay show the correct duration from the outset.
+-                    self.refreshNowPlayingPlaybackState()
++                    self.refreshNowPlayingPlaybackState(force: true)
+                 case .failed:
+                     self.lastPlaybackErrorDescription =
+                         observedItem.error?.localizedDescription
++                    self.endBackgroundPlaybackTask()
+                     self.retryNextPlaybackURL(
+                         track:      track,
+                         autoPlay:   autoPlay,
+@@ -716,7 +842,7 @@ final class PlayerViewModel: ObservableObject {
+                 let secs = observedItem.duration.seconds
+                 if secs.isFinite && secs > 0 {
+                     self.duration = secs
+-                    self.refreshNowPlayingPlaybackState()
++                    self.refreshNowPlayingPlaybackState(force: true)
+                 }
+             }
+         }
+@@ -724,6 +850,7 @@ final class PlayerViewModel: ObservableObject {
+         if player == nil {
+             let newPlayer = AVPlayer(playerItem: item)
+             newPlayer.automaticallyWaitsToMinimizeStalling = true
++            newPlayer.actionAtItemEnd = .pause
+             newPlayer.volume = volume
+             player = newPlayer
+         } else {
+@@ -774,7 +901,7 @@ final class PlayerViewModel: ObservableObject {
+         isPaused  = !autoPlay
+         recomputeUpcoming()
+         updateNowPlayingInfo(track: track)
+-        refreshNowPlayingPlaybackState()
++        refreshNowPlayingPlaybackState(force: true)
+     }
+ 
+     private func retryNextPlaybackURL(track: Track, autoPlay: Bool, playbackID: UUID) {
+@@ -787,6 +914,8 @@ final class PlayerViewModel: ObservableObject {
+             isLoading = false
+             isPlaying = false
+             isPaused  = false
++            endBackgroundPlaybackTask()
++            refreshNowPlayingPlaybackState(force: true)
+             return
+         }
+ 
+@@ -829,10 +958,11 @@ final class PlayerViewModel: ObservableObject {
+             ) { [weak self] finished in
+                 Task { @MainActor [weak self] in
+                     guard let self, finished else { return }
++                    self.activateAudioSession()
+                     self.player?.play()
+                     self.isPlaying = true
+                     self.isPaused  = false
+-                    self.refreshNowPlayingPlaybackState()
++                    self.refreshNowPlayingPlaybackState(force: true)
+                 }
+             }
+         default:
+@@ -841,7 +971,8 @@ final class PlayerViewModel: ObservableObject {
+             } else {
+                 isPlaying = false
+                 isPaused  = false
+-                refreshNowPlayingPlaybackState()
++                endBackgroundPlaybackTask()
++                refreshNowPlayingPlaybackState(force: true)
+                 deactivateAudioSession()
+             }
+         }
+@@ -897,6 +1028,7 @@ final class PlayerViewModel: ObservableObject {
+         // should always be set (it defaults to 0 when absent), regardless of year.
+         info[MPMediaItemPropertyAlbumTrackNumber] = track.tracknum ?? 0
+         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
++        MPNowPlayingInfoCenter.default().playbackState = isPlaying ? .playing : (isPaused ? .paused : .stopped)
+ 
+         guard let coverid = track.coverid,
+               let artURL  = LyrionAPI.shared.artworkURL(coverid: coverid) else { return }
+@@ -912,7 +1044,16 @@ final class PlayerViewModel: ObservableObject {
+         }
+     }
+ 
+-    private func refreshNowPlayingPlaybackState() {
++    private func refreshNowPlayingPlaybackState(force: Bool = false) {
++        // Now Playing updates are visible on the lock screen, CarPlay, and
++        // Control Center. Throttle periodic progress pushes to avoid needless
++        // background CPU wakeups, while state changes call this with force=true.
++        let uptime = ProcessInfo.processInfo.systemUptime
++        if !force, uptime - lastNowPlayingRefreshUptime < 1.0 { return }
++        lastNowPlayingRefreshUptime = uptime
++
++        MPNowPlayingInfoCenter.default().playbackState = isPlaying ? .playing : (isPaused ? .paused : .stopped)
++
+         guard var info = MPNowPlayingInfoCenter.default().nowPlayingInfo else { return }
+         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentTime
+         info[MPMediaItemPropertyPlaybackDuration]         = duration > 0 ? duration : (currentTrack?.duration ?? 0)

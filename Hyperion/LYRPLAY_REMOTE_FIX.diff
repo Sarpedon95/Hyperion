@@ -1,0 +1,403 @@
+diff -ru /mnt/data/hyperion_prev/Hyperion/CHANGELOG.md /mnt/data/hyperion_lyr/Hyperion/CHANGELOG.md
+--- /mnt/data/hyperion_prev/Hyperion/CHANGELOG.md	2026-05-02 13:02:03.000000000 +0000
++++ /mnt/data/hyperion_lyr/Hyperion/CHANGELOG.md	2026-05-02 13:12:09.642893619 +0000
+@@ -1,3 +1,12 @@
++
++## Remote connection repair v2
++
++- Added LyrPlay-style loose server address handling for bare Tailscale/MagicDNS names and 100.x.y.z addresses.
++- Remote tests now probe multiple LMS endpoint candidates instead of assuming the typed URL already includes port 9000.
++- Normalizes pasted `/material`, `/index.html`, and `/jsonrpc.js` URLs back to the LMS base before appending API/artwork/stream paths.
++- Auto mode now expands each configured address into candidate endpoints and picks the first successful LMS JSON-RPC response.
++- Settings → Test Connection uses the same candidate probing path as the real connection resolver.
++
+ # Hyperion — change log
+ 
+ ## Remote connection repair pass
+diff -ru /mnt/data/hyperion_prev/Hyperion/ConnectionManager.swift /mnt/data/hyperion_lyr/Hyperion/ConnectionManager.swift
+--- /mnt/data/hyperion_prev/Hyperion/ConnectionManager.swift	2026-05-02 13:01:45.000000000 +0000
++++ /mnt/data/hyperion_lyr/Hyperion/ConnectionManager.swift	2026-05-02 13:11:12.319862903 +0000
+@@ -268,7 +268,7 @@
+         ServerLogStore.shared.info("Resolving server. Mode: \(modeSnapshot.displayName)")
+ 
+         let result: ConnectionProbeResult?
+-        let selectedURL: String
++        var selectedURL: String
+ 
+         switch modeSnapshot {
+         case .local:
+@@ -296,6 +296,9 @@
+ 
+         guard !Task.isCancelled else { return }
+ 
++        if let result, result.isSuccess {
++            selectedURL = result.url
++        }
+         currentURL = selectedURL
+         LyrionAPI.shared.updateBaseURL(selectedURL, persist: false)
+ 
+@@ -316,7 +319,7 @@
+     }
+ 
+     private func probeConfiguredURL(_ url: String, missingMessage: String) async -> ConnectionProbeResult? {
+-        guard !url.isEmpty else {
++        guard !url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+             isConnected = false
+             currentURL = ""
+             LyrionAPI.shared.updateBaseURL("", persist: false)
+@@ -324,7 +327,7 @@
+             ServerLogStore.shared.warn(missingMessage)
+             return nil
+         }
+-        return await Self.probeServer(url)
++        return await Self.probeBestServer(url, mode: connectionMode)
+     }
+ 
+     private func fastestRespondingProbe(
+@@ -336,9 +339,26 @@
+         guard !candidates.isEmpty else { return nil }
+ 
+         ServerLogStore.shared.debug("Auto candidates: \(candidates.map(displayURL).joined(separator: ", "))")
++        let result = await Self.probeFirstSuccessful(candidates: candidates)
++        if let result, !result.isSuccess {
++            lastProbeResult = result
++            lastConnectionMessage = result.summary
++            return nil
++        }
++        return result
++    }
++
++    nonisolated static func probeBestServer(_ url: String, mode: ConnectionMode? = nil) async -> ConnectionProbeResult {
++        let candidates = HyperionServerURL.candidateBases(for: url, mode: mode)
++        guard !candidates.isEmpty else { return await probeServer("") }
++        await ServerLogStore.shared.debug("Probe candidates: \(candidates.map(ServerLogStore.redactedURL).joined(separator: ", "))")
++        return await probeFirstSuccessful(candidates: candidates) ?? await probeServer("")
++    }
+ 
++    private nonisolated static func probeFirstSuccessful(candidates: [String]) async -> ConnectionProbeResult? {
++        guard !candidates.isEmpty else { return nil }
+         var lastFailure: ConnectionProbeResult?
+-        let winner = await withTaskGroup(of: ConnectionProbeResult.self, returning: ConnectionProbeResult?.self) { group in
++        return await withTaskGroup(of: ConnectionProbeResult.self, returning: ConnectionProbeResult?.self) { group in
+             for url in candidates {
+                 group.addTask { await Self.probeServer(url) }
+             }
+@@ -350,14 +370,8 @@
+                 }
+                 lastFailure = result
+             }
+-            return nil
+-        }
+-
+-        if winner == nil, let lastFailure {
+-            lastProbeResult = lastFailure
+-            lastConnectionMessage = lastFailure.summary
++            return lastFailure
+         }
+-        return winner
+     }
+ 
+     nonisolated func testURL(_ url: String) async -> Bool {
+@@ -365,7 +379,7 @@
+     }
+ 
+     nonisolated static func probeURL(_ url: String) async -> Bool {
+-        await probeServer(url).isSuccess
++        await probeBestServer(url).isSuccess
+     }
+ 
+     nonisolated static func probeServer(_ url: String, timeout: TimeInterval = 5) async -> ConnectionProbeResult {
+@@ -500,95 +514,51 @@
+         proxy: String? = nil
+     ) -> [String] {
+         var seen = Set<String>()
+-        return [local ?? localURL, tailscale ?? tailscaleURL, proxy ?? proxyURL]
+-            .map(Self.sanitizedURL)
++        let entries: [(String, ConnectionMode)] = [
++            (local ?? localURL, .local),
++            (tailscale ?? tailscaleURL, .tailscale),
++            (proxy ?? proxyURL, .proxy)
++        ]
++        return entries
++            .flatMap { HyperionServerURL.candidateBases(for: $0.0, mode: $0.1) }
+             .filter { !$0.isEmpty && seen.insert($0).inserted }
+     }
+ 
+     private func firstConfiguredURL(local: String, tailscale: String, proxy: String) -> String {
+-        [local, tailscale, proxy].map(Self.sanitizedURL).first { !$0.isEmpty } ?? ""
++        let entries: [(String, ConnectionMode)] = [(local, .local), (tailscale, .tailscale), (proxy, .proxy)]
++        for (value, mode) in entries {
++            if let first = HyperionServerURL.candidateBases(for: value, mode: mode).first, !first.isEmpty {
++                return first
++            }
++        }
++        return ""
+     }
+ 
+     private func resolvedURLForCurrentMode() -> String {
+         switch connectionMode {
+-        case .local:     return Self.sanitizedURL(localURL)
+-        case .tailscale: return Self.sanitizedURL(tailscaleURL)
+-        case .proxy:     return Self.sanitizedURL(proxyURL)
+-        case .auto:      return firstConfiguredURL(local: localURL, tailscale: tailscaleURL, proxy: proxyURL)
++        case .local:
++            return HyperionServerURL.candidateBases(for: localURL, mode: .local).first ?? Self.sanitizedURL(localURL)
++        case .tailscale:
++            return HyperionServerURL.candidateBases(for: tailscaleURL, mode: .tailscale).first ?? Self.sanitizedURL(tailscaleURL)
++        case .proxy:
++            return HyperionServerURL.candidateBases(for: proxyURL, mode: .proxy).first ?? Self.sanitizedURL(proxyURL)
++        case .auto:
++            return firstConfiguredURL(local: localURL, tailscale: tailscaleURL, proxy: proxyURL)
+         }
+     }
+ 
+     private nonisolated static func sanitizedURL(_ url: String) -> String {
+-        var result = url.trimmingCharacters(in: .whitespacesAndNewlines)
+-        guard !result.isEmpty else { return "" }
+-
+-        let lowercased = result.lowercased()
+-        if !lowercased.hasPrefix("http://") && !lowercased.hasPrefix("https://") {
+-            result = "http://" + result
+-        }
+-
+-        while result.count > "https://".count && result.hasSuffix("/") {
+-            result.removeLast()
+-        }
+-
+-        if result.lowercased().hasSuffix("/jsonrpc.js") {
+-            result.removeLast("/jsonrpc.js".count)
+-            while result.count > "https://".count && result.hasSuffix("/") {
+-                result.removeLast()
+-            }
+-        }
+-
+-        return result == "http://" || result == "https://" ? "" : result
++        HyperionServerURL.sanitizedBase(url)
+     }
+ 
+-    private enum URLConnectionKind: Equatable {
+-        case local
+-        case tailscale
+-        case remote
+-
+-        var displayName: String {
+-            switch self {
+-            case .local:     return "Home"
+-            case .tailscale: return "Tailscale"
+-            case .remote:    return "Remote"
+-            }
+-        }
+-    }
++    private typealias URLConnectionKind = HyperionServerURL.URLConnectionKind
+ 
+     private nonisolated static func connectionKind(for rawURL: String) -> URLConnectionKind {
+-        let sanitized = sanitizedURL(rawURL)
+-        guard let components = URLComponents(string: sanitized),
+-              let host = components.host?.lowercased(),
+-              !host.isEmpty else {
+-            return .remote
+-        }
+-
+-        if host == "localhost" || host == "127.0.0.1" || host.hasSuffix(".local") {
+-            return .local
+-        }
+-
+-        let octets = host.split(separator: ".").compactMap { Int($0) }
+-        if octets.count == 4 {
+-            let a = octets[0]
+-            let b = octets[1]
+-            if a == 10 || a == 127 || (a == 172 && (16...31).contains(b)) || (a == 192 && b == 168) {
+-                return .local
+-            }
+-            if a == 100 && (64...127).contains(b) {
+-                return .tailscale
+-            }
+-            return .remote
+-        }
+-
+-        if sanitized.lowercased().hasPrefix("https://") {
+-            return .remote
+-        }
+-        return .remote
++        HyperionServerURL.connectionKind(for: rawURL)
+     }
+ 
+     private func displayURL(_ url: String) -> String {
+-        let sanitized = Self.sanitizedURL(url)
+-        return sanitized.isEmpty ? "not set" : ServerLogStore.redactedURL(sanitized)
++        HyperionServerURL.redactedDisplay(url)
+     }
+ 
+     private nonisolated static func pathSummary(_ path: NWPath) -> String {
+Only in /mnt/data/hyperion_lyr/Hyperion: HyperionServerURL.swift
+Only in /mnt/data/hyperion_lyr/Hyperion: LYRPLAY_REMOTE_FIX.diff
+diff -ru /mnt/data/hyperion_prev/Hyperion/LyrionAPI.swift /mnt/data/hyperion_lyr/Hyperion/LyrionAPI.swift
+--- /mnt/data/hyperion_prev/Hyperion/LyrionAPI.swift	2026-05-02 13:00:44.000000000 +0000
++++ /mnt/data/hyperion_lyr/Hyperion/LyrionAPI.swift	2026-05-02 13:12:51.657156255 +0000
+@@ -50,24 +50,7 @@
+     }
+ 
+     private func sanitize(_ url: String) -> String {
+-        var result = url.trimmingCharacters(in: .whitespacesAndNewlines)
+-        guard !result.isEmpty else { return "" }
+-        let lowercased = result.lowercased()
+-        if !lowercased.hasPrefix("http://") && !lowercased.hasPrefix("https://") {
+-            result = "http://" + result
+-        }
+-        // Keep the scheme separator intact. A naïve trailing-slash loop turns
+-        // "http://" into "http:", creating confusing relative URLs.
+-        while result.count > "https://".count && result.hasSuffix("/") {
+-            result.removeLast()
+-        }
+-        if result.lowercased().hasSuffix("/jsonrpc.js") {
+-            result.removeLast("/jsonrpc.js".count)
+-            while result.count > "https://".count && result.hasSuffix("/") {
+-                result.removeLast()
+-            }
+-        }
+-        return result == "http://" || result == "https://" ? "" : result
++        HyperionServerURL.sanitizedBase(url)
+     }
+ 
+     private func encodedPathComponent(_ value: String) -> String {
+@@ -99,6 +82,9 @@
+         let id = encodedPathComponent(String(track.id))
+         var candidates: [String] = []
+ 
++        if let sourceURL = remoteSafeSourceURL(from: track.url) {
++            candidates.append(sourceURL.absoluteString)
++        }
+         if let ext = playableExtension(from: track.url) {
+             candidates.append("\(baseURL)/music/\(id)/download.\(ext)")
+         }
+@@ -136,6 +122,44 @@
+         return urls.dropFirst().first ?? urls.first
+     }
+ 
++
++    private func remoteSafeSourceURL(from rawURL: String?) -> URL? {
++        guard let rawURL,
++              let source = URLComponents(string: rawURL),
++              let scheme = source.scheme?.lowercased(),
++              scheme == "http" || scheme == "https" else {
++            return nil
++        }
++
++        guard let sourceURL = source.url else { return nil }
++        guard let baseComponents = URLComponents(string: baseURL),
++              let baseHost = baseComponents.host?.lowercased(),
++              let sourceHost = source.host?.lowercased() else {
++            return sourceURL
++        }
++
++        // LMS can return absolute LAN URLs for streams/artwork even when the
++        // active connection is a remote proxy. Rewrite private/Tailscale LMS
++        // hosts onto the active base so remote playback does not try to reach
++        // an unroutable 192.168.x.x / 100.x.y.z address from cellular.
++        let sourceKind = HyperionServerURL.connectionKind(for: rawURL)
++        if sourceHost != baseHost, sourceKind != .remote {
++            var rewritten = source
++            rewritten.scheme = baseComponents.scheme
++            rewritten.user = baseComponents.user
++            rewritten.password = baseComponents.password
++            rewritten.host = baseComponents.host
++            rewritten.port = baseComponents.port
++            let basePath = baseComponents.percentEncodedPath
++            if !basePath.isEmpty, basePath != "/", !rewritten.percentEncodedPath.hasPrefix(basePath + "/") {
++                rewritten.percentEncodedPath = basePath + rewritten.percentEncodedPath
++            }
++            return rewritten.url ?? sourceURL
++        }
++
++        return sourceURL
++    }
++
+     private func playableExtension(from rawURL: String?) -> String? {
+         guard let rawURL, !rawURL.isEmpty else { return nil }
+ 
+diff -ru /mnt/data/hyperion_prev/Hyperion/README.md /mnt/data/hyperion_lyr/Hyperion/README.md
+--- /mnt/data/hyperion_prev/Hyperion/README.md	2026-05-02 13:02:10.000000000 +0000
++++ /mnt/data/hyperion_lyr/Hyperion/README.md	2026-05-02 13:12:09.641965939 +0000
+@@ -67,3 +67,16 @@
+ 
+ If diagnostics say **Blocked by App Transport Security** for a public `http://...:9000` address, iOS is blocking clear-text remote HTTP before Hyperion reaches your server. This build keeps ATS exceptions in both `Info.plist` and `project.yml`, but the safer remote setup is still an HTTPS reverse proxy or Tailscale. For public internet access, prefer `https://your-domain.example` over exposing LMS port `9000` directly.
+ 
++
++### LyrPlay-style remote address handling
++
++Hyperion now accepts the same loose style of server input that LyrPlay users commonly use for Tailscale/MagicDNS:
++
++- `my-lms.tailnet.ts.net`
++- `http://my-lms.tailnet.ts.net`
++- `http://100.x.y.z`
++- `http://100.x.y.z:9000`
++- `https://music.example.com/material`
++- `https://music.example.com/jsonrpc.js`
++
++At connection time it probes the likely LMS endpoints, including `:9000/jsonrpc.js` for local/Tailscale hosts, and keeps the winning base URL for API, artwork, and stream requests.
+diff -ru /mnt/data/hyperion_prev/Hyperion/REMOTE_ACCESS.md /mnt/data/hyperion_lyr/Hyperion/REMOTE_ACCESS.md
+--- /mnt/data/hyperion_prev/Hyperion/REMOTE_ACCESS.md	2026-05-02 13:02:03.000000000 +0000
++++ /mnt/data/hyperion_lyr/Hyperion/REMOTE_ACCESS.md	2026-05-02 13:12:09.642595888 +0000
+@@ -109,3 +109,25 @@
+ 
+ If diagnostics say **Blocked by App Transport Security** for a public `http://...:9000` address, iOS is blocking clear-text remote HTTP before Hyperion reaches your server. This build keeps ATS exceptions in both `Info.plist` and `project.yml`, but the safer remote setup is still an HTTPS reverse proxy or Tailscale. For public internet access, prefer `https://your-domain.example` over exposing LMS port `9000` directly.
+ 
++
++### LyrPlay-style Tailscale/MagicDNS input
++
++You no longer have to type the exact `http://host:9000` LMS URL for Tailscale. Hyperion probes the likely LMS endpoints automatically, so these are valid:
++
++```text
++my-lms.tailnet.ts.net
++http://my-lms.tailnet.ts.net
++100.x.y.z
++http://100.x.y.z
++http://100.x.y.z:9000
++```
++
++For HTTPS reverse proxies, these are also normalized to the same base URL:
++
++```text
++https://music.example.com
++https://music.example.com/material
++https://music.example.com/jsonrpc.js
++```
++
++The diagnostics log now shows every redacted endpoint candidate it probes, then uses the first successful LMS JSON-RPC response as the active base URL.
+diff -ru /mnt/data/hyperion_prev/Hyperion/SearchAndSettingsView.swift /mnt/data/hyperion_lyr/Hyperion/SearchAndSettingsView.swift
+--- /mnt/data/hyperion_prev/Hyperion/SearchAndSettingsView.swift	2026-05-02 13:00:44.000000000 +0000
++++ /mnt/data/hyperion_lyr/Hyperion/SearchAndSettingsView.swift	2026-05-02 13:11:25.804730932 +0000
+@@ -581,15 +581,16 @@
+             let probe: ConnectionProbeResult
+             switch mode {
+             case .local:
+-                probe = await ConnectionManager.probeServer(local)
++                probe = await ConnectionManager.probeBestServer(local, mode: .local)
+             case .tailscale:
+-                probe = await ConnectionManager.probeServer(ts)
++                probe = await ConnectionManager.probeBestServer(ts, mode: .tailscale)
+             case .proxy:
+-                probe = await ConnectionManager.probeServer(prox)
++                probe = await ConnectionManager.probeBestServer(prox, mode: .proxy)
+             case .auto:
+-                let candidates = [local, ts, prox].filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
++                let entries: [(String, ConnectionMode)] = [(local, .local), (ts, .tailscale), (prox, .proxy)]
++                let candidates = entries.flatMap { HyperionServerURL.candidateBases(for: $0.0, mode: $0.1) }
+                 if candidates.isEmpty {
+-                    probe = await ConnectionManager.probeServer("")
++                    probe = await ConnectionManager.probeBestServer("")
+                 } else {
+                     probe = await withTaskGroup(of: ConnectionProbeResult.self) { group in
+                         for url in candidates {
+@@ -603,10 +604,7 @@
+                             }
+                             lastFailure = result
+                         }
+-                        if let lastFailure {
+-                            return lastFailure
+-                        }
+-                        return await ConnectionManager.probeServer("")
++                        return lastFailure ?? await ConnectionManager.probeBestServer("")
+                     }
+                 }
+             }

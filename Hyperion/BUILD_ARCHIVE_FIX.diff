@@ -1,0 +1,28 @@
+--- /mnt/data/hyperion_old/Hyperion/ConnectionManager.swift	2026-05-02 13:11:12.000000000 +0000
++++ /mnt/data/hyperion_fix/Hyperion/ConnectionManager.swift	2026-05-02 13:17:09.360978816 +0000
+@@ -352,7 +352,10 @@
+         let candidates = HyperionServerURL.candidateBases(for: url, mode: mode)
+         guard !candidates.isEmpty else { return await probeServer("") }
+         await ServerLogStore.shared.debug("Probe candidates: \(candidates.map(ServerLogStore.redactedURL).joined(separator: ", "))")
+-        return await probeFirstSuccessful(candidates: candidates) ?? await probeServer("")
++        if let result = await probeFirstSuccessful(candidates: candidates) {
++            return result
++        }
++        return await probeServer("")
+     }
+ 
+     private nonisolated static func probeFirstSuccessful(candidates: [String]) async -> ConnectionProbeResult? {
+--- /mnt/data/hyperion_old/Hyperion/SearchAndSettingsView.swift	2026-05-02 13:11:25.000000000 +0000
++++ /mnt/data/hyperion_fix/Hyperion/SearchAndSettingsView.swift	2026-05-02 13:17:09.361628559 +0000
+@@ -604,7 +604,10 @@
+                             }
+                             lastFailure = result
+                         }
+-                        return lastFailure ?? await ConnectionManager.probeBestServer("")
++                        if let lastFailure {
++                            return lastFailure
++                        }
++                        return await ConnectionManager.probeBestServer("")
+                     }
+                 }
+             }

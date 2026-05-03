@@ -1,0 +1,472 @@
+diff -ru '--exclude=*.png' /mnt/data/hyperion_original/Hyperion/CHANGELOG.md Hyperion/CHANGELOG.md
+--- /mnt/data/hyperion_original/Hyperion/CHANGELOG.md	2026-05-02 12:33:47.000000000 +0000
++++ Hyperion/CHANGELOG.md	2026-05-02 12:46:14.695914024 +0000
+@@ -1,5 +1,22 @@
+ # Hyperion — change log
+ 
++## 2026-05-02 — Pass 3 polish + performance cleanup
++
++- **PERFORMANCE — search matching**: search now normalizes and tokenizes the query once per search instead of re-splitting/re-normalizing it for every composer, work, and album candidate. Matching also ignores diacritics for better classical-library lookups.
++- **PERFORMANCE — duplicate request suppression**: work lists, work tracks, and album tracks now share in-flight load tasks, so fast navigation or concurrent view refreshes no longer launch duplicate identical LMS requests.
++- **FIX — album pagination race**: album loads now snapshot the requested sort order and only clear the loading flag for the active generation, avoiding stale loaders hiding the spinner during sort changes.
++- **FIX — metadata fallbacks**: track parsing now accepts `discnum` and `artwork_track_id` fallbacks in addition to the existing `disc` / `coverid` keys.
++- **FIX — artist album search resilience**: one failed artist-scoped album request no longer fails the whole artist search; cancellation still propagates correctly.
++- **PERFORMANCE — diagnostics timestamps**: server log entries no longer allocate a new `DateFormatter` for every rendered row.
++- **PERFORMANCE — log ring trim**: diagnostics trimming now keeps the suffix in one array replacement instead of repeatedly shifting entries.
++- **POLISH — artwork cache memory handling**: the shared artwork cache now has a count limit and clears itself on memory warnings; player artwork cache clearing also clears the shared SwiftUI artwork cache.
++- **POLISH — launch audio session behavior**: the audio category is configured on startup, but the session activates only when playback starts or resumes.
++- **FIX — remote command setup**: explicitly enables lock-screen / CarPlay playback-position scrubbing.
++- **FIX — no force unwrap in initials formatting**: `NameFormatting.initials` no longer force-unwraps first/last tokens.
++- **FIX — IPA helper with absolute paths**: `fix_appstore_validation.sh` no longer fails when given an absolute `.ipa` path.
++- **BUILD — asset catalog restored**: added a complete root `Assets.xcassets/AppIcon.appiconset` matching `project.yml` / `ASSETCATALOG_COMPILER_APPICON_NAME`.
++
++
+ ## 2026-05-02 — Restored Recent Activity + quality marker
+ 
+ - **RESTORED — Recently Played visibility on Home**: the homepage now always shows the Recently Played section. If there is no app-local or LMS play history yet, it shows a clear empty-state card instead of disappearing.
+diff -ru '--exclude=*.png' /mnt/data/hyperion_original/Hyperion/ContentView.swift Hyperion/ContentView.swift
+--- /mnt/data/hyperion_original/Hyperion/ContentView.swift	2026-05-02 12:19:12.000000000 +0000
++++ Hyperion/ContentView.swift	2026-05-02 12:43:23.813027942 +0000
+@@ -238,10 +238,20 @@
+ final class ArtworkCache {
+     static let shared = ArtworkCache()
+     private let cache = NSCache<NSString, UIImage>()
++    private var memoryWarningObserver: NSObjectProtocol?
+ 
+     private init() {
+         // Allow up to ~40 MB of artwork before NSCache starts evicting.
++        cache.countLimit = 250
+         cache.totalCostLimit = 40 * 1024 * 1024
++
++        memoryWarningObserver = NotificationCenter.default.addObserver(
++            forName: UIApplication.didReceiveMemoryWarningNotification,
++            object: nil,
++            queue: nil
++        ) { [weak self] _ in
++            Task { @MainActor [weak self] in self?.clear() }
++        }
+     }
+ 
+     func image(for key: String) -> UIImage? {
+@@ -251,6 +261,10 @@
+     func setImage(_ image: UIImage, for key: String, cost: Int = 0) {
+         cache.setObject(image, forKey: key as NSString, cost: cost)
+     }
++
++    func clear() {
++        cache.removeAllObjects()
++    }
+ }
+ 
+ // MARK: - Artwork view
+@@ -333,7 +347,9 @@
+         let parts = name.split(whereSeparator: \.isWhitespace)
+         guard !parts.isEmpty else { return "?" }
+         if parts.count >= 2 {
+-            return "\(parts.first!.prefix(1))\(parts.last!.prefix(1))".uppercased()
++            let firstInitial = parts.first?.prefix(1) ?? ""
++            let lastInitial  = parts.last?.prefix(1) ?? ""
++            return "\(firstInitial)\(lastInitial)".uppercased()
+         }
+         return String(parts[0].prefix(2)).uppercased()
+     }
+diff -ru '--exclude=*.png' /mnt/data/hyperion_original/Hyperion/LibraryViewModel.swift Hyperion/LibraryViewModel.swift
+--- /mnt/data/hyperion_original/Hyperion/LibraryViewModel.swift	2026-05-02 12:19:12.000000000 +0000
++++ Hyperion/LibraryViewModel.swift	2026-05-02 12:42:10.604929920 +0000
+@@ -25,6 +25,9 @@
+     private var worksCache: [WorksCacheKey: [Work]] = [:]
+     private var tracksForWork: [Int: [Track]] = [:]
+     private var tracksForAlbum: [Int: [Track]] = [:]
++    private var worksLoadTasks: [WorksCacheKey: Task<[Work], Error>] = [:]
++    private var tracksForWorkTasks: [Int: Task<[Track], Error>] = [:]
++    private var tracksForAlbumTasks: [Int: Task<[Track], Error>] = [:]
+     private var hasLoadedAllAlbums: Bool = false
+     private var currentAlbumSortOrder: AlbumSortOrder = .album
+ 
+@@ -42,6 +45,12 @@
+                 self?.worksCache     = [:]
+                 self?.tracksForWork  = [:]
+                 self?.tracksForAlbum = [:]
++                self?.worksLoadTasks.values.forEach { $0.cancel() }
++                self?.tracksForWorkTasks.values.forEach { $0.cancel() }
++                self?.tracksForAlbumTasks.values.forEach { $0.cancel() }
++                self?.worksLoadTasks.removeAll()
++                self?.tracksForWorkTasks.removeAll()
++                self?.tracksForAlbumTasks.removeAll()
+                 // Keep composerCache — it's small and expensive to refetch.
+             }
+         }
+@@ -92,11 +101,10 @@
+     func loadWorks(composerID: Int? = nil) async throws -> [Work] {
+         let key: WorksCacheKey = composerID.map { .composer($0) } ?? .all
+         if let cached = worksCache[key] { return cached }
++        if let existing = worksLoadTasks[key] { return try await existing.value }
+ 
+-        isLoadingWorks = true
+-        defer { isLoadingWorks = false }
+-
+-        do {
++        let pageSize = self.pageSize
++        let task = Task<[Work], Error> {
+             var all: [Work] = []
+             var start = 0
+ 
+@@ -113,6 +121,18 @@
+             }
+ 
+             all.sort { $0.work.localizedCaseInsensitiveCompare($1.work) == .orderedAscending }
++            return all
++        }
++
++        worksLoadTasks[key] = task
++        isLoadingWorks = true
++        defer {
++            worksLoadTasks[key] = nil
++            isLoadingWorks = !worksLoadTasks.isEmpty
++        }
++
++        do {
++            let all = try await task.value
+             worksCache[key] = all
+             return all
+         } catch is CancellationError {
+@@ -145,9 +165,14 @@
+         }
+ 
+         let generation = albumsLoadGeneration
++        let requestedSort = currentAlbumSortOrder
+ 
+         isLoadingAlbums = true
+-        defer { isLoadingAlbums = false }
++        defer {
++            if generation == albumsLoadGeneration {
++                isLoadingAlbums = false
++            }
++        }
+ 
+         do {
+             var start = shouldReset ? 0 : albums.count
+@@ -156,7 +181,7 @@
+                 let batch = try await LyrionAPI.shared.getAlbums(
+                     start: start,
+                     count: pageSize,
+-                    sort: currentAlbumSortOrder
++                    sort: requestedSort
+                 )
+                 guard !Task.isCancelled, generation == albumsLoadGeneration else { return }
+                 albums.append(contentsOf: batch)
+@@ -229,14 +254,30 @@
+ 
+     func getTracksForWork(_ workID: Int) async throws -> [Track] {
+         if let cached = tracksForWork[workID] { return cached }
+-        let tracks = try await LyrionAPI.shared.getTracksForWork(workID: workID)
++        if let existing = tracksForWorkTasks[workID] { return try await existing.value }
++
++        let task = Task<[Track], Error> {
++            try await LyrionAPI.shared.getTracksForWork(workID: workID)
++        }
++        tracksForWorkTasks[workID] = task
++        defer { tracksForWorkTasks[workID] = nil }
++
++        let tracks = try await task.value
+         tracksForWork[workID] = tracks
+         return tracks
+     }
+ 
+     func getTracksForAlbum(_ albumID: Int) async throws -> [Track] {
+         if let cached = tracksForAlbum[albumID] { return cached }
+-        let tracks = try await LyrionAPI.shared.getTracksForAlbum(albumID: albumID)
++        if let existing = tracksForAlbumTasks[albumID] { return try await existing.value }
++
++        let task = Task<[Track], Error> {
++            try await LyrionAPI.shared.getTracksForAlbum(albumID: albumID)
++        }
++        tracksForAlbumTasks[albumID] = task
++        defer { tracksForAlbumTasks[albumID] = nil }
++
++        let tracks = try await task.value
+         tracksForAlbum[albumID] = tracks
+         return tracks
+     }
+@@ -248,26 +289,47 @@
+ 
+     // MARK: - Search
+ 
+-    /// Returns true if `text` is a match for the search query.
+-    ///
+-    /// Matching strategy (most lenient wins):
+-    private static func matches(text: String, query: String) -> Bool {
+-        // Fast path: plain substring check.
+-        if text.localizedCaseInsensitiveContains(query) { return true }
+-
+-        // Token path: split query on whitespace and require every token to
+-        // appear in the target text.  This handles multi-word queries typed
+-        // in any order and also handles the case where a query word matches
+-        // a word that starts mid-string (e.g. "tune" → "Progressive Tunes").
+-        let tokens = query.split(whereSeparator: \.isWhitespace)
+-        guard tokens.count > 1 else { return false }
+-        return tokens.allSatisfy { text.localizedCaseInsensitiveContains($0) }
++    /// Pre-normalized search query.  Search calls compare hundreds of strings
++    /// per keystroke, so normalize/tokenize the query once instead of doing it
++    /// repeatedly for every composer, work, and album candidate.
++    private struct SearchNeedle {
++        let folded: String
++        let tokens: [String]
++
++        init(_ raw: String) {
++            self.folded = Self.fold(raw)
++            self.tokens = raw
++                .split(whereSeparator: \.isWhitespace)
++                .map { Self.fold(String($0)) }
++        }
++
++        func matches(_ text: String) -> Bool {
++            let foldedText = Self.fold(text)
++            if foldedText.contains(folded) { return true }
++
++            // Token path: require every token to appear in the target text.
++            // This handles multi-word queries typed in any order and also
++            // handles a token matching from the middle of a title.
++            guard tokens.count > 1 else { return false }
++            return tokens.allSatisfy { foldedText.contains($0) }
++        }
++
++        static func fold(_ value: String) -> String {
++            value
++                .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
++                .lowercased()
++        }
++    }
++
++    private static func matches(text: String, needle: SearchNeedle) -> Bool {
++        needle.matches(text)
+     }
+ 
+     /// Unified library search.  Returns composer, album, and work matches.
+     func search(query: String) async -> (composers: [Composer], works: [Work], albums: [Album]) {
+         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+         guard !trimmed.isEmpty else { return ([], [], []) }
++        let needle = SearchNeedle(trimmed)
+ 
+         var foundComposers: [Composer] = []
+         var foundWorks:     [Work]     = []
+@@ -300,7 +362,7 @@
+         if composers.isEmpty { await loadComposers() }
+ 
+         composers.filter {
+-            Self.matches(text: $0.artist, query: trimmed)
++            Self.matches(text: $0.artist, needle: needle)
+         }.forEach { mergeComposer($0) }
+ 
+         // ── 2. Local album cache search ──
+@@ -315,17 +377,17 @@
+         }
+ 
+         albums.filter {
+-            Self.matches(text: $0.album,            query: trimmed) ||
+-            Self.matches(text: $0.artist   ?? "",   query: trimmed) ||
+-            Self.matches(text: $0.composer ?? "",   query: trimmed)
++            Self.matches(text: $0.album,            needle: needle) ||
++            Self.matches(text: $0.artist   ?? "",   needle: needle) ||
++            Self.matches(text: $0.composer ?? "",   needle: needle)
+         }.forEach { mergeAlbum($0) }
+ 
+         // ── 3. Local works-cache search ──
+ 
+         for cached in worksCache.values {
+             cached.filter {
+-                Self.matches(text: $0.work,           query: trimmed) ||
+-                Self.matches(text: $0.composer ?? "", query: trimmed)
++                Self.matches(text: $0.work,           needle: needle) ||
++                Self.matches(text: $0.composer ?? "", needle: needle)
+             }.forEach { mergeWork($0) }
+         }
+ 
+@@ -363,20 +425,20 @@
+ 
+         for batch in serverWorkBatches {
+             batch.filter {
+-                Self.matches(text: $0.work,           query: trimmed) ||
+-                Self.matches(text: $0.composer ?? "", query: trimmed)
++                Self.matches(text: $0.work,           needle: needle) ||
++                Self.matches(text: $0.composer ?? "", needle: needle)
+             }.forEach { mergeWork($0) }
+         }
+ 
+         catalog?.albums.filter {
+-            Self.matches(text: $0.album,            query: trimmed) ||
+-            Self.matches(text: $0.artist   ?? "",   query: trimmed) ||
+-            Self.matches(text: $0.composer ?? "",   query: trimmed)
++            Self.matches(text: $0.album,            needle: needle) ||
++            Self.matches(text: $0.artist   ?? "",   needle: needle) ||
++            Self.matches(text: $0.composer ?? "",   needle: needle)
+         }.forEach { mergeAlbum($0) }
+ 
+         catalog?.works.filter {
+-            Self.matches(text: $0.work,           query: trimmed) ||
+-            Self.matches(text: $0.composer ?? "", query: trimmed)
++            Self.matches(text: $0.work,           needle: needle) ||
++            Self.matches(text: $0.composer ?? "", needle: needle)
+         }.forEach { mergeWork($0) }
+ 
+         // ── 5. Sort and cap ──
+@@ -388,8 +450,8 @@
+             $0.work.localizedCaseInsensitiveCompare($1.work) == .orderedAscending
+         }
+         let sortedAlbums = foundAlbums.sorted { lhs, rhs in
+-            let lExact = lhs.album.localizedCaseInsensitiveContains(trimmed)
+-            let rExact = rhs.album.localizedCaseInsensitiveContains(trimmed)
++            let lExact = Self.SearchNeedle.fold(lhs.album).contains(needle.folded)
++            let rExact = Self.SearchNeedle.fold(rhs.album).contains(needle.folded)
+             if lExact != rExact { return lExact }
+             return lhs.album.localizedCaseInsensitiveCompare(rhs.album) == .orderedAscending
+         }
+@@ -404,10 +466,16 @@
+     // MARK: - Cache management
+ 
+     func clearCache() {
++        worksLoadTasks.values.forEach { $0.cancel() }
++        tracksForWorkTasks.values.forEach { $0.cancel() }
++        tracksForAlbumTasks.values.forEach { $0.cancel() }
+         composerCache  = nil
+         worksCache     = [:]
+         tracksForWork  = [:]
+         tracksForAlbum = [:]
++        worksLoadTasks.removeAll()
++        tracksForWorkTasks.removeAll()
++        tracksForAlbumTasks.removeAll()
+     }
+ 
+     func refresh() async {
+diff -ru '--exclude=*.png' /mnt/data/hyperion_original/Hyperion/LyrionAPI.swift Hyperion/LyrionAPI.swift
+--- /mnt/data/hyperion_original/Hyperion/LyrionAPI.swift	2026-05-02 12:19:12.000000000 +0000
++++ Hyperion/LyrionAPI.swift	2026-05-02 12:42:57.220258092 +0000
+@@ -409,7 +409,14 @@
+         return try await withThrowingTaskGroup(of: [Album].self) { group in
+             for id in artistIDs.prefix(5) {
+                 group.addTask {
+-                    let result = try await self.request(params: ["albums", 0, count, "artist_id:\(id)", "tags:aljySC"])
++                    let result: [String: Any]
++                    do {
++                        result = try await self.request(params: ["albums", 0, count, "artist_id:\(id)", "tags:aljySC"])
++                    } catch is CancellationError {
++                        throw CancellationError()
++                    } catch {
++                        return []
++                    }
+                     let arr = result["albums_loop"] as? [[String: Any]] ?? []
+                     return Self.parseAlbums(arr)
+                 }
+@@ -518,9 +525,9 @@
+                 work:        Self.normalizeString(dict["work"]        as? String),
+                 duration:    JSON.double(dict["duration"]),
+                 tracknum:    JSON.int(dict["tracknum"]),
+-                discnum:     JSON.int(dict["disc"]),
++                discnum:     JSON.int(dict["disc"] ?? dict["discnum"]),
+                 year:        JSON.int(dict["year"]),
+-                coverid:     JSON.string(dict["coverid"]),
++                coverid:     JSON.string(dict["coverid"] ?? dict["artwork_track_id"]),
+                 url:         dict["url"]          as? String,
+                 genres:      dict["genres"]       as? String,
+                 isClassical: JSON.int(dict["isClassical"])
+Only in Hyperion: PASS3_POLISH.diff
+diff -ru '--exclude=*.png' /mnt/data/hyperion_original/Hyperion/PlayerViewModel.swift Hyperion/PlayerViewModel.swift
+--- /mnt/data/hyperion_original/Hyperion/PlayerViewModel.swift	2026-05-02 12:19:12.000000000 +0000
++++ Hyperion/PlayerViewModel.swift	2026-05-02 12:40:37.779479291 +0000
+@@ -84,12 +84,10 @@
+         artworkCache.countLimit     = 200
+         artworkCache.totalCostLimit = 50 * 1024 * 1024
+ 
+-        // BUG FIX: setupAudioSession() previously only set the category but
+-        // never activated the session.  Background audio requires the session
+-        // to be active before the first play; we activate here and again just
+-        // before each playback begins so it's always in the right state.
++        // Configure the category up front, but activate only when playback
++        // starts. This avoids unnecessary audio-session work during launch
++        // while still activating immediately before every stream begins.
+         setupAudioSession()
+-        activateAudioSession()   // <-- was missing; caused silent playback on cold launch
+ 
+         setupRemoteControls()
+         setupAudioObservers()
+@@ -101,6 +99,7 @@
+         ) { [weak self] _ in
+             Task { @MainActor [weak self] in
+                 self?.artworkCache.removeAllObjects()
++                ArtworkCache.shared.clear()
+             }
+         }
+     }
+@@ -259,6 +258,7 @@
+         cc.togglePlayPauseCommand.isEnabled = true
+         cc.nextTrackCommand.isEnabled       = true
+         cc.previousTrackCommand.isEnabled   = true
++        cc.changePlaybackPositionCommand.isEnabled = true
+ 
+         cc.playCommand.addTarget { [weak self] _ in
+             guard let self else { return .commandFailed }
+diff -ru '--exclude=*.png' /mnt/data/hyperion_original/Hyperion/README.md Hyperion/README.md
+--- /mnt/data/hyperion_original/Hyperion/README.md	2026-05-02 12:33:47.000000000 +0000
++++ Hyperion/README.md	2026-05-02 12:45:58.007517212 +0000
+@@ -48,6 +48,10 @@
+ - `fix_hyperion_appstore_bundle.sh`
+ - `verify_ipa_before_upload.sh`
+ 
++The archive also includes a complete `Assets.xcassets/AppIcon.appiconset` at
++the project root so XcodeGen can resolve the configured `AppIcon` catalog
++without requiring a separate asset handoff.
++
+ ### Remote HTTP / App Transport Security
+ 
+ If diagnostics say **Blocked by App Transport Security** for a public `http://...:9000` address, iOS is blocking clear-text remote HTTP before Hyperion reaches your server. This build keeps ATS exceptions in both `Info.plist` and `project.yml`, but the safer remote setup is still an HTTPS reverse proxy or Tailscale. For public internet access, prefer `https://your-domain.example` over exposing LMS port `9000` directly.
+diff -ru '--exclude=*.png' /mnt/data/hyperion_original/Hyperion/ServerLogStore.swift Hyperion/ServerLogStore.swift
+--- /mnt/data/hyperion_original/Hyperion/ServerLogStore.swift	2026-05-02 12:19:13.000000000 +0000
++++ Hyperion/ServerLogStore.swift	2026-05-02 12:39:56.786533583 +0000
+@@ -1,5 +1,5 @@
+-import Foundation
+ import Combine
++import Foundation
+ import os
+ 
+ struct ServerLogEntry: Identifiable, Equatable {
+@@ -9,11 +9,14 @@
+     let message: String
+ 
+     var displayTime: String {
+-        let formatter = DateFormatter()
+-        formatter.dateFormat = "HH:mm:ss"
+-        return formatter.string(from: timestamp)
++        timestamp.formatted(Self.timeStyle)
+     }
+ 
++    private static let timeStyle = Date.FormatStyle()
++        .hour(.twoDigits(amPM: .omitted))
++        .minute(.twoDigits)
++        .second(.twoDigits)
++
+     var displayLine: String {
+         "[\(displayTime)] \(level.rawValue): \(message)"
+     }
+@@ -62,7 +65,7 @@
+         let entry = ServerLogEntry(timestamp: Date(), level: level, message: message)
+         entries.append(entry)
+         if entries.count > maxEntries {
+-            entries.removeFirst(entries.count - maxEntries)
++            entries = Array(entries.suffix(maxEntries))
+         }
+ 
+         switch level {
+diff -ru '--exclude=*.png' /mnt/data/hyperion_original/Hyperion/fix_appstore_validation.sh Hyperion/fix_appstore_validation.sh
+--- /mnt/data/hyperion_original/Hyperion/fix_appstore_validation.sh	2026-05-02 12:33:47.000000000 +0000
++++ Hyperion/fix_appstore_validation.sh	2026-05-02 12:43:51.995980887 +0000
+@@ -129,7 +129,9 @@
+     APP_DIR="$(find "$WORKDIR/Payload" -maxdepth 1 -type d -name "*.app" | head -n 1)"
+     patch_app "$APP_DIR"
+     (cd "$WORKDIR" && zip -qry "$OUT" Payload)
+-    mv "$WORKDIR/$OUT" "$OUT"
++    if [[ "$OUT" != /* ]]; then
++      mv "$WORKDIR/$OUT" "$OUT"
++    fi
+     rm -rf "$WORKDIR"
+     echo "Created $OUT"
+     echo "IMPORTANT: This IPA was modified after signing. Re-sign/re-export before App Store upload."

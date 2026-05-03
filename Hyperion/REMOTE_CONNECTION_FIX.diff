@@ -1,0 +1,317 @@
+diff -ruN -x REMOTE_CONNECTION_FIX.diff hyperion_polished_baseline/Hyperion/CHANGELOG.md hyperion_remote_debug/Hyperion/CHANGELOG.md
+--- hyperion_polished_baseline/Hyperion/CHANGELOG.md	2026-05-02 12:46:14.000000000 +0000
++++ hyperion_remote_debug/Hyperion/CHANGELOG.md	2026-05-02 13:02:03.244086270 +0000
+@@ -1,5 +1,12 @@
+ # Hyperion — change log
+ 
++## Remote connection repair pass
++
++- Fixed legacy remote URL migration: an older single `serverURL` that points to a public IP, domain, or HTTPS reverse proxy now populates the Remote slot instead of only Home.
++- Added recovery for users who opened/saved the previous cleanup build with the remote URL stranded in Home and an empty Remote field.
++- Added Basic Auth forwarding for connection probes, JSON-RPC requests, artwork, and AVPlayer streams when the server URL includes `user:password@host`.
++- Redacted credentials from the Settings active URL display.
++
+ ## 2026-05-02 — Pass 3 polish + performance cleanup
+ 
+ - **PERFORMANCE — search matching**: search now normalizes and tokenizes the query once per search instead of re-splitting/re-normalizing it for every composer, work, and album candidate. Matching also ignores diacritics for better classical-library lookups.
+diff -ruN -x REMOTE_CONNECTION_FIX.diff hyperion_polished_baseline/Hyperion/ConnectionManager.swift hyperion_remote_debug/Hyperion/ConnectionManager.swift
+--- hyperion_polished_baseline/Hyperion/ConnectionManager.swift	2026-05-02 12:33:47.000000000 +0000
++++ hyperion_remote_debug/Hyperion/ConnectionManager.swift	2026-05-02 13:01:45.388444262 +0000
+@@ -99,15 +99,88 @@
+     // MARK: - Persistence
+ 
+     func loadSettings() {
+-        let legacyURL = UserDefaults.standard.string(forKey: Keys.legacyServerURL)
+-        localURL     = Self.sanitizedURL(UserDefaults.standard.string(forKey: Keys.localURL)     ?? legacyURL ?? "")
+-        tailscaleURL = Self.sanitizedURL(UserDefaults.standard.string(forKey: Keys.tailscaleURL) ?? "")
+-        proxyURL     = Self.sanitizedURL(UserDefaults.standard.string(forKey: Keys.proxyURL)     ?? "")
++        let defaults = UserDefaults.standard
++        let legacyURL = Self.sanitizedURL(defaults.string(forKey: Keys.legacyServerURL) ?? "")
+ 
+-        if let raw   = UserDefaults.standard.string(forKey: Keys.connectionMode),
++        if let raw   = defaults.string(forKey: Keys.connectionMode),
+            let saved = ConnectionMode(rawValue: raw) {
+             connectionMode = saved
+         }
++
++        let storedLocal     = defaults.string(forKey: Keys.localURL)
++        let storedTailscale = defaults.string(forKey: Keys.tailscaleURL)
++        let storedProxy     = defaults.string(forKey: Keys.proxyURL)
++
++        localURL     = Self.sanitizedURL(storedLocal     ?? "")
++        tailscaleURL = Self.sanitizedURL(storedTailscale ?? "")
++        proxyURL     = Self.sanitizedURL(storedProxy     ?? "")
++
++        // Migration guard: older Hyperion builds had one `serverURL` setting.
++        // The first remote pass put that legacy value only in Home, which meant
++        // users whose single URL was a public IP / HTTPS proxy could pick
++        // “Remote Proxy” and get an empty Remote field.  Classify the legacy URL
++        // and seed the appropriate modern slot without overwriting explicit
++        // settings the user has already entered.
++        migrateLegacyServerURLIfNeeded(
++            legacyURL: legacyURL,
++            hadStoredLocal: !localURL.isEmpty,
++            hadStoredTailscale: !tailscaleURL.isEmpty,
++            hadStoredProxy: !proxyURL.isEmpty
++        )
++    }
++
++    private func migrateLegacyServerURLIfNeeded(
++        legacyURL: String,
++        hadStoredLocal: Bool,
++        hadStoredTailscale: Bool,
++        hadStoredProxy: Bool
++    ) {
++        guard !legacyURL.isEmpty else { return }
++
++        let legacyKind = Self.connectionKind(for: legacyURL)
++
++        if !hadStoredLocal && !hadStoredTailscale && !hadStoredProxy {
++            switch legacyKind {
++            case .tailscale:
++                tailscaleURL = legacyURL
++                UserDefaults.standard.set(tailscaleURL, forKey: Keys.tailscaleURL)
++            case .remote:
++                proxyURL = legacyURL
++                UserDefaults.standard.set(proxyURL, forKey: Keys.proxyURL)
++            case .local:
++                localURL = legacyURL
++                UserDefaults.standard.set(localURL, forKey: Keys.localURL)
++            }
++            ServerLogStore.shared.info("Migrated old server URL into \(legacyKind.displayName): \(displayURL(legacyURL))")
++            return
++        }
++
++        // Recovery for users who opened/saved the previous cleanup build: a
++        // public/HTTPS legacy URL may already be sitting in Home while Remote is
++        // empty. Keep Home intact, but also populate the Remote slot so Remote
++        // Proxy mode works immediately.
++        if !hadStoredProxy,
++           proxyURL.isEmpty,
++           legacyKind == .remote {
++            proxyURL = legacyURL
++            UserDefaults.standard.set(proxyURL, forKey: Keys.proxyURL)
++            ServerLogStore.shared.info("Recovered old remote server URL into Remote: \(displayURL(legacyURL))")
++        } else if !hadStoredProxy,
++                  proxyURL.isEmpty,
++                  connectionMode == .proxy,
++                  Self.connectionKind(for: localURL) == .remote {
++            proxyURL = localURL
++            UserDefaults.standard.set(proxyURL, forKey: Keys.proxyURL)
++            ServerLogStore.shared.info("Recovered public Home URL into Remote for Remote Proxy mode: \(displayURL(localURL))")
++        }
++
++        if !hadStoredTailscale,
++           tailscaleURL.isEmpty,
++           legacyKind == .tailscale {
++            tailscaleURL = legacyURL
++            UserDefaults.standard.set(tailscaleURL, forKey: Keys.tailscaleURL)
++            ServerLogStore.shared.info("Recovered old Tailscale server URL into Tailscale: \(displayURL(legacyURL))")
++        }
+     }
+ 
+     func saveSettings() {
+@@ -332,6 +405,8 @@
+         request.httpMethod = "POST"
+         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+         request.setValue("application/json", forHTTPHeaderField: "Accept")
++        request.setValue("Hyperion iOS", forHTTPHeaderField: "User-Agent")
++        HyperionURLAuth.addAuthorizationHeader(to: &request, baseURL: sanitized)
+         request.httpBody = try? JSONSerialization.data(withJSONObject: [
+             "id":     1,
+             "method": "slim.request",
+@@ -466,6 +541,51 @@
+         return result == "http://" || result == "https://" ? "" : result
+     }
+ 
++    private enum URLConnectionKind: Equatable {
++        case local
++        case tailscale
++        case remote
++
++        var displayName: String {
++            switch self {
++            case .local:     return "Home"
++            case .tailscale: return "Tailscale"
++            case .remote:    return "Remote"
++            }
++        }
++    }
++
++    private nonisolated static func connectionKind(for rawURL: String) -> URLConnectionKind {
++        let sanitized = sanitizedURL(rawURL)
++        guard let components = URLComponents(string: sanitized),
++              let host = components.host?.lowercased(),
++              !host.isEmpty else {
++            return .remote
++        }
++
++        if host == "localhost" || host == "127.0.0.1" || host.hasSuffix(".local") {
++            return .local
++        }
++
++        let octets = host.split(separator: ".").compactMap { Int($0) }
++        if octets.count == 4 {
++            let a = octets[0]
++            let b = octets[1]
++            if a == 10 || a == 127 || (a == 172 && (16...31).contains(b)) || (a == 192 && b == 168) {
++                return .local
++            }
++            if a == 100 && (64...127).contains(b) {
++                return .tailscale
++            }
++            return .remote
++        }
++
++        if sanitized.lowercased().hasPrefix("https://") {
++            return .remote
++        }
++        return .remote
++    }
++
+     private func displayURL(_ url: String) -> String {
+         let sanitized = Self.sanitizedURL(url)
+         return sanitized.isEmpty ? "not set" : ServerLogStore.redactedURL(sanitized)
+diff -ruN -x REMOTE_CONNECTION_FIX.diff hyperion_polished_baseline/Hyperion/LyrionAPI.swift hyperion_remote_debug/Hyperion/LyrionAPI.swift
+--- hyperion_polished_baseline/Hyperion/LyrionAPI.swift	2026-05-02 12:42:57.000000000 +0000
++++ hyperion_remote_debug/Hyperion/LyrionAPI.swift	2026-05-02 13:00:44.198572280 +0000
+@@ -118,6 +118,17 @@
+         }
+     }
+ 
++    func httpHeaders(accept: String? = nil) -> [String: String] {
++        var headers = ["User-Agent": "Hyperion iOS"]
++        if let accept, !accept.isEmpty {
++            headers["Accept"] = accept
++        }
++        if let auth = HyperionURLAuth.authorizationHeader(from: baseURL) {
++            headers["Authorization"] = auth
++        }
++        return headers
++    }
++
+     func streamURL(for track: Track) -> URL? { streamURLs(for: track).first }
+ 
+     func fallbackStreamURL(for track: Track) -> URL? {
+@@ -176,6 +187,8 @@
+         req.httpMethod = "POST"
+         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+         req.setValue("application/json", forHTTPHeaderField: "Accept")
++        req.setValue("Hyperion iOS", forHTTPHeaderField: "User-Agent")
++        HyperionURLAuth.addAuthorizationHeader(to: &req, baseURL: baseURL)
+         req.timeoutInterval = 10
+         req.httpBody = try JSONSerialization.data(withJSONObject: body)
+ 
+diff -ruN -x REMOTE_CONNECTION_FIX.diff hyperion_polished_baseline/Hyperion/PlayerViewModel.swift hyperion_remote_debug/Hyperion/PlayerViewModel.swift
+--- hyperion_polished_baseline/Hyperion/PlayerViewModel.swift	2026-05-02 12:40:37.000000000 +0000
++++ hyperion_remote_debug/Hyperion/PlayerViewModel.swift	2026-05-02 13:00:44.199967440 +0000
+@@ -558,7 +558,11 @@
+         let key = url.absoluteString as NSString
+         if let cached = artworkCache.object(forKey: key) { return cached }
+         do {
+-            let (data, response) = try await artworkSession.data(from: url)
++            var request = URLRequest(url: url)
++            LyrionAPI.shared.httpHeaders(accept: "image/*,*/*").forEach { key, value in
++                request.setValue(value, forHTTPHeaderField: key)
++            }
++            let (data, response) = try await artworkSession.data(for: request)
+             guard !Task.isCancelled else { return nil }
+             if let http = response as? HTTPURLResponse,
+                !(200..<300).contains(http.statusCode) { return nil }
+@@ -623,10 +627,9 @@
+         activateAudioSession()
+ 
+         let asset = AVURLAsset(url: streamURL, options: [
+-            "AVURLAssetHTTPHeaderFieldsKey": [
+-                "User-Agent": "Hyperion iOS",
+-                "Accept":     "audio/flac,audio/mpeg,audio/mp4,audio/aac,audio/wav,audio/*,*/*"
+-            ]
++            "AVURLAssetHTTPHeaderFieldsKey": LyrionAPI.shared.httpHeaders(
++                accept: "audio/flac,audio/mpeg,audio/mp4,audio/aac,audio/wav,audio/*,*/*"
++            )
+         ])
+         let item = AVPlayerItem(asset: asset)
+         item.preferredForwardBufferDuration = 30
+diff -ruN -x REMOTE_CONNECTION_FIX.diff hyperion_polished_baseline/Hyperion/README.md hyperion_remote_debug/Hyperion/README.md
+--- hyperion_polished_baseline/Hyperion/README.md	2026-05-02 12:45:58.000000000 +0000
++++ hyperion_remote_debug/Hyperion/README.md	2026-05-02 13:02:10.223318434 +0000
+@@ -30,6 +30,17 @@
+ 
+ Tap **Copy Logs** to copy the in-app ring buffer. The same messages are emitted through `os.Logger` under subsystem `com.sarpedon.hyperion`, category `Server`.
+ 
++
++### Remote proxy authentication
++
++For an HTTPS reverse proxy protected by Basic Auth, put credentials in the Remote URL:
++
++```text
++https://username:password@music.example.com
++```
++
++Hyperion forwards the Authorization header for diagnostics, JSON-RPC, artwork, and audio streams, while redacting credentials from logs.
++
+ ## Remote proxy
+ 
+ See [`REMOTE_ACCESS.md`](REMOTE_ACCESS.md) and [`nginx-hyperion-remote.conf`](nginx-hyperion-remote.conf) for an Nginx reverse-proxy example with improved access/error logging.
+diff -ruN -x REMOTE_CONNECTION_FIX.diff hyperion_polished_baseline/Hyperion/REMOTE_ACCESS.md hyperion_remote_debug/Hyperion/REMOTE_ACCESS.md
+--- hyperion_polished_baseline/Hyperion/REMOTE_ACCESS.md	2026-05-02 12:33:47.000000000 +0000
++++ hyperion_remote_debug/Hyperion/REMOTE_ACCESS.md	2026-05-02 13:02:03.244359980 +0000
+@@ -84,6 +84,17 @@
+ sudo tail -f /var/log/nginx/hyperion_access.log /var/log/nginx/hyperion_error.log
+ ```
+ 
++
++### Reverse proxy Basic Auth
++
++If your HTTPS reverse proxy uses HTTP Basic Auth, enter the Remote URL as:
++
++```text
++https://username:password@music.example.com
++```
++
++Hyperion now sends that Authorization header for connection probes, JSON-RPC, artwork, and audio streams. Credentials are redacted from diagnostics and the Settings active URL display.
++
+ ## What to check when remote fails
+ 
+ - **HTTP 404** in Hyperion diagnostics: the proxy is not forwarding `/jsonrpc.js` to LMS.
+diff -ruN -x REMOTE_CONNECTION_FIX.diff hyperion_polished_baseline/Hyperion/SearchAndSettingsView.swift hyperion_remote_debug/Hyperion/SearchAndSettingsView.swift
+--- hyperion_polished_baseline/Hyperion/SearchAndSettingsView.swift	2026-05-02 12:25:35.000000000 +0000
++++ hyperion_remote_debug/Hyperion/SearchAndSettingsView.swift	2026-05-02 13:00:44.200459223 +0000
+@@ -460,7 +460,7 @@
+                     HStack {
+                         Text("Active URL").foregroundColor(.roonSecondary)
+                         Spacer()
+-                        Text(connection.currentURL.isEmpty ? "Not set" : connection.currentURL)
++                        Text(connection.currentURL.isEmpty ? "Not set" : ServerLogStore.redactedURL(connection.currentURL))
+                             .foregroundColor(.roonPrimary).lineLimit(1)
+                             .font(.roonBody(13)).truncationMode(.middle)
+                     }
+diff -ruN -x REMOTE_CONNECTION_FIX.diff hyperion_polished_baseline/Hyperion/URLAuthSupport.swift hyperion_remote_debug/Hyperion/URLAuthSupport.swift
+--- hyperion_polished_baseline/Hyperion/URLAuthSupport.swift	1970-01-01 00:00:00.000000000 +0000
++++ hyperion_remote_debug/Hyperion/URLAuthSupport.swift	2026-05-02 13:00:41.713444845 +0000
+@@ -0,0 +1,25 @@
++import Foundation
++
++enum HyperionURLAuth {
++    static func authorizationHeader(from rawURL: String) -> String? {
++        guard let url = URL(string: rawURL) else { return nil }
++        return authorizationHeader(from: url)
++    }
++
++    static func authorizationHeader(from url: URL) -> String? {
++        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
++              let user = components.user,
++              !user.isEmpty else {
++            return nil
++        }
++        let password = components.password ?? ""
++        let token = "\(user):\(password)"
++        guard let data = token.data(using: .utf8) else { return nil }
++        return "Basic \(data.base64EncodedString())"
++    }
++
++    static func addAuthorizationHeader(to request: inout URLRequest, baseURL: String) {
++        guard let header = authorizationHeader(from: baseURL) else { return }
++        request.setValue(header, forHTTPHeaderField: "Authorization")
++    }
++}

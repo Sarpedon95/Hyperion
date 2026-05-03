@@ -1,0 +1,1197 @@
+diff -ruN -x FIXES.diff hyperion_original/Hyperion/CHANGELOG.md hyperion_work/Hyperion/CHANGELOG.md
+--- hyperion_original/Hyperion/CHANGELOG.md	2026-05-02 12:08:16.000000000 +0000
++++ hyperion_work/Hyperion/CHANGELOG.md	2026-05-02 12:14:07.370501452 +0000
+@@ -156,3 +156,13 @@
+ - Made `getWorksCount()` handle both `count` and `_count`.
+ - Hardened `Color(hex:)` against invalid input (further tightened in Pass 2).
+ - Updated Settings connection testing to use the nonisolated probe helper.
++
++## Remote connectivity and diagnostics pass
++
++- Removed the source-level hard-coded default `192.168.1.105:9000` server URL. Fresh installs now start unconfigured instead of accidentally targeting a private home IP.
++- Fixed manual Remote Proxy/Tailscale modes so they do not silently fall back to the Home LAN URL.
++- Added URL normalization for pasted `/jsonrpc.js` endpoints.
++- Added real Lyrion JSON-RPC validation during connection probes, so an HTTPS proxy returning a generic 200 HTML page no longer appears connected.
++- Added in-app Server Diagnostics with copyable logs and OS Console logging.
++- Added detailed probe/RPC logging for HTTP status, DNS/TLS/timeout failures, JSON-RPC errors, selected URL, and request duration.
++- Added remote-access documentation and an Nginx sample with upstream-aware access logging.
+diff -ruN -x FIXES.diff hyperion_original/Hyperion/ConnectionManager.swift hyperion_work/Hyperion/ConnectionManager.swift
+--- hyperion_original/Hyperion/ConnectionManager.swift	2026-05-02 12:08:16.000000000 +0000
++++ hyperion_work/Hyperion/ConnectionManager.swift	2026-05-02 12:15:01.226893918 +0000
+@@ -2,7 +2,50 @@
+ import Combine
+ import Network
+ 
+-// ConnectionManager uses ObservableObject/@Published, which live in Combine.
++struct ConnectionProbeResult: Identifiable, Equatable, Sendable {
++    let id: UUID
++    let url: String
++    let endpoint: String
++    let startedAt: Date
++    let duration: TimeInterval
++    let statusCode: Int?
++    let serverVersion: String?
++    let errorMessage: String?
++
++    init(
++        id: UUID = UUID(),
++        url: String,
++        endpoint: String,
++        startedAt: Date,
++        duration: TimeInterval,
++        statusCode: Int?,
++        serverVersion: String?,
++        errorMessage: String?
++    ) {
++        self.id = id
++        self.url = url
++        self.endpoint = endpoint
++        self.startedAt = startedAt
++        self.duration = duration
++        self.statusCode = statusCode
++        self.serverVersion = serverVersion
++        self.errorMessage = errorMessage
++    }
++
++    var isSuccess: Bool { errorMessage == nil && statusCode.map { (200..<300).contains($0) } == true }
++
++    var durationText: String { String(format: "%.2fs", duration) }
++
++    var summary: String {
++        let redacted = ServerLogStore.redactedURL(url)
++        if isSuccess {
++            let version = serverVersion.map { " · LMS \($0)" } ?? ""
++            return "Connected to \(redacted) in \(durationText)\(version)"
++        }
++        let status = statusCode.map { "HTTP \($0) · " } ?? ""
++        return "Failed \(redacted): \(status)\(errorMessage ?? "Unknown error")"
++    }
++}
+ 
+ @MainActor
+ final class ConnectionManager: ObservableObject {
+@@ -14,13 +57,16 @@
+         static let tailscaleURL   = "tailscaleURL"
+         static let proxyURL       = "proxyURL"
+         static let connectionMode = "connectionMode"
++        static let legacyServerURL = "serverURL"
+     }
+ 
+     @Published var connectionMode: ConnectionMode = .auto
+     @Published var isConnected: Bool = false
+     @Published var currentURL: String = ""
++    @Published private(set) var lastProbeResult: ConnectionProbeResult?
++    @Published private(set) var lastConnectionMessage: String = "Not checked yet"
+ 
+-    var localURL: String     = "http://192.168.1.105:9000"
++    var localURL: String     = ""
+     var tailscaleURL: String = ""
+     var proxyURL: String     = ""
+ 
+@@ -40,25 +86,21 @@
+ 
+     /// Monotonically-incrementing generation counter.  Used to determine
+     /// whether the task that completed is still the "owner" of inFlightResolve.
+-    ///
+-    /// The original approach (checking `inFlightResolve?.isCancelled == false`)
+-    /// had a race: after forceReconnect() cancelled the old task and started a
+-    /// new one, the old task could run to completion, find the NEW task in
+-    /// inFlightResolve, see it as non-cancelled, and nil it out — permanently
+-    /// blocking future deduplication.
+     private var resolveGeneration: UInt64 = 0
+ 
+     private init() {
+         loadSettings()
+         currentURL = resolvedURLForCurrentMode()
+         LyrionAPI.shared.updateBaseURL(currentURL, persist: false)
++        ServerLogStore.shared.info("Connection manager started. Mode: \(connectionMode.displayName), active URL: \(displayURL(currentURL))")
+         startMonitoring()
+     }
+ 
+     // MARK: - Persistence
+ 
+     func loadSettings() {
+-        localURL     = Self.sanitizedURL(UserDefaults.standard.string(forKey: Keys.localURL)     ?? "http://192.168.1.105:9000")
++        let legacyURL = UserDefaults.standard.string(forKey: Keys.legacyServerURL)
++        localURL     = Self.sanitizedURL(UserDefaults.standard.string(forKey: Keys.localURL)     ?? legacyURL ?? "")
+         tailscaleURL = Self.sanitizedURL(UserDefaults.standard.string(forKey: Keys.tailscaleURL) ?? "")
+         proxyURL     = Self.sanitizedURL(UserDefaults.standard.string(forKey: Keys.proxyURL)     ?? "")
+ 
+@@ -77,6 +119,10 @@
+         UserDefaults.standard.set(tailscaleURL,            forKey: Keys.tailscaleURL)
+         UserDefaults.standard.set(proxyURL,                forKey: Keys.proxyURL)
+         UserDefaults.standard.set(connectionMode.rawValue, forKey: Keys.connectionMode)
++
++        ServerLogStore.shared.info(
++            "Saved connection settings. Mode: \(connectionMode.displayName), local: \(displayURL(localURL)), tailscale: \(displayURL(tailscaleURL)), remote: \(displayURL(proxyURL))"
++        )
+     }
+ 
+     // MARK: - Monitoring
+@@ -86,8 +132,9 @@
+ 
+         let monitor = NWPathMonitor()
+         self.monitor = monitor
+-        monitor.pathUpdateHandler = { [weak self] _ in
++        monitor.pathUpdateHandler = { [weak self] path in
+             Task { @MainActor [weak self] in
++                ServerLogStore.shared.info("Network changed: \(Self.pathSummary(path))")
+                 self?.scheduleReconnect()
+             }
+         }
+@@ -105,6 +152,7 @@
+         monitor?.cancel()
+         monitor = nil
+         isMonitoring = false
++        ServerLogStore.shared.debug("Stopped network path monitor")
+     }
+ 
+     private func scheduleReconnect() {
+@@ -140,64 +188,103 @@
+ 
+     private func performResolve() async {
+         let modeSnapshot      = connectionMode
+-        let localSnapshot     = localURL
+-        let tailscaleSnapshot = tailscaleURL
+-        let proxySnapshot     = proxyURL
++        let localSnapshot     = Self.sanitizedURL(localURL)
++        let tailscaleSnapshot = Self.sanitizedURL(tailscaleURL)
++        let proxySnapshot     = Self.sanitizedURL(proxyURL)
++
++        ServerLogStore.shared.info("Resolving server. Mode: \(modeSnapshot.displayName)")
+ 
+-        let url: String
+-        var verifiedReachable = false
++        let result: ConnectionProbeResult?
++        let selectedURL: String
+ 
+         switch modeSnapshot {
+         case .local:
+-            url = fallbackURL(from: localSnapshot, localFallback: localSnapshot)
++            selectedURL = localSnapshot
++            result = await probeConfiguredURL(selectedURL, missingMessage: "Home LAN URL is empty")
+         case .tailscale:
+-            url = fallbackURL(from: tailscaleSnapshot, localFallback: localSnapshot)
++            selectedURL = tailscaleSnapshot
++            result = await probeConfiguredURL(selectedURL, missingMessage: "Tailscale URL is empty")
+         case .proxy:
+-            url = fallbackURL(from: proxySnapshot, localFallback: localSnapshot)
++            selectedURL = proxySnapshot
++            result = await probeConfiguredURL(selectedURL, missingMessage: "Remote proxy URL is empty")
+         case .auto:
+-            if let winner = await fastestRespondingURL(
++            if let winner = await fastestRespondingProbe(
+                 local:     localSnapshot,
+                 tailscale: tailscaleSnapshot,
+                 proxy:     proxySnapshot
+             ) {
+-                url = winner
+-                verifiedReachable = true
++                selectedURL = winner.url
++                result = winner
+             } else {
+-                url = fallbackURL(from: localSnapshot, localFallback: localSnapshot)
++                selectedURL = firstConfiguredURL(local: localSnapshot, tailscale: tailscaleSnapshot, proxy: proxySnapshot)
++                result = lastProbeResult
+             }
+         }
+ 
+         guard !Task.isCancelled else { return }
+-        let reachable = verifiedReachable ? true : await testURL(url)
+-        guard !Task.isCancelled else { return }
+ 
+-        currentURL = url
+-        LyrionAPI.shared.updateBaseURL(url, persist: false)
+-        isConnected = reachable
++        currentURL = selectedURL
++        LyrionAPI.shared.updateBaseURL(selectedURL, persist: false)
++
++        if let result {
++            lastProbeResult = result
++            isConnected = result.isSuccess
++            lastConnectionMessage = result.summary
++            if result.isSuccess {
++                ServerLogStore.shared.info(result.summary)
++            } else {
++                ServerLogStore.shared.warn(result.summary)
++            }
++        } else {
++            isConnected = false
++            lastConnectionMessage = selectedURL.isEmpty ? "No server configured" : "No server responded"
++            ServerLogStore.shared.warn(lastConnectionMessage)
++        }
++    }
++
++    private func probeConfiguredURL(_ url: String, missingMessage: String) async -> ConnectionProbeResult? {
++        guard !url.isEmpty else {
++            isConnected = false
++            currentURL = ""
++            LyrionAPI.shared.updateBaseURL("", persist: false)
++            lastConnectionMessage = missingMessage
++            ServerLogStore.shared.warn(missingMessage)
++            return nil
++        }
++        return await Self.probeServer(url)
+     }
+ 
+-    private func fastestRespondingURL(
++    private func fastestRespondingProbe(
+         local: String? = nil,
+         tailscale: String? = nil,
+         proxy: String? = nil
+-    ) async -> String? {
++    ) async -> ConnectionProbeResult? {
+         let candidates = uniqueCandidateURLs(local: local, tailscale: tailscale, proxy: proxy)
+         guard !candidates.isEmpty else { return nil }
+ 
+-        return await withTaskGroup(of: String?.self) { group in
++        ServerLogStore.shared.debug("Auto candidates: \(candidates.map(displayURL).joined(separator: ", "))")
++
++        var lastFailure: ConnectionProbeResult?
++        let winner = await withTaskGroup(of: ConnectionProbeResult.self, returning: ConnectionProbeResult?.self) { group in
+             for url in candidates {
+-                group.addTask {
+-                    await Self.probeURL(url) ? url : nil
+-                }
++                group.addTask { await Self.probeServer(url) }
+             }
++
+             for await result in group {
+-                if let url = result {
++                if result.isSuccess {
+                     group.cancelAll()
+-                    return url
++                    return result
+                 }
++                lastFailure = result
+             }
+             return nil
+         }
++
++        if winner == nil, let lastFailure {
++            lastProbeResult = lastFailure
++            lastConnectionMessage = lastFailure.summary
++        }
++        return winner
+     }
+ 
+     nonisolated func testURL(_ url: String) async -> Bool {
+@@ -205,9 +292,41 @@
+     }
+ 
+     nonisolated static func probeURL(_ url: String) async -> Bool {
++        await probeServer(url).isSuccess
++    }
++
++    nonisolated static func probeServer(_ url: String, timeout: TimeInterval = 5) async -> ConnectionProbeResult {
++        let started = Date()
+         let sanitized = sanitizedURL(url)
+-        guard !sanitized.isEmpty,
+-              let requestURL = URL(string: "\(sanitized)/jsonrpc.js") else { return false }
++        let redacted = ServerLogStore.redactedURL(sanitized)
++
++        guard !sanitized.isEmpty else {
++            await ServerLogStore.shared.warn("Probe skipped: blank server URL")
++            return ConnectionProbeResult(
++                url: "",
++                endpoint: "",
++                startedAt: started,
++                duration: Date().timeIntervalSince(started),
++                statusCode: nil,
++                serverVersion: nil,
++                errorMessage: "Blank server URL"
++            )
++        }
++
++        guard let requestURL = URL(string: "\(sanitized)/jsonrpc.js") else {
++            await ServerLogStore.shared.error("Probe failed: invalid URL \(redacted)")
++            return ConnectionProbeResult(
++                url: sanitized,
++                endpoint: "\(sanitized)/jsonrpc.js",
++                startedAt: started,
++                duration: Date().timeIntervalSince(started),
++                statusCode: nil,
++                serverVersion: nil,
++                errorMessage: "Invalid URL"
++            )
++        }
++
++        await ServerLogStore.shared.debug("Probe start: \(ServerLogStore.redactedURL(requestURL.absoluteString))")
+ 
+         var request = URLRequest(url: requestURL)
+         request.httpMethod = "POST"
+@@ -218,15 +337,67 @@
+             "method": "slim.request",
+             "params": ["0", ["version", "?"]]
+         ])
+-        request.timeoutInterval = 3
++        request.timeoutInterval = timeout
++
++        let config = URLSessionConfiguration.ephemeral
++        config.timeoutIntervalForRequest = timeout
++        config.timeoutIntervalForResource = timeout
++        config.waitsForConnectivity = false
++        config.requestCachePolicy = .reloadIgnoringLocalCacheData
++        let session = URLSession(configuration: config)
++        defer { session.finishTasksAndInvalidate() }
+ 
+         do {
+-            let (_, response) = try await URLSession.shared.data(for: request)
+-            return (response as? HTTPURLResponse).map {
+-                (200..<300).contains($0.statusCode)
+-            } ?? false
++            let (data, response) = try await session.data(for: request)
++            let duration = Date().timeIntervalSince(started)
++            let http = response as? HTTPURLResponse
++            let statusCode = http?.statusCode
++
++            var serverVersion: String?
++            var errorMessage: String?
++            var receivedLyrionJSON = false
++
++            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
++                if let rpcError = json["error"] as? [String: Any] {
++                    let message = rpcError["message"] as? String ?? "JSON-RPC error"
++                    let code = rpcError["code"].map { " (RPC \($0))" } ?? ""
++                    errorMessage = message + code
++                }
++                if let result = json["result"] as? [String: Any] {
++                    receivedLyrionJSON = true
++                    serverVersion = (result["_version"] as? String) ?? (result["version"] as? String)
++                }
++            }
++
++            if let statusCode, !(200..<300).contains(statusCode) {
++                errorMessage = Self.httpStatusMessage(statusCode)
++            } else if !receivedLyrionJSON && errorMessage == nil {
++                errorMessage = "HTTP response was not Lyrion JSON-RPC"
++            }
++
++            let result = ConnectionProbeResult(
++                url: sanitized,
++                endpoint: requestURL.absoluteString,
++                startedAt: started,
++                duration: duration,
++                statusCode: statusCode,
++                serverVersion: serverVersion,
++                errorMessage: errorMessage
++            )
++            await logProbeResult(result)
++            return result
+         } catch {
+-            return false
++            let result = ConnectionProbeResult(
++                url: sanitized,
++                endpoint: requestURL.absoluteString,
++                startedAt: started,
++                duration: Date().timeIntervalSince(started),
++                statusCode: nil,
++                serverVersion: nil,
++                errorMessage: Self.describeNetworkError(error)
++            )
++            await logProbeResult(result)
++            return result
+         }
+     }
+ 
+@@ -242,6 +413,7 @@
+         inFlightResolve = nil
+         old?.cancel()
+ 
++        ServerLogStore.shared.info("Manual reconnect requested")
+         reconnectTask = Task { await resolveConnection() }
+     }
+ 
+@@ -258,33 +430,104 @@
+             .filter { !$0.isEmpty && seen.insert($0).inserted }
+     }
+ 
++    private func firstConfiguredURL(local: String, tailscale: String, proxy: String) -> String {
++        [local, tailscale, proxy].map(Self.sanitizedURL).first { !$0.isEmpty } ?? ""
++    }
++
+     private func resolvedURLForCurrentMode() -> String {
+         switch connectionMode {
+-        case .local:     return fallbackURL(from: localURL)
+-        case .tailscale: return fallbackURL(from: tailscaleURL)
+-        case .proxy:     return fallbackURL(from: proxyURL)
+-        case .auto:      return fallbackURL(from: localURL)
++        case .local:     return Self.sanitizedURL(localURL)
++        case .tailscale: return Self.sanitizedURL(tailscaleURL)
++        case .proxy:     return Self.sanitizedURL(proxyURL)
++        case .auto:      return firstConfiguredURL(local: localURL, tailscale: tailscaleURL, proxy: proxyURL)
+         }
+     }
+ 
+-    private func fallbackURL(from preferred: String, localFallback: String? = nil) -> String {
+-        let preferred = Self.sanitizedURL(preferred)
+-        if !preferred.isEmpty { return preferred }
+-        let local = Self.sanitizedURL(localFallback ?? localURL)
+-        if !local.isEmpty { return local }
+-        return "http://192.168.1.105:9000"
+-    }
+-
+     private nonisolated static func sanitizedURL(_ url: String) -> String {
+         var result = url.trimmingCharacters(in: .whitespacesAndNewlines)
+         guard !result.isEmpty else { return "" }
++
+         let lowercased = result.lowercased()
+         if !lowercased.hasPrefix("http://") && !lowercased.hasPrefix("https://") {
+             result = "http://" + result
+         }
++
+         while result.count > "https://".count && result.hasSuffix("/") {
+             result.removeLast()
+         }
++
++        if result.lowercased().hasSuffix("/jsonrpc.js") {
++            result.removeLast("/jsonrpc.js".count)
++            while result.count > "https://".count && result.hasSuffix("/") {
++                result.removeLast()
++            }
++        }
++
+         return result == "http://" || result == "https://" ? "" : result
+     }
++
++    private func displayURL(_ url: String) -> String {
++        let sanitized = Self.sanitizedURL(url)
++        return sanitized.isEmpty ? "not set" : ServerLogStore.redactedURL(sanitized)
++    }
++
++    private nonisolated static func pathSummary(_ path: NWPath) -> String {
++        let status: String
++        switch path.status {
++        case .satisfied: status = "online"
++        case .unsatisfied: status = "offline"
++        case .requiresConnection: status = "requires connection"
++        @unknown default: status = "unknown"
++        }
++
++        var parts = [status]
++        if path.usesInterfaceType(.wifi) { parts.append("Wi-Fi") }
++        if path.usesInterfaceType(.cellular) { parts.append("cellular") }
++        if path.usesInterfaceType(.wiredEthernet) { parts.append("ethernet") }
++        if path.isExpensive { parts.append("expensive") }
++        if path.isConstrained { parts.append("low-data") }
++        return parts.joined(separator: ", ")
++    }
++
++    private nonisolated static func httpStatusMessage(_ status: Int) -> String {
++        switch status {
++        case 401: return "HTTP 401 Unauthorized — check proxy authentication"
++        case 403: return "HTTP 403 Forbidden — proxy denied the request"
++        case 404: return "HTTP 404 Not Found — check the proxy path to /jsonrpc.js"
++        case 502: return "HTTP 502 Bad Gateway — proxy cannot reach Lyrion"
++        case 503: return "HTTP 503 Service Unavailable — upstream server is unavailable"
++        case 504: return "HTTP 504 Gateway Timeout — proxy timed out reaching Lyrion"
++        default:  return "HTTP \(status)"
++        }
++    }
++
++    private nonisolated static func describeNetworkError(_ error: Error) -> String {
++        guard let urlError = error as? URLError else { return error.localizedDescription }
++        switch urlError.code {
++        case .timedOut:
++            return "Timed out"
++        case .cannotFindHost, .dnsLookupFailed:
++            return "DNS failed — host not found"
++        case .cannotConnectToHost:
++            return "Cannot connect to host"
++        case .networkConnectionLost:
++            return "Network connection lost"
++        case .notConnectedToInternet:
++            return "No internet connection"
++        case .appTransportSecurityRequiresSecureConnection:
++            return "Blocked by App Transport Security"
++        case .secureConnectionFailed, .serverCertificateUntrusted, .serverCertificateHasBadDate, .serverCertificateNotYetValid, .serverCertificateHasUnknownRoot:
++            return "TLS/certificate failure"
++        default:
++            return urlError.localizedDescription
++        }
++    }
++
++    private nonisolated static func logProbeResult(_ result: ConnectionProbeResult) async {
++        if result.isSuccess {
++            await ServerLogStore.shared.info("Probe OK: \(result.summary)")
++        } else {
++            await ServerLogStore.shared.warn("Probe failed: \(result.summary)")
++        }
++    }
+ }
+diff -ruN -x FIXES.diff hyperion_original/Hyperion/HomeView.swift hyperion_work/Hyperion/HomeView.swift
+--- hyperion_original/Hyperion/HomeView.swift	2026-05-02 12:08:16.000000000 +0000
++++ hyperion_work/Hyperion/HomeView.swift	2026-05-02 12:13:16.645337239 +0000
+@@ -288,6 +288,12 @@
+                     .foregroundColor(.roonSecondary)
+                     .lineLimit(1)
+                     .truncationMode(.middle)
++                if !connection.lastConnectionMessage.isEmpty {
++                    Text(connection.lastConnectionMessage)
++                        .font(.roonBody(11))
++                        .foregroundColor(.roonTertiary)
++                        .lineLimit(2)
++                }
+             }
+             Spacer()
+             Button {
+diff -ruN -x FIXES.diff hyperion_original/Hyperion/LyrionAPI.swift hyperion_work/Hyperion/LyrionAPI.swift
+--- hyperion_original/Hyperion/LyrionAPI.swift	2026-05-02 12:08:16.000000000 +0000
++++ hyperion_work/Hyperion/LyrionAPI.swift	2026-05-02 12:12:26.199660476 +0000
+@@ -15,7 +15,7 @@
+ 
+     static let shared = LyrionAPI()
+ 
+-    private(set) var baseURL: String = "http://192.168.1.105:9000"
++    private(set) var baseURL: String = ""
+ 
+     private let session: URLSession = {
+         let config = URLSessionConfiguration.default
+@@ -39,7 +39,11 @@
+     // MARK: - URL helpers
+ 
+     func updateBaseURL(_ url: String, persist: Bool = false) {
+-        baseURL = sanitize(url)
++        let sanitized = sanitize(url)
++        if sanitized != baseURL {
++            ServerLogStore.shared.info("API base URL changed to \(sanitized.isEmpty ? "not set" : ServerLogStore.redactedURL(sanitized))")
++        }
++        baseURL = sanitized
+         if persist {
+             UserDefaults.standard.set(baseURL, forKey: "serverURL")
+         }
+@@ -57,6 +61,12 @@
+         while result.count > "https://".count && result.hasSuffix("/") {
+             result.removeLast()
+         }
++        if result.lowercased().hasSuffix("/jsonrpc.js") {
++            result.removeLast("/jsonrpc.js".count)
++            while result.count > "https://".count && result.hasSuffix("/") {
++                result.removeLast()
++            }
++        }
+         return result == "http://" || result == "https://" ? "" : result
+     }
+ 
+@@ -169,31 +179,59 @@
+         req.timeoutInterval = 10
+         req.httpBody = try JSONSerialization.data(withJSONObject: body)
+ 
+-        let (data, response) = try await session.data(for: req)
+-        try Task.checkCancellation()
+-
+-        guard let http = response as? HTTPURLResponse else {
+-            throw HyperionError.serverError(nil)
+-        }
+-        guard (200..<300).contains(http.statusCode) else {
+-            throw HyperionError.serverError(http.statusCode)
+-        }
+-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+-            throw HyperionError.parseError
++        let started = Date()
++        let requestSummary = Self.describeRPCParams(params)
++        ServerLogStore.shared.debug("RPC start: \(requestSummary) → \(ServerLogStore.redactedURL(url.absoluteString))")
++
++        do {
++            let (data, response) = try await session.data(for: req)
++            try Task.checkCancellation()
++
++            let duration = Date().timeIntervalSince(started)
++            guard let http = response as? HTTPURLResponse else {
++                ServerLogStore.shared.error("RPC failed: \(requestSummary) returned a non-HTTP response in \(Self.durationText(duration))")
++                throw HyperionError.serverError(nil)
++            }
++            guard (200..<300).contains(http.statusCode) else {
++                ServerLogStore.shared.error("RPC failed: \(requestSummary) HTTP \(http.statusCode) in \(Self.durationText(duration))")
++                throw HyperionError.serverError(http.statusCode)
++            }
++            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
++                ServerLogStore.shared.error("RPC failed: \(requestSummary) non-JSON response in \(Self.durationText(duration))")
++                throw HyperionError.parseError
++            }
++
++            // Surface JSON-RPC level errors rather than silently returning empty
++            // result dicts — these indicate real server-side issues.
++            if let rpcError = json["error"] as? [String: Any] {
++                let code    = JSON.int(rpcError["code"])
++                let message = rpcError["message"] as? String ?? "Lyrion server returned an error"
++                ServerLogStore.shared.error("RPC failed: \(requestSummary) \(message)\(code.map { " (RPC \($0))" } ?? "") in \(Self.durationText(duration))")
++                throw HyperionError.rpcError(message, code)
++            }
++
++            guard let result = json["result"] as? [String: Any] else {
++                ServerLogStore.shared.error("RPC failed: \(requestSummary) missing result in \(Self.durationText(duration))")
++                throw HyperionError.parseError
++            }
++
++            ServerLogStore.shared.debug("RPC OK: \(requestSummary) HTTP \(http.statusCode) in \(Self.durationText(duration))")
++            return result
++        } catch {
++            let duration = Date().timeIntervalSince(started)
++            if error is CancellationError { throw error }
++            ServerLogStore.shared.error("RPC error: \(requestSummary) \(error.localizedDescription) after \(Self.durationText(duration))")
++            throw error
+         }
++    }
+ 
+-        // Surface JSON-RPC level errors rather than silently returning empty
+-        // result dicts — these indicate real server-side issues.
+-        if let rpcError = json["error"] as? [String: Any] {
+-            let code    = JSON.int(rpcError["code"])
+-            let message = rpcError["message"] as? String ?? "Lyrion server returned an error"
+-            throw HyperionError.rpcError(message, code)
+-        }
+ 
+-        guard let result = json["result"] as? [String: Any] else {
+-            throw HyperionError.parseError
+-        }
+-        return result
++    private static func describeRPCParams(_ params: [Any]) -> String {
++        params.prefix(5).map { String(describing: $0) }.joined(separator: " ")
++    }
++
++    private static func durationText(_ duration: TimeInterval) -> String {
++        String(format: "%.2fs", duration)
+     }
+ 
+     // MARK: - Library queries
+diff -ruN -x FIXES.diff hyperion_original/Hyperion/Models.swift hyperion_work/Hyperion/Models.swift
+--- hyperion_original/Hyperion/Models.swift	2026-05-02 12:08:16.000000000 +0000
++++ hyperion_work/Hyperion/Models.swift	2026-05-02 12:11:17.802659942 +0000
+@@ -144,4 +144,13 @@
+     case local     = "Local"
+     case tailscale = "Tailscale"
+     case proxy     = "Proxy (Nginx)"
++
++    var displayName: String {
++        switch self {
++        case .auto:      return "Auto"
++        case .local:     return "Home LAN"
++        case .tailscale: return "Tailscale"
++        case .proxy:     return "Remote Proxy"
++        }
++    }
+ }
+diff -ruN -x FIXES.diff hyperion_original/Hyperion/README.md hyperion_work/Hyperion/README.md
+--- hyperion_original/Hyperion/README.md	2026-05-02 12:08:16.000000000 +0000
++++ hyperion_work/Hyperion/README.md	2026-05-02 12:15:58.594133054 +0000
+@@ -1,59 +1,49 @@
+-# Hyperion App Store upload fix v2
++# Hyperion
+ 
+-Your repeated `altool` failure means the IPA being uploaded still has a final bundled `Info.plist` without:
++Hyperion is a dark, Roon-inspired iOS client for Lyrion Music Server. It supports library browsing, composer/work views, queue management, direct AVPlayer streaming, CarPlay metadata, and configurable local/Tailscale/reverse-proxy server access.
+ 
+-- `UISupportedInterfaceOrientations`
+-- `UISupportedInterfaceOrientations~ipad`
+-- `UILaunchStoryboardName`
+-- `LaunchScreen.storyboardc`
++## Connection setup
+ 
+-The source `Info.plist` is already correct, so this must be patched in the built archive/IPA path used by CI.
++Open **Settings** in the app and configure one or more addresses:
+ 
+-## Correct CI placement
++- **Home**: your LAN LMS address, for example `http://192.168.1.25:9000`.
++- **Tailscale**: your tailnet LMS address, for example `http://100.x.y.z:9000`.
++- **Remote**: your HTTPS reverse proxy, for example `https://music.example.com`.
+ 
+-Run the fixer **after archive** and **before export/upload**:
++Modes:
+ 
+-```bash
+-unzip hyperion_appstore_upload_fix_v2.zip
+-chmod +x hyperion_appstore_upload_fix_v2/*.sh
++- **Auto** probes every configured address and uses the first real Lyrion JSON-RPC endpoint that answers.
++- **Home LAN**, **Tailscale**, and **Remote Proxy** use only that configured URL. They no longer silently fall back to a hard-coded home address.
+ 
+-# 1. Build archive as you already do.
+-xcodebuild archive \
+-  -scheme Hyperion \
+-  -archivePath "$PWD/build/Hyperion.xcarchive" \
+-  -configuration Release
+-
+-# 2. Patch the actual archive that will be exported.
+-hyperion_appstore_upload_fix_v2/fix_hyperion_appstore_bundle.sh "$PWD/build/Hyperion.xcarchive"
+-
+-# 3. Export a fresh IPA from the patched archive.
+-xcodebuild -exportArchive \
+-  -archivePath "$PWD/build/Hyperion.xcarchive" \
+-  -exportPath "$PWD/build/export" \
+-  -exportOptionsPlist ExportOptions.plist
++The app normalizes pasted URLs, so both `https://music.example.com` and `https://music.example.com/jsonrpc.js` are accepted.
+ 
+-# 4. Verify the exact IPA before altool.
+-hyperion_appstore_upload_fix_v2/verify_ipa_before_upload.sh "$PWD/build/export/Hyperion.ipa"
++## Diagnostics
+ 
+-# 5. Upload only after verification passes.
+-xcrun altool --upload-app -f "$PWD/build/export/Hyperion.ipa" ...
+-```
++Settings includes **Server Diagnostics** with the last probe result and recent server/RPC logs. The diagnostics show:
+ 
+-## If your pipeline already has an IPA and cannot re-export
++- URL selected by the resolver
++- `/jsonrpc.js` probe success/failure
++- HTTP status codes
++- DNS, TLS, timeout, and proxy/upstream failures
++- JSON-RPC errors from LMS
++- RPC duration for app requests
+ 
+-Patching an IPA changes the signed bundle, so it must be re-signed:
++Tap **Copy Logs** to copy the in-app ring buffer. The same messages are emitted through `os.Logger` under subsystem `com.sarpedon.hyperion`, category `Server`.
+ 
+-```bash
+-hyperion_appstore_upload_fix_v2/fix_hyperion_appstore_bundle.sh \
+-  "$PWD/build/export/Hyperion.ipa" \
+-  --resign \
+-  --identity "Apple Distribution: YOUR NAME (TEAMID)" \
+-  --profile "$PWD/Hyperion_AppStore.mobileprovision" \
+-  --out "$PWD/build/export/Hyperion-fixed.ipa"
++## Remote proxy
++
++See [`REMOTE_ACCESS.md`](REMOTE_ACCESS.md) and [`nginx-hyperion-remote.conf`](nginx-hyperion-remote.conf) for an Nginx reverse-proxy example with improved access/error logging.
+ 
+-hyperion_appstore_upload_fix_v2/verify_ipa_before_upload.sh "$PWD/build/export/Hyperion-fixed.ipa"
++## Build notes
++
++The project is set up for XcodeGen via `project.yml` and targets iOS 17+. From the directory that contains the `Hyperion/` folder, run:
++
++```bash
++xcodegen generate --spec Hyperion/project.yml
++open Hyperion.xcodeproj
+ ```
+ 
+-## Why the first fix did not work
++App Store archive helper scripts are still included:
+ 
+-The first package patched files, but your `altool` log proves the uploaded IPA was still built/exported from a bundle missing those keys. This v2 package verifies the actual IPA before upload so the CI stops before App Store Connect rejects it again.
++- `fix_hyperion_appstore_bundle.sh`
++- `verify_ipa_before_upload.sh`
+diff -ruN -x FIXES.diff hyperion_original/Hyperion/REMOTE_ACCESS.md hyperion_work/Hyperion/REMOTE_ACCESS.md
+--- hyperion_original/Hyperion/REMOTE_ACCESS.md	1970-01-01 00:00:00.000000000 +0000
++++ hyperion_work/Hyperion/REMOTE_ACCESS.md	2026-05-02 12:13:56.011895502 +0000
+@@ -0,0 +1,95 @@
++# Hyperion remote access and server logging
++
++Hyperion can now connect from outside your home network through either:
++
++1. **Tailscale** — set `Tailscale` to `http://100.x.y.z:9000` and choose `Tailscale` or `Auto`.
++2. **HTTPS reverse proxy** — set `Remote` to `https://your-domain.example` and choose `Remote Proxy` or `Auto`.
++
++The app accepts either the base URL or the full JSON-RPC endpoint. These are equivalent:
++
++```text
++https://your-domain.example
++https://your-domain.example/jsonrpc.js
++```
++
++## Recommended Nginx reverse proxy
++
++This example exposes Lyrion Music Server on `https://music.example.com`, passes JSON-RPC and music streaming paths through to the LMS host on your LAN, and writes much better logs for debugging remote failures.
++
++```nginx
++log_format hyperion '$remote_addr - $remote_user [$time_local] '
++                    '"$request" $status $body_bytes_sent '
++                    'host="$host" ref="$http_referer" ua="$http_user_agent" '
++                    'xff="$http_x_forwarded_for" '
++                    'rt=$request_time urt=$upstream_response_time '
++                    'uaddr="$upstream_addr" ustatus="$upstream_status"';
++
++upstream lyrion_lms {
++    server 192.168.1.105:9000;
++    keepalive 16;
++}
++
++server {
++    listen 443 ssl http2;
++    server_name music.example.com;
++
++    access_log /var/log/nginx/hyperion_access.log hyperion;
++    error_log  /var/log/nginx/hyperion_error.log warn;
++
++    # Use your existing certificate paths here.
++    ssl_certificate     /etc/letsencrypt/live/music.example.com/fullchain.pem;
++    ssl_certificate_key /etc/letsencrypt/live/music.example.com/privkey.pem;
++
++    # Optional but strongly recommended if this is public internet-facing.
++    # auth_basic "Hyperion";
++    # auth_basic_user_file /etc/nginx/.htpasswd-hyperion;
++
++    proxy_http_version 1.1;
++    proxy_set_header Host $host;
++    proxy_set_header X-Real-IP $remote_addr;
++    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
++    proxy_set_header X-Forwarded-Proto $scheme;
++    proxy_set_header Connection "";
++
++    # JSON-RPC API used by library/search/playback commands.
++    location = /jsonrpc.js {
++        proxy_pass http://lyrion_lms/jsonrpc.js;
++        proxy_read_timeout 60s;
++        proxy_send_timeout 60s;
++    }
++
++    # Artwork and audio streams used by AVPlayer.
++    location /music/ {
++        proxy_pass http://lyrion_lms/music/;
++        proxy_buffering off;
++        proxy_request_buffering off;
++        proxy_read_timeout 1h;
++        proxy_send_timeout 1h;
++    }
++
++    # Optional: expose the LMS web UI remotely too.
++    location / {
++        proxy_pass http://lyrion_lms/;
++        proxy_read_timeout 60s;
++        proxy_send_timeout 60s;
++    }
++}
++```
++
++After editing Nginx:
++
++```bash
++sudo nginx -t
++sudo systemctl reload nginx
++sudo tail -f /var/log/nginx/hyperion_access.log /var/log/nginx/hyperion_error.log
++```
++
++## What to check when remote fails
++
++- **HTTP 404** in Hyperion diagnostics: the proxy is not forwarding `/jsonrpc.js` to LMS.
++- **HTTP 502/504**: Nginx cannot reach your LMS host/port from the server.
++- **HTTP 401/403**: proxy authentication or allow/deny rules are blocking the app.
++- **TLS/certificate failure**: use a trusted public certificate for the remote domain.
++- **JSON-RPC response error**: LMS received the request but rejected the command; check LMS logs too.
++
++In Hyperion, open **Settings → Server Diagnostics → Copy Logs** and compare those entries with `hyperion_access.log` timestamps.
+diff -ruN -x FIXES.diff hyperion_original/Hyperion/SearchAndSettingsView.swift hyperion_work/Hyperion/SearchAndSettingsView.swift
+--- hyperion_original/Hyperion/SearchAndSettingsView.swift	2026-05-02 12:08:16.000000000 +0000
++++ hyperion_work/Hyperion/SearchAndSettingsView.swift	2026-05-02 12:13:07.587544898 +0000
+@@ -1,4 +1,5 @@
+ import SwiftUI
++import UIKit
+ 
+ // MARK: - Search
+ 
+@@ -387,6 +388,7 @@
+ struct SettingsView: View {
+ 
+     @ObservedObject private var connection = ConnectionManager.shared
++    @ObservedObject private var serverLogs = ServerLogStore.shared
+     @Environment(\.dismiss) private var dismiss
+ 
+     @State private var localURL: String     = ""
+@@ -395,6 +397,8 @@
+     @State private var selectedMode: ConnectionMode   = .auto
+     @State private var isTestingConnection: Bool      = false
+     @State private var connectionTestResult: Bool?    = nil
++    @State private var connectionTestMessage: String? = nil
++    @State private var logsCopied: Bool = false
+     @State private var connectionTestTask: Task<Void, Never>? = nil
+ 
+     var body: some View {
+@@ -403,7 +407,7 @@
+                 Section {
+                     Picker("Mode", selection: $selectedMode) {
+                         ForEach(ConnectionMode.allCases, id: \.self) { mode in
+-                            Text(mode.rawValue).tag(mode)
++                            Text(mode.displayName).tag(mode)
+                         }
+                     }
+                     .pickerStyle(.menu)
+@@ -412,11 +416,11 @@
+                 .listRowBackground(Color.roonSurface)
+ 
+                 Section {
+-                    SettingsTextField(label: "Local",     placeholder: "http://192.168.1.x:9000",   text: $localURL)
++                    SettingsTextField(label: "Home",      placeholder: "http://192.168.1.x:9000",   text: $localURL)
+                     SettingsTextField(label: "Tailscale", placeholder: "http://100.x.x.x:9000",     text: $tailscaleURL)
+-                    SettingsTextField(label: "Proxy",     placeholder: "https://lyrion.domain.com", text: $proxyURL)
++                    SettingsTextField(label: "Remote",    placeholder: "https://lyrion.domain.com", text: $proxyURL)
+                 } header: { Text("SERVER ADDRESSES") } footer: {
+-                    Text("Auto mode races all configured URLs and connects to whichever responds first.")
++                    Text("For remote use, enter your public HTTPS reverse-proxy URL or Tailscale URL. You can paste either the base URL or the full /jsonrpc.js endpoint; Hyperion normalizes it automatically.")
+                         .font(.roonBody(12)).foregroundColor(.roonTertiary)
+                 }
+                 .listRowBackground(Color.roonSurface)
+@@ -435,6 +439,12 @@
+                         }
+                     }
+                     .disabled(isTestingConnection)
++                    if let connectionTestMessage {
++                        Text(connectionTestMessage)
++                            .font(.roonBody(12))
++                            .foregroundColor(.roonSecondary)
++                            .fixedSize(horizontal: false, vertical: true)
++                    }
+                 }
+                 .listRowBackground(Color.roonSurface)
+ 
+@@ -450,14 +460,54 @@
+                     HStack {
+                         Text("Active URL").foregroundColor(.roonSecondary)
+                         Spacer()
+-                        Text(connection.currentURL)
++                        Text(connection.currentURL.isEmpty ? "Not set" : connection.currentURL)
+                             .foregroundColor(.roonPrimary).lineLimit(1)
+                             .font(.roonBody(13)).truncationMode(.middle)
+                     }
++                    VStack(alignment: .leading, spacing: 4) {
++                        Text("Last check").foregroundColor(.roonSecondary)
++                        Text(connection.lastConnectionMessage)
++                            .font(.roonBody(12))
++                            .foregroundColor(.roonPrimary)
++                            .fixedSize(horizontal: false, vertical: true)
++                    }
+                 } header: { Text("STATUS") }
+                 .listRowBackground(Color.roonSurface)
+ 
+                 Section {
++                    if serverLogs.entries.isEmpty {
++                        Text("No server diagnostics yet")
++                            .foregroundColor(.roonSecondary)
++                    } else {
++                        ForEach(Array(serverLogs.entries.suffix(10))) { entry in
++                            VStack(alignment: .leading, spacing: 2) {
++                                Text(entry.displayLine)
++                                    .font(.system(size: 11, design: .monospaced))
++                                    .foregroundColor(logColor(entry.level))
++                                    .fixedSize(horizontal: false, vertical: true)
++                            }
++                        }
++                    }
++                    HStack {
++                        Button(logsCopied ? "Copied" : "Copy Logs") {
++                            UIPasteboard.general.string = serverLogs.exportText
++                            logsCopied = true
++                        }
++                        .foregroundColor(.roonAccent)
++                        Spacer()
++                        Button("Clear") {
++                            serverLogs.clear()
++                            logsCopied = false
++                        }
++                        .foregroundColor(.roonSecondary)
++                    }
++                } header: { Text("SERVER DIAGNOSTICS") } footer: {
++                    Text("These entries also go to the system Console through os.Logger and include URL, HTTP status, RPC failures, timeout, TLS, DNS, and proxy/upstream errors.")
++                        .font(.roonBody(12)).foregroundColor(.roonTertiary)
++                }
++                .listRowBackground(Color.roonSurface)
++
++                Section {
+                     HStack {
+                         Text("Version").foregroundColor(.roonSecondary)
+                         Spacer()
+@@ -518,32 +568,61 @@
+         guard !isTestingConnection else { return }
+         isTestingConnection  = true
+         connectionTestResult = nil
++        connectionTestMessage = nil
++        logsCopied = false
++
+         let mode  = selectedMode
+         let local = localURL.trimmingCharacters(in: .whitespacesAndNewlines)
+         let ts    = tailscaleURL.trimmingCharacters(in: .whitespacesAndNewlines)
+         let prox  = proxyURL.trimmingCharacters(in: .whitespacesAndNewlines)
++
+         connectionTestTask?.cancel()
+         connectionTestTask = Task { @MainActor in
+-            let result: Bool
++            let probe: ConnectionProbeResult
+             switch mode {
+-            case .local:     result = !local.isEmpty ? await ConnectionManager.probeURL(local) : false
+-            case .tailscale: result = !ts.isEmpty    ? await ConnectionManager.probeURL(ts)   : false
+-            case .proxy:     result = !prox.isEmpty  ? await ConnectionManager.probeURL(prox) : false
++            case .local:
++                probe = await ConnectionManager.probeServer(local)
++            case .tailscale:
++                probe = await ConnectionManager.probeServer(ts)
++            case .proxy:
++                probe = await ConnectionManager.probeServer(prox)
+             case .auto:
+-                let candidates = [local, ts, prox].filter { !$0.isEmpty }
+-                if candidates.isEmpty { result = false } else {
+-                    result = await withTaskGroup(of: Bool.self) { group in
+-                        for url in candidates { group.addTask { await ConnectionManager.probeURL(url) } }
+-                        for await ok in group { if ok { group.cancelAll(); return true } }
+-                        return false
++                let candidates = [local, ts, prox].filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
++                if candidates.isEmpty {
++                    probe = await ConnectionManager.probeServer("")
++                } else {
++                    probe = await withTaskGroup(of: ConnectionProbeResult.self) { group in
++                        for url in candidates {
++                            group.addTask { await ConnectionManager.probeServer(url) }
++                        }
++                        var lastFailure: ConnectionProbeResult?
++                        for await result in group {
++                            if result.isSuccess {
++                                group.cancelAll()
++                                return result
++                            }
++                            lastFailure = result
++                        }
++                        return lastFailure ?? await ConnectionManager.probeServer("")
+                     }
+                 }
+             }
++
+             guard !Task.isCancelled else { return }
+-            connectionTestResult = result
++            connectionTestResult = probe.isSuccess
++            connectionTestMessage = probe.summary
+             isTestingConnection  = false
+         }
+     }
++
++    private func logColor(_ level: ServerLogLevel) -> Color {
++        switch level {
++        case .debug: return .roonTertiary
++        case .info:  return .roonPrimary
++        case .warn:  return .orange
++        case .error: return .red
++        }
++    }
+ }
+ 
+ struct SettingsTextField: View {
+diff -ruN -x FIXES.diff hyperion_original/Hyperion/ServerLogStore.swift hyperion_work/Hyperion/ServerLogStore.swift
+--- hyperion_original/Hyperion/ServerLogStore.swift	1970-01-01 00:00:00.000000000 +0000
++++ hyperion_work/Hyperion/ServerLogStore.swift	2026-05-02 12:11:14.680100668 +0000
+@@ -0,0 +1,79 @@
++import Foundation
++import Combine
++import os
++
++struct ServerLogEntry: Identifiable, Equatable {
++    let id = UUID()
++    let timestamp: Date
++    let level: ServerLogLevel
++    let message: String
++
++    var displayTime: String {
++        let formatter = DateFormatter()
++        formatter.dateFormat = "HH:mm:ss"
++        return formatter.string(from: timestamp)
++    }
++
++    var displayLine: String {
++        "[\(displayTime)] \(level.rawValue): \(message)"
++    }
++}
++
++enum ServerLogLevel: String, Equatable {
++    case debug = "DEBUG"
++    case info  = "INFO"
++    case warn  = "WARN"
++    case error = "ERROR"
++}
++
++@MainActor
++final class ServerLogStore: ObservableObject {
++    static let shared = ServerLogStore()
++
++    @Published private(set) var entries: [ServerLogEntry] = []
++
++    private let maxEntries = 250
++    private let logger = Logger(subsystem: "com.sarpedon.hyperion", category: "Server")
++
++    private init() {}
++
++    func debug(_ message: String) { append(level: .debug, message: message) }
++    func info(_ message: String)  { append(level: .info,  message: message) }
++    func warn(_ message: String)  { append(level: .warn,  message: message) }
++    func error(_ message: String) { append(level: .error, message: message) }
++
++    func clear() {
++        entries.removeAll()
++        logger.info("Server diagnostics cleared")
++    }
++
++    var exportText: String {
++        entries.map(\.displayLine).joined(separator: "\n")
++    }
++
++    nonisolated static func redactedURL(_ raw: String) -> String {
++        guard var components = URLComponents(string: raw) else { return raw }
++        components.user = nil
++        components.password = nil
++        return components.string ?? raw
++    }
++
++    private func append(level: ServerLogLevel, message: String) {
++        let entry = ServerLogEntry(timestamp: Date(), level: level, message: message)
++        entries.append(entry)
++        if entries.count > maxEntries {
++            entries.removeFirst(entries.count - maxEntries)
++        }
++
++        switch level {
++        case .debug:
++            logger.debug("\(message, privacy: .public)")
++        case .info:
++            logger.info("\(message, privacy: .public)")
++        case .warn:
++            logger.warning("\(message, privacy: .public)")
++        case .error:
++            logger.error("\(message, privacy: .public)")
++        }
++    }
++}
+diff -ruN -x FIXES.diff hyperion_original/Hyperion/nginx-hyperion-remote.conf hyperion_work/Hyperion/nginx-hyperion-remote.conf
+--- hyperion_original/Hyperion/nginx-hyperion-remote.conf	1970-01-01 00:00:00.000000000 +0000
++++ hyperion_work/Hyperion/nginx-hyperion-remote.conf	2026-05-02 12:13:56.036347343 +0000
+@@ -0,0 +1,49 @@
++log_format hyperion '$remote_addr - $remote_user [$time_local] '
++                    '"$request" $status $body_bytes_sent '
++                    'host="$host" ua="$http_user_agent" '
++                    'xff="$http_x_forwarded_for" '
++                    'rt=$request_time urt=$upstream_response_time '
++                    'uaddr="$upstream_addr" ustatus="$upstream_status"';
++
++upstream lyrion_lms {
++    server 192.168.1.105:9000;
++    keepalive 16;
++}
++
++server {
++    listen 443 ssl http2;
++    server_name music.example.com;
++
++    access_log /var/log/nginx/hyperion_access.log hyperion;
++    error_log  /var/log/nginx/hyperion_error.log warn;
++
++    ssl_certificate     /etc/letsencrypt/live/music.example.com/fullchain.pem;
++    ssl_certificate_key /etc/letsencrypt/live/music.example.com/privkey.pem;
++
++    proxy_http_version 1.1;
++    proxy_set_header Host $host;
++    proxy_set_header X-Real-IP $remote_addr;
++    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
++    proxy_set_header X-Forwarded-Proto $scheme;
++    proxy_set_header Connection "";
++
++    location = /jsonrpc.js {
++        proxy_pass http://lyrion_lms/jsonrpc.js;
++        proxy_read_timeout 60s;
++        proxy_send_timeout 60s;
++    }
++
++    location /music/ {
++        proxy_pass http://lyrion_lms/music/;
++        proxy_buffering off;
++        proxy_request_buffering off;
++        proxy_read_timeout 1h;
++        proxy_send_timeout 1h;
++    }
++
++    location / {
++        proxy_pass http://lyrion_lms/;
++        proxy_read_timeout 60s;
++        proxy_send_timeout 60s;
++    }
++}
