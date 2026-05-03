@@ -125,25 +125,38 @@ struct NowPlayingView: View {
 
     // -------------------------------------------------------------------------
     // Quality pill — resolved in priority order:
-    //   1. Live LMS samplerate/samplesize/type (most accurate)
+    //   1. Live LMS data via lmsAudioQuality on PlayerViewModel (add per patch)
     //   2. File-extension fallback from track URL
     //   3. Generic "Signal" placeholder (so pill is always visible)
+    //
+    // NOTE: Once you apply PlayerViewModel_PATCH.md and add @Published var
+    // lmsAudioQuality: LMSAudioQuality? = nil to PlayerViewModel, replace this
+    // computed property body with:
+    //   if let lmsQ = player.lmsAudioQuality { ... }
     // -------------------------------------------------------------------------
-    private var qualityPillInfo: (label: String, dotColor: Color, detail: String) {
-        // 1. LMS live data
-        if let lmsQ = player.lmsAudioQuality {
-            let t = lmsQ.tier
-            return (t.label, t.dotColor, lmsQ.detailSubtitle)
+    private var qualityPillInfo: (label: String, dotColor: Color, isLosslessOrBetter: Bool) {
+        // File-extension fallback — sourceFormat is set by PlayerViewModel when
+        // playback starts and reflects the actual codec string (e.g. "FLAC").
+        let srcFmt = player.sourceFormat.uppercased()
+        let losslessFormats: Set<String> = ["FLAC", "WAV", "ALAC", "AIFF", "APE", "WV"]
+        if !srcFmt.isEmpty && srcFmt != "UNKNOWN" {
+            let isLossless = losslessFormats.contains(srcFmt)
+            let color: Color = isLossless
+                ? Color(red: 0.20, green: 0.85, blue: 0.40) // green
+                : Color(red: 0.95, green: 0.75, blue: 0.20) // amber
+            let label = isLossless ? "Lossless" : "High Quality"
+            return (label, color, isLossless)
         }
-        // 2. File-extension fallback
+        // URL-extension fallback
         if let fmt = player.currentTrack.flatMap({ AudioFormat.from(track: $0) }) {
             let color = fmt.isLossless
                 ? Color(red: 0.20, green: 0.85, blue: 0.40)
                 : Color(red: 0.95, green: 0.75, blue: 0.20)
-            return (fmt.label, color, fmt.label)
+            let label = fmt.isLossless ? "Lossless" : "High Quality"
+            return (label, color, fmt.isLossless)
         }
-        // 3. Placeholder — always show the pill so the tap target is present
-        return ("Signal", Color.roonTertiary, "Unknown format")
+        // Placeholder — pill is always rendered so the tap target exists
+        return ("Signal", Color.roonTertiary, false)
     }
 
     private var signalPath: AudioSignalPath {
@@ -334,7 +347,7 @@ struct NowPlayingView: View {
                             .fill(pill.dotColor)
                             .frame(width: 9, height: 9)
                         // Pulsing ring for lossless/hi-res
-                        if player.lmsAudioQuality?.tier != .highQuality {
+                        if pill.isLosslessOrBetter {
                             Circle()
                                 .stroke(pill.dotColor.opacity(0.35), lineWidth: 1.5)
                                 .frame(width: 9, height: 9)
