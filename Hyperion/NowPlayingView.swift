@@ -213,52 +213,67 @@ struct NowPlayingView: View {
                 // Artwork: 52% of usable height, max = screen width − 48 pt
                 let artworkSide = min(screenW - 48, usableH * 0.52)
 
-                ScrollView(showsIndicators: false) {
-                    VStack(spacing: 0) {
+                VStack(spacing: 0) {
+                    // ── Top bar (outside ScrollView — always visible, never scrolls)
+                    topBar
+                        .padding(.top, safeTop + 6)
+                        .padding(.bottom, 4)
 
-                        // ── Top bar ──────────────────────────────────────────
-                        topBar
-                            .padding(.top, safeTop + 6)
-                            .padding(.bottom, 4)
+                    // ── Scrollable body ──────────────────────────────────────
+                    // BUG FIX: ScrollView must NOT wrap the top bar.
+                    // If everything is inside ScrollView, SwiftUI gives the
+                    // ScrollView priority on vertical drags, which swallows the
+                    // swipe-down-to-dismiss gesture even with .gesture() on the
+                    // outer ZStack. Keeping the top bar outside the ScrollView
+                    // means the user can always swipe down from the top area.
+                    // .simultaneousGesture on the ScrollView itself lets the
+                    // dismiss gesture fire in parallel with scroll physics when
+                    // the user drags from within the content area.
+                    ScrollView(showsIndicators: false) {
+                        VStack(spacing: 0) {
 
-                        // ── Album art ────────────────────────────────────────
-                        artworkSection(side: artworkSide)
-                            .padding(.top, 12)
-                            .padding(.bottom, 4)
+                            // ── Album art ─────────────────────────────────────
+                            artworkSection(side: artworkSide)
+                                .padding(.top, 12)
+                                .padding(.bottom, 4)
 
-                        // ── Queue position (movement X of Y) ─────────────────
-                        if player.queue.count > 1 {
-                            queuePositionLabel
-                                .padding(.top, 10)
-                                .padding(.bottom, 2)
+                            // ── Queue position (movement X of Y) ──────────────
+                            if player.queue.count > 1 {
+                                queuePositionLabel
+                                    .padding(.top, 10)
+                                    .padding(.bottom, 2)
+                            }
+
+                            // ── Track metadata ────────────────────────────────
+                            trackInfo
+                                .padding(.horizontal, 28)
+                                .padding(.top, 14)
+                                .padding(.bottom, 8)
+
+                            // ── Progress bar + timestamps ──────────────────────
+                            progressSection
+                                .padding(.horizontal, 28)
+                                .padding(.top, 8)
+                                .padding(.bottom, 8)
+
+                            // ── Transport controls ─────────────────────────────
+                            transportControls
+                                .padding(.horizontal, 20)
+                                .padding(.top, 12)
+                                .padding(.bottom, 8)
+
+                            // ── Bottom toolbar ─────────────────────────────────
+                            bottomToolbar
+                                .padding(.horizontal, 24)
+                                .padding(.top, 8)
+                                .padding(.bottom, safeBot + 12)
                         }
-
-                        // ── Track metadata ───────────────────────────────────
-                        trackInfo
-                            .padding(.horizontal, 28)
-                            .padding(.top, 14)
-                            .padding(.bottom, 8)
-
-                        // ── Progress bar + timestamps ─────────────────────────
-                        progressSection
-                            .padding(.horizontal, 28)
-                            .padding(.top, 8)
-                            .padding(.bottom, 8)
-
-                        // ── Transport controls ────────────────────────────────
-                        transportControls
-                            .padding(.horizontal, 20)
-                            .padding(.top, 12)
-                            .padding(.bottom, 8)
-
-                        // ── Bottom toolbar ────────────────────────────────────
-                        bottomToolbar
-                            .padding(.horizontal, 24)
-                            .padding(.top, 8)
-                            .padding(.bottom, safeBot + 12)
+                        // Explicit width so multiline text wraps inside ScrollView
+                        .frame(width: screenW)
                     }
-                    // ScrollView needs an explicit width so text wraps correctly
-                    .frame(width: screenW)
+                    // simultaneousGesture fires alongside scroll so swipe-down
+                    // dismiss works even when dragging within the content area.
+                    .simultaneousGesture(swipeDownToDismissGesture)
                 }
             }
             .offset(y: dragOffset)
