@@ -79,12 +79,21 @@ struct SearchView: View {
         isSearching = true
         searchTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 300_000_000)
-            guard !Task.isCancelled, searchSequence == sequence else { return }
+            // BUG FIX: always reset isSearching when exiting early. Previously the
+            // guard returned without resetting the flag, leaving the spinner visible
+            // after the user cleared the search field during the 300 ms debounce window.
+            guard !Task.isCancelled, searchSequence == sequence else {
+                isSearching = false
+                return
+            }
             // Clear stale results only after the debounce fires, so the
             // transition is: spinner → results, not: results → blank → results.
             searchResults = ([], [], [])
             let results = await library.search(query: trimmed)
-            guard !Task.isCancelled, searchSequence == sequence else { return }
+            guard !Task.isCancelled, searchSequence == sequence else {
+                isSearching = false
+                return
+            }
             searchResults = results
             isSearching   = false
         }

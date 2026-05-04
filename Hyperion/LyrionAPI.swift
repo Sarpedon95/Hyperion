@@ -171,7 +171,10 @@ final class LyrionAPI {
         let trimmed = term.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return ([], []) }
 
-        let result = try await request(params: ["search", 0, count, "term:\(trimmed)"])
+        // LMS "search" is a server-level (library) command. Using playerID ""
+        // targets the server rather than a specific player, which is correct for
+        // library searches. playerID "0" also works but is semantically wrong.
+        let result = try await request(playerID: "", params: ["search", 0, count, "term:\(trimmed)"])
         let albumHints = Self.parseSearchAlbums(result)
         let hydrated = try await hydrateAlbums(albumHints, desiredCount: count)
         return (works: [], albums: hydrated)
@@ -231,6 +234,9 @@ final class LyrionAPI {
             }
         }
 
+        // Unreachable: the loop always returns on success or throws on failure.
+        // The compiler requires an expression here because the for-in loop's
+        // exhaustiveness is not proven at compile time.
         throw lastError ?? HyperionError.serverError(nil)
     }
 

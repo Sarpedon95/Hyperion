@@ -1701,6 +1701,13 @@ final class PlayerViewModel: ObservableObject {
                 }
                 // Unexpected pause with no active background transition
                 // (buffer starvation, interruption, etc.). Sync state.
+                // BUG FIX: if the item has .failed status, the item-failure KVO
+                // handler will drive retryNextPlaybackURL — do not also mark isPaused
+                // here or the UI gets stuck showing "paused" instead of retrying.
+                if playerItem?.status == .failed {
+                    ServerLogStore.shared.debug("AVPlayer paused due to item failure — retry handled by KVO observer")
+                    return
+                }
                 ServerLogStore.shared.warn("AVPlayer paused unexpectedly, syncing state")
                 endBackgroundPlaybackTask()
                 isPlaying = false

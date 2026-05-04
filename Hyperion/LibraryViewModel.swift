@@ -84,24 +84,30 @@ final class LibraryViewModel: ObservableObject {
 
     // MARK: - Composers
 
+    /// In-flight task for composer loading — deduplicates concurrent callers.
+    private var composersLoadTask: Task<[Composer], Error>?
+
     func loadComposers() async {
         if let cached = composerCache {
             composers = cached
             return
         }
 
-        // BUGFIX: guard concurrent callers — both ContentView and HomeView can
-        // trigger loadComposers on appear; without this guard the first suspension
-        // lets the second caller slip through and fetch twice.
-        guard !isLoadingComposers else { return }
+        // BUGFIX: deduplicate concurrent callers with a shared task. Both
+        // ContentView and HomeView call loadComposers on appear; the old
+        // isLoadingComposers guard returned early WITHOUT populating composers,
+        // so the second caller got no data. Awaiting the shared task ensures
+        // every caller receives the result.
+        if let existing = composersLoadTask {
+            do { composers = try await existing.value } catch { }
+            return
+        }
 
         isLoadingComposers = true
-        defer { isLoadingComposers = false }
-
-        do {
+        let pageSize = self.pageSize
+        let task = Task<[Composer], Error> {
             var all: [Composer] = []
             var start = 0
-
             while true {
                 try Task.checkCancellation()
                 let batch = try await LyrionAPI.shared.getComposers(start: start, count: pageSize)
@@ -109,8 +115,17 @@ final class LibraryViewModel: ObservableObject {
                 if batch.count < pageSize { break }
                 start += pageSize
             }
-
             all.sort { $0.artist.localizedCaseInsensitiveCompare($1.artist) == .orderedAscending }
+            return all
+        }
+        composersLoadTask = task
+        defer {
+            composersLoadTask = nil
+            isLoadingComposers = false
+        }
+
+        do {
+            let all = try await task.value
             composerCache = all
             composers     = all
         } catch is CancellationError {
@@ -500,6 +515,8 @@ final class LibraryViewModel: ObservableObject {
     // MARK: - Cache management
 
     func clearCache() {
+        composersLoadTask?.cancel()
+        composersLoadTask = nil
         worksLoadTasks.values.forEach { $0.cancel() }
         tracksForWorkTasks.values.forEach { $0.cancel() }
         tracksForAlbumTasks.values.forEach { $0.cancel() }

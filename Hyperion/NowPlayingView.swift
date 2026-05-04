@@ -158,18 +158,20 @@ struct NowPlayingView: View {
         return ("Signal", Color.roonTertiary, false)
     }
 
+    // PERF: `signalPath` is expensive to compute — it allocates multiple
+    // AudioPathStep structs (each with a UUID) on every call. Since it's used
+    // only by the signal-path sheet, we build it lazily in the sheet's content
+    // rather than as a computed var on the view body.
     private var signalPath: AudioSignalPath {
-        if let track = player.currentTrack {
-            return AudioSignalPath.fromPlaybackState(
-                track:        track,
-                sourceFormat: player.sourceFormat,
-                outputFormat: player.outputFormat,
-                isBitPerfect: player.isBitPerfect,
-                volume:       player.volume,
-                lmsQuality:   player.lmsAudioQuality
-            )
-        }
-        return .mockPath
+        guard let track = player.currentTrack else { return .mockPath }
+        return AudioSignalPath.fromPlaybackState(
+            track:        track,
+            sourceFormat: player.sourceFormat,
+            outputFormat: player.outputFormat,
+            isBitPerfect: player.isBitPerfect,
+            volume:       player.volume,
+            lmsQuality:   player.lmsAudioQuality
+        )
     }
 
     var body: some View {
