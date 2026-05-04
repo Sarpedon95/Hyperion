@@ -590,6 +590,11 @@ struct SettingsView: View {
         connection.proxyURL       = proxyURL.trimmingCharacters(in: .whitespacesAndNewlines)
         connection.connectionMode = selectedMode
         connection.saveSettings()
+        // Clear the library cache so a server change doesn't show data from
+        // the previous server. forceReconnect() fires the URL-change path that
+        // invalidates PlaybackHistoryStore and PlaybackStateStore; we clear the
+        // broader library cache here in the UI layer where we know settings changed.
+        LibraryViewModel.shared.clearCache()
         connection.forceReconnect()
     }
 

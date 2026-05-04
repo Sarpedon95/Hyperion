@@ -119,6 +119,25 @@ enum TimeFormatting {
     }
 }
 
+// MARK: - Audio format classification
+
+/// Canonical set of lossless audio file extensions used throughout the app.
+/// Declared once here to avoid divergent inline `Set<String>` literals
+/// in LyrionAPI, PlayerViewModel, NowPlayingView, and Models.
+enum AudioFormats {
+    /// Uppercase extensions that represent lossless audio containers.
+    /// Used for bit-perfect detection, quality-pill colour, and signal-path display.
+    static let lossless: Set<String> = ["FLAC", "WAV", "ALAC", "AIFF", "AIF", "APE", "WV"]
+
+    /// Same as `lossless` but lowercased, for matching against LMS `type` fields
+    /// (which LMS returns in lowercase, e.g. "flac", "alac", "wav").
+    static let losslessLowercase: Set<String> = ["flac", "wav", "alac", "aiff", "aif", "ape", "wv"]
+
+    static func isLossless(_ ext: String) -> Bool {
+        lossless.contains(ext.uppercased())
+    }
+}
+
 
 // MARK: - Search text normalization
 
@@ -288,7 +307,7 @@ struct AudioSignalPath: Identifiable, Hashable {
         // Source
         if let url = track.url, !url.isEmpty {
             let format = audioFormatFromURL(url)
-            let isLosslessFormat = ["FLAC", "WAV", "ALAC", "AIFF", "APE"].contains(format)
+            let isLosslessFormat = AudioFormats.isLossless(format)
             steps.append(AudioPathStep(
                 icon: "opticaldisc",
                 title: "Source",
@@ -308,7 +327,7 @@ struct AudioSignalPath: Identifiable, Hashable {
         // Decoder
         if let url = track.url {
             let format = audioFormatFromURL(url)
-            let isBitPerfectFormat = ["FLAC", "WAV", "ALAC", "AIFF", "APE"].contains(format)
+            let isBitPerfectFormat = AudioFormats.isLossless(format)
             steps.append(AudioPathStep(
                 icon: "arrowtriangle.right.fill",
                 title: "Decoding",
@@ -368,14 +387,15 @@ struct AudioSignalPath: Identifiable, Hashable {
         sourceFormat: String,
         outputFormat: String,
         isBitPerfect: Bool,
-        volume: Float = 1.0
+        volume: Float = 1.0,
+        lmsQuality: LMSAudioQuality? = nil
     ) -> AudioSignalPath {
         var steps: [AudioPathStep] = []
 
         // 1. Source file format
         let sourceParts = sourceFormat.split(separator: " ")
         let sourceExt = String(sourceParts.first ?? "Unknown")
-        let isSourceLossless = ["FLAC", "WAV", "ALAC", "AIFF", "APE"].contains(sourceExt)
+        let isSourceLossless = AudioFormats.isLossless(sourceExt)
 
         steps.append(AudioPathStep(
             icon: "opticaldisc",
@@ -402,26 +422,37 @@ struct AudioSignalPath: Identifiable, Hashable {
             status: decoderStatus
         ))
 
-        // 4. Bit depth — only shown when reliably known; can't infer from format alone
-        if let bitDepth = bitDepthFromFormat(sourceExt) {
+        // 4. Bit depth — use live LMS data when available; otherwise omit
+        //    (we cannot infer it reliably from the container format alone).
+        if let lmsQ = lmsQuality, lmsQ.sampleSize > 0 {
             steps.append(AudioPathStep(
                 icon: "waveform.circle",
                 title: "Bit Depth",
-                subtitle: "\(bitDepth)-bit",
+                subtitle: "\(lmsQ.sampleSize)-bit",
                 status: .lossless
             ))
         }
 
-        // 5. Sample Rate (from outputFormat which includes actual session sample rate)
-        let sampleRateStr = extractSampleRate(from: outputFormat)
-        let needsResampling = sourceNeedsResampling(sourceExt, targetRate: sampleRateStr)
-        let resamplingStatus: QualityStatus = needsResampling ? .converted : .enhanced
+        // 5. Sample Rate — prefer LMS-reported rate; fall back to AVAudioSession.
+        let sampleRateStr: String
+        let needsResampling: Bool
+        if let lmsQ = lmsQuality, lmsQ.sampleRate > 0 {
+            let khz = Double(lmsQ.sampleRate) / 1000
+            sampleRateStr = String(format: khz.truncatingRemainder(dividingBy: 1) == 0 ? "%.0f kHz" : "%.1f kHz", khz)
+            // Resampling occurs when AVAudioSession output rate differs from source.
+            // extractSampleRate returns strings like "44.1 kHz" or "48.0 kHz".
+            let sessionRateStr = extractSampleRate(from: outputFormat)
+            needsResampling = sessionRateStr != sampleRateStr
+        } else {
+            sampleRateStr = extractSampleRate(from: outputFormat)
+            needsResampling = sourceNeedsResampling(sourceExt, targetRate: sampleRateStr)
+        }
 
         steps.append(AudioPathStep(
             icon: "waveform.circle",
             title: "Sample Rate",
             subtitle: sampleRateStr,
-            status: resamplingStatus
+            status: needsResampling ? .converted : .enhanced
         ))
 
         // 6. Volume Processing
@@ -445,7 +476,7 @@ struct AudioSignalPath: Identifiable, Hashable {
             status: outputStatus
         ))
 
-        // 8. Overall quality (if bit-perfect, add a final lossless status)
+        // 8. Overall quality verification
         if isBitPerfect && isSourceLossless && deviceIsLossless && !needsResampling {
             steps.append(AudioPathStep(
                 icon: "checkmark.circle.fill",
@@ -459,20 +490,23 @@ struct AudioSignalPath: Identifiable, Hashable {
     }
 
     private static func bitDepthFromFormat(_ format: String) -> Int? {
-        // Bit depth cannot be reliably inferred from container format alone —
-        // e.g. FLAC and WAV can be 16 or 24-bit. Return nil so callers skip
-        // the Bit Depth step rather than showing a wrong value.
-        switch format.uppercased() {
-        case "MP3", "AAC", "OGG", "OPUS": return 16
-        default: return nil
-        }
+        // For lossy formats, bit depth is not meaningful (the original PCM
+        // depth is discarded during encoding). For lossless containers we
+        // cannot infer depth from format alone (FLAC can be 16 or 24-bit),
+        // so we return nil and let the signal-path skip this step rather than
+        // show a wrong value. Callers that have live LMS samplesize data should
+        // build the step themselves.
+        return nil
     }
 
     private static func sourceNeedsResampling(_ format: String, targetRate: String) -> Bool {
-        // This is approximate — without actual file metadata, we can't know the exact source rate.
-        // For now, assume lossless formats are typically 44.1kHz or 48kHz, matching most outputs.
+        // Without live LMS samplerate data we can only make a rough guess.
+        // Most lossless libraries are 44.1 kHz (CD) or 48 kHz (studio).
+        // If the AVAudioSession output rate is neither, flag as a possible
+        // resample — conservative (may show false positives for 96 kHz output
+        // with a 44.1 kHz source) but better than always claiming no resampling.
         let isCommonRate = targetRate.contains("44.1") || targetRate.contains("48")
-        return !isCommonRate && !["MP3", "AAC", "OGG"].contains(format.uppercased())
+        return !isCommonRate && AudioFormats.isLossless(format)
     }
 
     private static func extractSampleRate(from outputFormat: String) -> String {

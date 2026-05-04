@@ -627,8 +627,13 @@ struct AlbumListView: View {
                         .buttonStyle(.plain)
                         .onAppear {
                             // Pagination trigger: load next page when near the end.
+                            // Guard the index access — library.albums can shrink
+                            // between the time the cell appears and this closure fires
+                            // (e.g. after a sort change that resets the array), which
+                            // would cause an index-out-of-bounds crash.
                             guard searchText.isEmpty, !library.albums.isEmpty else { return }
                             let threshold = max(0, library.albums.count - 6)
+                            guard library.albums.indices.contains(threshold) else { return }
                             if album.id == library.albums[threshold].id {
                                 Task { await library.loadAlbums(sort: sortOrder) }
                             }

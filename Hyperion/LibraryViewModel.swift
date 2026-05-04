@@ -167,10 +167,14 @@ final class LibraryViewModel: ObservableObject {
         // that passes the worksLoadTasks[key] guard above sees this task and
         // awaits it rather than spawning a duplicate network request.
         worksLoadTasks[key] = task
+        // Always show the spinner for any new work-load task, regardless of
+        // whether other tasks are already running.
         isLoadingWorks = true
+
         defer {
             worksLoadTasks[key] = nil
-            isLoadingWorks = !worksLoadTasks.isEmpty
+            // Only hide the spinner once ALL concurrent work-load tasks have finished.
+            if worksLoadTasks.isEmpty { isLoadingWorks = false }
         }
 
         do {
@@ -335,9 +339,18 @@ final class LibraryViewModel: ObservableObject {
         tracksForWorkTasks[workID] = task
         defer { tracksForWorkTasks[workID] = nil }
 
-        let tracks = try await task.value
-        tracksForWork[workID] = tracks
-        return tracks
+        do {
+            let tracks = try await task.value
+            tracksForWork[workID] = tracks
+            return tracks
+        } catch is CancellationError {
+            // Don't cache on cancellation — next caller should retry.
+            throw CancellationError()
+        } catch {
+            // Don't cache on network error — task slot cleared by defer so
+            // the next caller triggers a fresh request rather than hanging.
+            throw error
+        }
     }
 
     func getTracksForAlbum(_ albumID: Int) async throws -> [Track] {
@@ -350,9 +363,15 @@ final class LibraryViewModel: ObservableObject {
         tracksForAlbumTasks[albumID] = task
         defer { tracksForAlbumTasks[albumID] = nil }
 
-        let tracks = try await task.value
-        tracksForAlbum[albumID] = tracks
-        return tracks
+        do {
+            let tracks = try await task.value
+            tracksForAlbum[albumID] = tracks
+            return tracks
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw error
+        }
     }
 
     func getWorkGroupsForAlbum(_ albumID: Int) async throws -> [WorkGroup] {

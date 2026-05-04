@@ -24,6 +24,9 @@ final class PlayerViewModel: ObservableObject {
     @Published var repeatMode: Int = 0   // 0 = off, 1 = repeat-one, 2 = repeat-all
     @Published var sourceFormat: String = ""
     @Published var outputFormat: String = ""
+    /// Live audio quality data fetched from LMS after each track starts playing.
+    /// When non-nil this takes priority over the URL-extension heuristic in NowPlayingView.
+    @Published var lmsAudioQuality: LMSAudioQuality? = nil
     @Published var isBitPerfect: Bool = true
 
     /// Volume binds directly from the NowPlayingView slider; the AVPlayer is
@@ -1071,6 +1074,8 @@ final class PlayerViewModel: ObservableObject {
         isLoading                  = false
         isShuffle                  = false
         originalQueueBeforeShuffle = nil
+        lmsAudioQuality            = nil
+        sourceFormat               = ""
     }
 
     func removeFromQueue(at index: Int) {
@@ -1199,9 +1204,7 @@ final class PlayerViewModel: ObservableObject {
             let ext = (url as NSString).pathExtension.uppercased()
             if !ext.isEmpty {
                 sourceFormat = ext
-                // Lossless formats that preserve bit-perfect fidelity if not resampled
-                let bitPerfectFormats = ["FLAC", "WAV", "ALAC", "AIFF", "APE"]
-                isBitPerfect = bitPerfectFormats.contains(ext)
+                isBitPerfect = AudioFormats.isLossless(ext)
                 return
             }
         }
@@ -1249,8 +1252,7 @@ final class PlayerViewModel: ObservableObject {
 
         // Update bit-perfect status: only true if source is lossless AND output device
         // supports lossless AND we can verify no resampling is happening.
-        let sourceIsLossless = !sourceFormat.isEmpty &&
-            ["FLAC", "WAV", "ALAC", "AIFF", "APE"].contains(sourceFormat)
+        let sourceIsLossless = !sourceFormat.isEmpty && AudioFormats.isLossless(sourceFormat)
 
         isBitPerfect = sourceIsLossless && isLossless && !deviceName.contains("Bluetooth") && !deviceName.contains("AirPlay")
 
@@ -1517,6 +1519,73 @@ final class PlayerViewModel: ObservableObject {
         // Persist queue + current index immediately when a track starts so a
         // crash between periodic saves still restores the correct track.
         schedulePlaybackStateSave()
+
+        // Fetch live audio quality from LMS in the background.
+        // Clear first so the quality pill reverts to URL-extension heuristic
+        // while the request is in flight, rather than showing stale data.
+        lmsAudioQuality = nil
+        fetchLMSAudioQuality(for: track, playbackID: playbackID)
+    }
+
+    /// Fires a lightweight LMS `status` call to retrieve the sample rate, bit
+    /// depth, and codec for the currently playing track and populates
+    /// `lmsAudioQuality`.  The result is discarded if playback has moved on.
+    ///
+    /// LMS tag reference for `status` params:
+    ///   "u" → samplerate (may be Int or String depending on LMS version)
+    ///   "Y" → samplesize (bit depth, e.g. 16, 24)
+    ///   "o" → type (codec string, e.g. "flac", "mp3")
+    private func fetchLMSAudioQuality(for track: Track, playbackID: UUID) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            // Small delay: LMS populates samplerate/samplesize ~200–500 ms
+            // after the play command is acknowledged. 600 ms is conservative
+            // but avoids a blank quality result on fast local networks.
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            guard playbackID == self.activePlaybackID else { return }
+
+            do {
+                let result = try await LyrionAPI.shared.request(params: ["status", "-", 1, "tags:uYo"])
+                guard playbackID == self.activePlaybackID else { return }
+
+                if let songInfo = (result["playlist_loop"] as? [[String: Any]])?.first {
+                    // samplerate is Int in recent LMS but String in older builds.
+                    let rate: Int
+                    if let intRate = songInfo["samplerate"] as? Int {
+                        rate = intRate
+                    } else if let strRate = songInfo["samplerate"] as? String, let parsed = Int(strRate) {
+                        rate = parsed
+                    } else {
+                        rate = 0
+                    }
+
+                    let size: Int
+                    if let intSize = songInfo["samplesize"] as? Int {
+                        size = intSize
+                    } else if let strSize = songInfo["samplesize"] as? String, let parsed = Int(strSize) {
+                        size = parsed
+                    } else {
+                        size = 0
+                    }
+
+                    let type = (songInfo["type"] as? String ?? "").lowercased()
+
+                    if rate > 0 {
+                        self.lmsAudioQuality = LMSAudioQuality(
+                            sampleRate: rate,
+                            sampleSize: size,
+                            type:       type
+                        )
+                        ServerLogStore.shared.debug(
+                            "LMS quality: \(type.uppercased()) \(rate) Hz / \(size > 0 ? "\(size)-bit" : "unknown depth")"
+                        )
+                    }
+                }
+            } catch {
+                // Non-fatal — quality pill falls back to URL-extension heuristic.
+                ServerLogStore.shared.debug("LMS quality fetch skipped: \(error.localizedDescription)")
+            }
+        }
     }
 
     private func retryNextPlaybackURL(track: Track, autoPlay: Bool, playbackID: UUID) {

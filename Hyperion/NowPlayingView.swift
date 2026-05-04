@@ -22,8 +22,7 @@ struct LMSAudioQuality {
     ///   Lossless = lossless codec AND sample rate == 44100 Hz
     ///   High Quality = anything else (lossy, or rate unknown)
     var tier: Tier {
-        let losslessTypes: Set<String> = ["flac", "alac", "wav", "aiff", "aif", "ape", "wv"]
-        let isLossless = losslessTypes.contains(type.lowercased())
+        let isLossless = AudioFormats.losslessLowercase.contains(type.lowercased())
         if isLossless && sampleRate > 44100 { return .hiRes }
         if isLossless { return .lossless }
         return .highQuality
@@ -128,26 +127,26 @@ struct NowPlayingView: View {
     //   1. Live LMS data via lmsAudioQuality on PlayerViewModel (add per patch)
     //   2. File-extension fallback from track URL
     //   3. Generic "Signal" placeholder (so pill is always visible)
-    //
-    // NOTE: Once you apply PlayerViewModel_PATCH.md and add @Published var
-    // lmsAudioQuality: LMSAudioQuality? = nil to PlayerViewModel, replace this
-    // computed property body with:
-    //   if let lmsQ = player.lmsAudioQuality { ... }
     // -------------------------------------------------------------------------
     private var qualityPillInfo: (label: String, dotColor: Color, isLosslessOrBetter: Bool) {
-        // File-extension fallback — sourceFormat is set by PlayerViewModel when
-        // playback starts and reflects the actual codec string (e.g. "FLAC").
+        // Priority 1: Live LMS quality data — uses the canonical colours
+        // defined in LMSAudioQuality.Tier so they stay in sync with the struct.
+        if let lmsQ = player.lmsAudioQuality {
+            let tier = lmsQ.tier
+            return (tier.label, tier.dotColor, tier != .highQuality)
+        }
+
+        // Priority 2: sourceFormat string set by PlayerViewModel from the track URL extension.
         let srcFmt = player.sourceFormat.uppercased()
-        let losslessFormats: Set<String> = ["FLAC", "WAV", "ALAC", "AIFF", "APE", "WV"]
         if !srcFmt.isEmpty && srcFmt != "UNKNOWN" {
-            let isLossless = losslessFormats.contains(srcFmt)
+            let isLossless = AudioFormats.isLossless(srcFmt)
             let color: Color = isLossless
                 ? Color(red: 0.20, green: 0.85, blue: 0.40) // green
                 : Color(red: 0.95, green: 0.75, blue: 0.20) // amber
             let label = isLossless ? "Lossless" : "High Quality"
             return (label, color, isLossless)
         }
-        // URL-extension fallback
+        // Priority 3: URL-extension fallback
         if let fmt = player.currentTrack.flatMap({ AudioFormat.from(track: $0) }) {
             let color = fmt.isLossless
                 ? Color(red: 0.20, green: 0.85, blue: 0.40)
@@ -162,11 +161,12 @@ struct NowPlayingView: View {
     private var signalPath: AudioSignalPath {
         if let track = player.currentTrack {
             return AudioSignalPath.fromPlaybackState(
-                track: track,
+                track:        track,
                 sourceFormat: player.sourceFormat,
                 outputFormat: player.outputFormat,
                 isBitPerfect: player.isBitPerfect,
-                volume: player.volume
+                volume:       player.volume,
+                lmsQuality:   player.lmsAudioQuality
             )
         }
         return .mockPath
@@ -179,9 +179,21 @@ struct NowPlayingView: View {
                 .ignoresSafeArea()
                 .opacity(isDraggingDown ? max(0.4, 1.0 - dragOffset / 300) : 1.0)
 
-            // 2. Dark scrim so text stays legible
-            Color.black.opacity(0.45)
-                .ignoresSafeArea()
+            // 2. Very light scrim — the flat tint is already dark enough.
+            //    A thin gradient at the top keeps the pill/chevrons legible
+            //    when the artwork is light-coloured.
+            LinearGradient(
+                gradient: Gradient(stops: [
+                    .init(color: Color.black.opacity(0.55), location: 0.00),
+                    .init(color: Color.black.opacity(0.10), location: 0.18),
+                    .init(color: Color.black.opacity(0.00), location: 0.35),
+                    .init(color: Color.black.opacity(0.00), location: 0.60),
+                    .init(color: Color.black.opacity(0.30), location: 1.00),
+                ]),
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .ignoresSafeArea()
 
             // 3. Error banner
             if let error = player.error {
@@ -210,8 +222,9 @@ struct NowPlayingView: View {
                 let usableH     = max(0, totalH - safeTop - safeBot)
                 let screenW     = geo.size.width
 
-                // Artwork: 52% of usable height, max = screen width − 48 pt
-                let artworkSide = min(screenW - 48, usableH * 0.52)
+                // Artwork: full screen width, square aspect ratio.
+                // This gives the edge-to-edge Roon ARC look.
+                let artworkSide = screenW
 
                 VStack(spacing: 0) {
                     // ── Top bar (outside ScrollView — always visible, never scrolls)
@@ -233,26 +246,27 @@ struct NowPlayingView: View {
                         VStack(spacing: 0) {
 
                             // ── Album art ─────────────────────────────────────
+                            // Edge-to-edge: zero horizontal padding intentional.
                             artworkSection(side: artworkSide)
-                                .padding(.top, 12)
-                                .padding(.bottom, 4)
+                                .padding(.top, 0)
+                                .padding(.bottom, 0)
 
-                            // ── Queue position (movement X of Y) ──────────────
+                            // ── Queue position — subtle caption beneath artwork ─
                             if player.queue.count > 1 {
                                 queuePositionLabel
-                                    .padding(.top, 10)
-                                    .padding(.bottom, 2)
+                                    .padding(.top, 6)
+                                    .padding(.bottom, 0)
                             }
 
                             // ── Track metadata ────────────────────────────────
                             trackInfo
-                                .padding(.horizontal, 28)
-                                .padding(.top, 14)
+                                .padding(.horizontal, 24)
+                                .padding(.top, 20)
                                 .padding(.bottom, 8)
 
                             // ── Progress bar + timestamps ──────────────────────
                             progressSection
-                                .padding(.horizontal, 28)
+                                .padding(.horizontal, 24)
                                 .padding(.top, 8)
                                 .padding(.bottom, 8)
 
@@ -331,11 +345,15 @@ struct NowPlayingView: View {
     }
 
     // MARK: - Background
+    //
+    // Roon ARC style: a flat, deeply-desaturated tint extracted from the album art.
+    // We reuse the blurred artwork approach but crank saturation down and brightness
+    // way down so the result reads as a near-solid muted hue rather than a bloom.
 
     @ViewBuilder
     private var backgroundLayer: some View {
         if let coverid = player.currentTrack?.coverid, !coverid.isEmpty {
-            AsyncArtworkBackground(coverid: coverid)
+            FlatTintBackground(coverid: coverid)
         } else {
             Color.roonBase
         }
@@ -424,24 +442,23 @@ struct NowPlayingView: View {
     // MARK: - Artwork
 
     private func artworkSection(side: CGFloat) -> some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color.black.opacity(0.2))
-
+        // Full-width edge-to-edge artwork — no rounded corners, no shadow,
+        // aspect ratio 1:1 locked. Scales down slightly when paused (Roon ARC style).
+        GeometryReader { geo in
             ArtworkView(
                 coverid: player.currentTrack?.coverid,
-                size: side,
-                contentMode: .fit
+                size: geo.size.width,
+                contentMode: .fill
             )
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .shadow(color: .black.opacity(0.70), radius: 40, y: 18)
-            .scaleEffect(player.isPlaying ? 1.0 : 0.93)
-            .animation(.easeInOut(duration: 0.18), value: player.isPlaying)
+            .frame(width: geo.size.width, height: geo.size.width)
+            .clipped()
+            .scaleEffect(player.isPlaying ? 1.0 : 0.96)
+            .animation(.easeInOut(duration: 0.22), value: player.isPlaying)
             .offset(x: artworkDragOffset)
             .opacity(artworkOpacity)
         }
-        .frame(width: side, height: side)
-        .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .frame(height: side)
+        .contentShape(Rectangle())
         .gesture(artworkSwipeGesture)
     }
 
@@ -499,6 +516,9 @@ struct NowPlayingView: View {
     }
 
     // MARK: - Queue position label
+    //
+    // Subtle caption: small, muted, centred — sits just below the artwork.
+    // For a classical work queue shows "Movement X of Y", otherwise "X of Y".
 
     private var queuePositionLabel: some View {
         let pos = player.currentIndex + 1
@@ -509,9 +529,9 @@ struct NowPlayingView: View {
             && player.queueWorkGroups.first?.tracks.count == tot
         let label = isSingleWork ? "Movement \(pos) of \(tot)" : "\(pos) of \(tot)"
         return Text(label)
-            .font(.roonBody(11, weight: .semibold))
+            .font(.roonBody(11, weight: .regular))
             .foregroundColor(.roonTertiary)
-            .kerning(0.5)
+            .kerning(0.3)
             .frame(maxWidth: .infinity, alignment: .center)
     }
 
@@ -539,14 +559,10 @@ struct NowPlayingView: View {
 
             // Title — allow up to 3 lines so long classical movement names don't clip
             Text(player.currentTrack?.title ?? "")
-                .font(.system(size: 24, weight: .bold, design: .default))
+                .font(.system(size: 26, weight: .bold, design: .default))
                 .foregroundColor(.roonPrimary)
                 .multilineTextAlignment(.center)
                 .lineLimit(3)
-                // fixedSize(horizontal:false, vertical:true) lets the Text grow
-                // vertically while staying within the horizontal container width.
-                // Without this, multiline text is clipped when placed inside
-                // VStack → ScrollView because the intrinsic height isn't resolved.
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .center)
 
@@ -557,7 +573,7 @@ struct NowPlayingView: View {
                           ?? ""
             if !artistLine.isEmpty {
                 Text(artistLine)
-                    .font(.system(size: 15, weight: .regular, design: .default))
+                    .font(.system(size: 16, weight: .regular, design: .default))
                     .foregroundColor(.roonSecondary)
                     .multilineTextAlignment(.center)
                     .lineLimit(2)
@@ -945,7 +961,62 @@ struct ProgressBarView: View {
     }
 }
 
-// MARK: - Blurred artwork background
+// MARK: - Flat tint background (Roon ARC style)
+//
+// Blurs the artwork heavily, crushes saturation and brightness, giving a
+// near-solid muted hue rather than a colourful bloom. The result matches
+// Roon ARC's "flat deep tint extracted from album art" aesthetic.
+
+struct FlatTintBackground: View {
+    let coverid: String
+
+    @Environment(\.displayScale) private var displayScale
+    @State private var image: UIImage? = nil
+
+    private let targetPoints: CGFloat = 400
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    // Heavy blur first — flattens the image to a colour field
+                    .blur(radius: 120)
+                    .scaleEffect(2.0)
+                    // Crush saturation: keeps hue readable but mutes vibrancy
+                    .saturation(0.55)
+                    // Darken significantly so it reads as a deep tint, not a photo
+                    .brightness(-0.28)
+                    .drawingGroup()
+            } else {
+                Color.roonBase
+            }
+        }
+        // Final dark overlay so the minimum brightness never gets too high
+        .overlay(Color.black.opacity(0.30))
+        .task(id: coverid) {
+            let scale = max(displayScale, 1)
+            if let cached = ArtworkCache.shared.cachedImage(
+                coverid: coverid,
+                targetPoints: targetPoints,
+                scale: scale
+            ) {
+                withAnimation(.easeOut(duration: 0.25)) { image = cached }
+                return
+            }
+            let loaded = await ArtworkCache.shared.loadImage(
+                coverid: coverid,
+                targetPoints: targetPoints,
+                scale: scale
+            )
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.5)) { image = loaded }
+        }
+    }
+}
+
+// MARK: - Blurred artwork background (legacy — kept for reference)
 
 struct AsyncArtworkBackground: View {
     let coverid: String

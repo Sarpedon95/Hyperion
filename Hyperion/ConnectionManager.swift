@@ -389,21 +389,38 @@ final class ConnectionManager: ObservableObject {
 
     private nonisolated static func probeFirstSuccessful(candidates: [String]) async -> ConnectionProbeResult? {
         guard !candidates.isEmpty else { return nil }
+
+        // One shared ephemeral session for the whole race.  Creating a new
+        // URLSession per probe candidate multiplies socket overhead; this
+        // single session is invalidated when the group finishes.
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest  = 5
+        config.timeoutIntervalForResource = 5
+        config.waitsForConnectivity       = false
+        config.requestCachePolicy         = .reloadIgnoringLocalCacheData
+        let sharedSession = URLSession(configuration: config)
+
         var lastFailure: ConnectionProbeResult?
-        return await withTaskGroup(of: ConnectionProbeResult.self, returning: ConnectionProbeResult?.self) { group in
+        let result = await withTaskGroup(of: ConnectionProbeResult.self, returning: ConnectionProbeResult?.self) { group in
             for url in candidates {
-                group.addTask { await Self.probeServer(url) }
+                group.addTask { await Self.probeServer(url, session: sharedSession) }
             }
 
-            for await result in group {
-                if result.isSuccess {
+            for await probe in group {
+                if probe.isSuccess {
                     group.cancelAll()
-                    return result
+                    return probe
                 }
-                lastFailure = result
+                lastFailure = probe
             }
             return lastFailure
         }
+
+        // Cancel any pending network tasks on the shared session now that the
+        // group is done. finishTasksAndInvalidate would wait for them; we want
+        // immediate cancellation of losing probes to free sockets quickly.
+        sharedSession.invalidateAndCancel()
+        return result
     }
 
     nonisolated func testURL(_ url: String) async -> Bool {
@@ -414,7 +431,7 @@ final class ConnectionManager: ObservableObject {
         await probeBestServer(url).isSuccess
     }
 
-    nonisolated static func probeServer(_ url: String, timeout: TimeInterval = 5) async -> ConnectionProbeResult {
+    nonisolated static func probeServer(_ url: String, timeout: TimeInterval = 5, session providedSession: URLSession? = nil) async -> ConnectionProbeResult {
         let started = Date()
         let sanitized = sanitizedURL(url)
         let redacted = ServerLogStore.redactedURL(sanitized)
@@ -465,8 +482,18 @@ final class ConnectionManager: ObservableObject {
         config.timeoutIntervalForResource = timeout
         config.waitsForConnectivity = false
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
-        let session = URLSession(configuration: config)
-        defer { session.finishTasksAndInvalidate() }
+        // Reuse a caller-provided session (e.g. from probeFirstSuccessful) to
+        // avoid creating a new socket pool for every candidate URL.
+        let session: URLSession
+        let ownsSession: Bool
+        if let provided = providedSession {
+            session = provided
+            ownsSession = false
+        } else {
+            session = URLSession(configuration: config)
+            ownsSession = true
+        }
+        defer { if ownsSession { session.finishTasksAndInvalidate() } }
 
         do {
             let (data, response) = try await session.data(for: request)
