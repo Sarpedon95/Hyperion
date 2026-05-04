@@ -44,7 +44,7 @@ final class LibraryViewModel: ObservableObject {
     private var currentAlbumSortOrder: AlbumSortOrder = .album
     private var recentAlbumsTask: Task<[Album], Error>?
     private var recentlyPlayedTask: Task<[Album], Error>?
-    private var totalsTask: Task<(Int?, Int?), Never>?
+    private var totalsTask: Task<(Int?, Int?, Int?, Int?), Never>?
     private var recentAlbumsTaskID: UUID?
     private var recentlyPlayedTaskID: UUID?
 
@@ -89,27 +89,26 @@ final class LibraryViewModel: ObservableObject {
         guard totalWorks == nil || totalAlbums == nil || totalSongs == nil || totalArtists == nil else { return }
 
         if let existing = totalsTask {
-            let (w, a) = await existing.value
+            let (w, a, s, ar) = await existing.value
             guard !Task.isCancelled else { return }
-            if let w { totalWorks = w }
-            if let a { totalAlbums = a }
+            if let w  { totalWorks   = w  }
+            if let a  { totalAlbums  = a  }
+            if let s  { totalSongs   = s  }
+            if let ar { totalArtists = ar }
             return
         }
 
-        let task = Task<(Int?, Int?), Never> {
-            async let worksCount: Int? = try? LyrionAPI.shared.getWorksCount()
-            async let albumsCount: Int? = try? LyrionAPI.shared.getAlbumsCount()
-            return await (worksCount, albumsCount)
+        let task = Task<(Int?, Int?, Int?, Int?), Never> {
+            async let worksCount:   Int? = try? LyrionAPI.shared.getWorksCount()
+            async let albumsCount:  Int? = try? LyrionAPI.shared.getAlbumsCount()
+            async let songsCount:   Int? = try? LyrionAPI.shared.getSongsCount()
+            async let artistsCount: Int? = try? LyrionAPI.shared.getArtistsCount()
+            return await (worksCount, albumsCount, songsCount, artistsCount)
         }
         totalsTask = task
         defer { totalsTask = nil }
 
-        async let songsCount: Int? = try? LyrionAPI.shared.getSongsCount()
-        async let artistsCount: Int? = try? LyrionAPI.shared.getArtistsCount()
-
-        let (w, a) = await task.value
-        let s = await songsCount
-        let ar = await artistsCount
+        let (w, a, s, ar) = await task.value
         guard !Task.isCancelled else { return }
         if let w  { totalWorks   = w  }
         if let a  { totalAlbums  = a  }

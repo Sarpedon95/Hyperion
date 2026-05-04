@@ -454,10 +454,10 @@ final class ArtworkCache {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            // queue: .main means this runs on the main thread; we're @MainActor
-            // so we can dispatch a Task without hopping queues. Cancel pending
-            // downloads first to avoid populating a freshly-cleared cache.
-            Task { @MainActor [weak self] in
+            // queue: .main guarantees main-thread delivery; use assumeIsolated for
+            // immediate synchronous execution so caches are freed without an extra
+            // async dispatch (important under real memory pressure).
+            MainActor.assumeIsolated { [weak self] in
                 self?.inFlight.values.forEach { $0.cancel() }
                 self?.inFlight.removeAll()
                 self?.inFlightToken.removeAll()

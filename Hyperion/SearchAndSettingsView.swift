@@ -3,6 +3,7 @@ import UIKit
 
 // MARK: - Search view model (persists across navigation pushes)
 
+@MainActor
 final class SearchViewModel: ObservableObject {
     @Published var searchText: String = ""
     @Published var results: (composers: [Composer], works: [Work], albums: [Album]) = ([], [], [])
@@ -22,9 +23,9 @@ final class SearchViewModel: ObservableObject {
             return
         }
         isSearching = true
-        searchTask = Task { @MainActor in
+        searchTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 150_000_000)
-            guard !Task.isCancelled, self.searchSequence == sequence else { return }
+            guard !Task.isCancelled, let self, self.searchSequence == sequence else { return }
             let r = await library.search(query: trimmed)
             guard !Task.isCancelled, self.searchSequence == sequence else { return }
             self.results = r

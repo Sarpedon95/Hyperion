@@ -1878,18 +1878,10 @@ final class PlayerViewModel: ObservableObject {
         pendingSeekWatchdogTask?.cancel()
         guard pendingSeekTime != nil else { return }
 
-        pendingSeekWatchdogTask = Task { [weak self] in
-            // Wait up to 5 seconds for the pending seek to be applied.
+        pendingSeekWatchdogTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 5_000_000_000)
-            guard !Task.isCancelled else { return }
-
-            Task { @MainActor [weak self] in
-                guard let self, self.pendingSeekTime != nil else { return }
-                // If the seek is still pending after 5 seconds, clear it.
-                // This prevents the player from hanging in a state where
-                // playback won't start because the item is stuck loading.
-                self.pendingSeekTime = nil
-            }
+            guard !Task.isCancelled, let self, self.pendingSeekTime != nil else { return }
+            self.pendingSeekTime = nil
         }
     }
 
