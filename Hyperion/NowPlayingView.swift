@@ -181,107 +181,71 @@ struct NowPlayingView: View {
                 .ignoresSafeArea()
                 .opacity(isDraggingDown ? max(0.4, 1.0 - dragOffset / 300) : 1.0)
 
-            // 2. Very light scrim — the flat tint is already dark enough.
-            //    A thin gradient at the top keeps the pill/chevrons legible
-            //    when the artwork is light-coloured.
+            // 2. Very light scrim at bottom for controls legibility
             LinearGradient(
                 gradient: Gradient(stops: [
-                    .init(color: Color.black.opacity(0.55), location: 0.00),
-                    .init(color: Color.black.opacity(0.10), location: 0.18),
-                    .init(color: Color.black.opacity(0.00), location: 0.35),
-                    .init(color: Color.black.opacity(0.00), location: 0.60),
-                    .init(color: Color.black.opacity(0.30), location: 1.00),
+                    .init(color: Color.black.opacity(0.00), location: 0.00),
+                    .init(color: Color.black.opacity(0.00), location: 0.50),
+                    .init(color: Color.black.opacity(0.55), location: 1.00),
                 ]),
                 startPoint: .top,
                 endPoint: .bottom
             )
             .ignoresSafeArea()
 
-            // 4. Main content column
+            // 3. Main content column — Roon ARC layout
             GeometryReader { geo in
-                let totalH      = geo.size.height
-                let safeTop     = geo.safeAreaInsets.top
-                let safeBot     = geo.safeAreaInsets.bottom
-                let usableH     = max(0, totalH - safeTop - safeBot)
-                let screenW     = geo.size.width
-
-                // Artwork size: square, capped so all controls remain visible without scrolling.
-                // We reserve ~54% of usable height for the artwork, then also cap it at
-                // screenW - 48pt (horizontal inset) so it doesn't fill edge-to-edge on
-                // landscape or large-screen devices. Minimum 180pt to avoid looking tiny.
-                let artworkSide = max(180, min(screenW - 48, usableH * 0.46))
+                let safeTop = geo.safeAreaInsets.top
+                let safeBot = geo.safeAreaInsets.bottom
+                let screenW = geo.size.width
 
                 VStack(spacing: 0) {
-                    // ── Top bar (outside ScrollView — always visible, never scrolls)
+                    // ── Top bar (chevron down | pill | waveform)
                     topBar
                         .padding(.top, safeTop + 6)
                         .padding(.bottom, 4)
 
-                    // ── Scrollable body ──────────────────────────────────────
-                    // BUG FIX: ScrollView must NOT wrap the top bar.
-                    // If everything is inside ScrollView, SwiftUI gives the
-                    // ScrollView priority on vertical drags, which swallows the
-                    // swipe-down-to-dismiss gesture even with .gesture() on the
-                    // outer ZStack. Keeping the top bar outside the ScrollView
-                    // means the user can always swipe down from the top area.
-                    // .simultaneousGesture on the ScrollView itself lets the
-                    // dismiss gesture fire in parallel with scroll physics when
-                    // the user drags from within the content area.
                     ScrollView(showsIndicators: false) {
                         VStack(spacing: 0) {
 
-                            // ── Album art ─────────────────────────────────────
-                            // Horizontally centred with rounded corners for a refined look.
-                            artworkSection(side: artworkSide)
-                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                                .shadow(color: .black.opacity(0.45), radius: 24, y: 8)
+                            // ── Album art: full width, square, flush to edges
+                            artworkSection(side: screenW)
                                 .padding(.top, 8)
-                                .padding(.bottom, 4)
-                                .frame(maxWidth: .infinity, alignment: .center)
+                                .padding(.bottom, 0)
 
-                            // ── Queue position — subtle caption beneath artwork ─
-                            if player.queue.count > 1 {
-                                queuePositionLabel
-                                    .padding(.top, 6)
-                                    .padding(.bottom, 0)
-                            }
-
-                            // ── Track metadata ────────────────────────────────
+                            // ── Track metadata — left aligned, Roon ARC style
                             trackInfo
-                                .padding(.horizontal, 24)
-                                .padding(.top, 14)
+                                .padding(.horizontal, 20)
+                                .padding(.top, 18)
                                 .padding(.bottom, 4)
 
-                            // ── Progress bar + timestamps ──────────────────────
+                            // ── Progress bar + timestamps
                             progressSection
-                                .padding(.horizontal, 24)
-                                .padding(.top, 6)
+                                .padding(.horizontal, 20)
+                                .padding(.top, 12)
                                 .padding(.bottom, 4)
 
-                            // ── Transport controls ─────────────────────────────
+                            // ── Transport controls
                             transportControls
                                 .padding(.horizontal, 20)
-                                .padding(.top, 8)
+                                .padding(.top, 12)
                                 .padding(.bottom, 4)
 
-                            // ── Bottom toolbar ─────────────────────────────────
+                            // ── Bottom toolbar
                             bottomToolbar
-                                .padding(.horizontal, 24)
-                                .padding(.top, 6)
-                                .padding(.bottom, max(safeBot, 16))
+                                .padding(.horizontal, 20)
+                                .padding(.top, 8)
+                                .padding(.bottom, max(safeBot, 20))
                         }
-                        // Explicit width so multiline text wraps inside ScrollView
                         .frame(width: screenW)
                     }
-                    // simultaneousGesture fires alongside scroll so swipe-down
-                    // dismiss works even when dragging within the content area.
                     .simultaneousGesture(swipeDownToDismissGesture)
                 }
             }
             .offset(y: dragOffset)
             .animation(isDraggingDown ? .none : .spring(response: 0.38, dampingFraction: 0.82), value: dragOffset)
 
-            // 5. Full queue sheet overlay
+            // 4. Full queue sheet overlay
             if showQueuePanel {
                 queuePanelOverlay
                     .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -430,9 +394,9 @@ struct NowPlayingView: View {
     // MARK: - Artwork
 
     private func artworkSection(side: CGFloat) -> some View {
-        // Artwork is sized to `side` which is passed as min(screenW, usableH * 0.46)
-        // from the GeometryReader — this keeps the square artwork proportional on all
-        // device sizes (small SE, regular, Plus/Max) without pushing controls off-screen.
+        // Roon ARC style: artwork is full-width, square, flush to edges — no
+        // padding, no rounded corners, no shadow. The dynamic background tint
+        // provides the visual context instead.
         ZStack {
             ArtworkView(
                 coverid: player.currentTrack?.coverid,
@@ -443,7 +407,7 @@ struct NowPlayingView: View {
             .clipped()
         }
         .frame(width: side, height: side)
-        .scaleEffect(player.isPlaying ? 1.0 : 0.96)
+        .scaleEffect(player.isPlaying ? 1.0 : 0.98)
         .animation(.easeInOut(duration: 0.22), value: player.isPlaying)
         .offset(x: artworkDragOffset)
         .opacity(artworkOpacity)
@@ -526,34 +490,19 @@ struct NowPlayingView: View {
 
     // MARK: - Track info
     //
-    // Layout (Roon ARC order, all centred):
-    //   ALBUM NAME (small caps, accent colour)  ← replaces work title when no work
-    //   Track / movement title (large bold)
-    //   Artist / composer (secondary, smaller)
+    // Roon ARC layout: left-aligned, no small-caps album line above.
+    // Large bold title, artist/composer below in secondary colour.
 
     private var trackInfo: some View {
-        VStack(spacing: 6) {
-            // Small-caps context line: prefer work title, fall back to album
-            let contextLine: String? = player.currentWorkGroup?.workTitle
-                ?? player.currentTrack?.album
-
-            if let ctx = contextLine, !ctx.isEmpty {
-                Text(ctx.uppercased())
-                    .font(.roonBody(11, weight: .semibold))
-                    .foregroundColor(.roonAccent)
-                    .tracking(1.4)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .center)
-            }
-
-            // Title — allow up to 2 lines so long classical movement names don't clip
+        VStack(alignment: .leading, spacing: 5) {
+            // Title — allow up to 2 lines for long classical movement names
             Text(player.currentTrack?.title ?? "")
                 .font(.system(size: 22, weight: .bold, design: .default))
                 .foregroundColor(.roonPrimary)
-                .multilineTextAlignment(.center)
+                .multilineTextAlignment(.leading)
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .center)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
             // Artist / composer line
             let artistLine = player.currentTrack?.composer
@@ -564,22 +513,19 @@ struct NowPlayingView: View {
                 Text(artistLine)
                     .font(.system(size: 15, weight: .regular, design: .default))
                     .foregroundColor(.roonSecondary)
-                    .multilineTextAlignment(.center)
+                    .multilineTextAlignment(.leading)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .center)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        // maxWidth: .infinity is correct here — the parent passes an explicit width
-        // via .frame(width: screenW) on the ScrollView content, so this expands
-        // to fill the full available width minus the horizontal padding (28 pt each side).
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: - Progress
 
     private var progressSection: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 8) {
             ProgressBarView(
                 progress:     player.progress,
                 isDragging:   $isDraggingProgress,
@@ -593,21 +539,21 @@ struct NowPlayingView: View {
                 let effectiveDuration = player.duration > 0
                     ? player.duration
                     : (player.currentTrack?.duration ?? 0)
-                let displayTime   = isDraggingProgress
+                let displayTime = isDraggingProgress
                     ? dragProgress * effectiveDuration
                     : player.currentTime
-                let remainingTime = max(0, effectiveDuration - displayTime)
 
+                // Roon ARC shows elapsed on left, total duration on right
                 Text(formatTime(displayTime))
-                    .font(.system(size: 13, weight: .medium, design: .monospaced))
-                    .foregroundColor(.roonSecondary)
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .foregroundColor(.roonTertiary)
                     .monospacedDigit()
 
                 Spacer()
 
-                Text("-\(formatTime(remainingTime))")
-                    .font(.system(size: 13, weight: .medium, design: .monospaced))
-                    .foregroundColor(.roonSecondary)
+                Text(formatTime(effectiveDuration))
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .foregroundColor(.roonTertiary)
                     .monospacedDigit()
             }
         }
@@ -615,8 +561,8 @@ struct NowPlayingView: View {
 
     // MARK: - Transport controls
     //
-    // Row: [repeat] [prev] [      play/pause      ] [next] [shuffle]
-    // Play button is the visual focal point with an 80 pt circle.
+    // Roon ARC layout: [repeat] [prev] [play/pause] [next] [shuffle]
+    // Play button is a large flat icon — no circle background — matching ARC's minimal style.
 
     private var transportControls: some View {
         HStack(spacing: 0) {
@@ -626,9 +572,9 @@ struct NowPlayingView: View {
                 player.cycleRepeat()
             } label: {
                 Image(systemName: repeatIcon)
-                    .font(.system(size: 18, weight: .semibold))
+                    .font(.system(size: 20, weight: .medium))
                     .foregroundColor(player.repeatMode > 0 ? .roonAccent : .roonTertiary)
-                    .frame(width: 48, height: 48)
+                    .frame(width: 52, height: 52)
             }
             .accessibilityLabel(repeatAccessibilityLabel)
 
@@ -640,7 +586,7 @@ struct NowPlayingView: View {
                 player.previousTrack()
             } label: {
                 Image(systemName: "backward.fill")
-                    .font(.system(size: 26, weight: .semibold))
+                    .font(.system(size: 28, weight: .medium))
                     .foregroundColor(.roonPrimary)
                     .frame(width: 56, height: 56)
             }
@@ -648,21 +594,16 @@ struct NowPlayingView: View {
 
             Spacer()
 
-            // Play / Pause — centred anchor
+            // Play / Pause — flat large icon, no circle background (Roon ARC style)
             Button {
                 Haptics.medium()
                 player.togglePlayPause()
             } label: {
-                ZStack {
-                    Circle()
-                        .fill(Color.roonAccent)
-                        .frame(width: 80, height: 80)
-                        .shadow(color: Color.roonAccent.opacity(0.55), radius: 22, y: 8)
-                    Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                        .font(.system(size: 32, weight: .semibold))
-                        .foregroundColor(.white)
-                        .offset(x: player.isPlaying ? 0 : 2.5)
-                }
+                Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: 44, weight: .medium))
+                    .foregroundColor(.roonPrimary)
+                    .frame(width: 72, height: 72)
+                    .offset(x: player.isPlaying ? 0 : 2)
             }
             .scaleEffect(player.isPlaying ? 1.0 : 0.97)
             .animation(.spring(response: 0.28, dampingFraction: 0.7), value: player.isPlaying)
@@ -676,7 +617,7 @@ struct NowPlayingView: View {
                 player.nextTrack()
             } label: {
                 Image(systemName: "forward.fill")
-                    .font(.system(size: 26, weight: .semibold))
+                    .font(.system(size: 28, weight: .medium))
                     .foregroundColor(.roonPrimary)
                     .frame(width: 56, height: 56)
             }
@@ -690,9 +631,9 @@ struct NowPlayingView: View {
                 player.toggleShuffle()
             } label: {
                 Image(systemName: "shuffle")
-                    .font(.system(size: 18, weight: .semibold))
+                    .font(.system(size: 20, weight: .medium))
                     .foregroundColor(player.isShuffle ? .roonAccent : .roonTertiary)
-                    .frame(width: 48, height: 48)
+                    .frame(width: 52, height: 52)
             }
             .accessibilityLabel(player.isShuffle ? "Shuffle on" : "Shuffle off")
         }
