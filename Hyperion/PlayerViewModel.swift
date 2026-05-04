@@ -97,7 +97,7 @@ final class PlayerViewModel: ObservableObject {
     /// Prefetched AVURLAsset for the next track. Built as soon as the current
     /// track starts playing so the asset headers are already loaded when the
     /// user skips forward. Discarded whenever the queue changes.
-    private var prefetchedNextAsset: (trackID: String, asset: AVURLAsset)? = nil
+    private var prefetchedNextAsset: (trackID: Int, asset: AVURLAsset)? = nil
 
     // MARK: - "Resume where you left off" state persistence
 
