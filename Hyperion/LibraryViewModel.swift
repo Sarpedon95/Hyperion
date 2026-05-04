@@ -35,6 +35,7 @@ final class LibraryViewModel: ObservableObject {
     private var currentAlbumSortOrder: AlbumSortOrder = .album
     private var recentAlbumsTask: Task<[Album], Error>?
     private var recentlyPlayedTask: Task<[Album], Error>?
+    private var totalsTask: Task<(Int?, Int?), Never>?
     private var recentAlbumsTaskID: UUID?
     private var recentlyPlayedTaskID: UUID?
 
@@ -62,11 +63,13 @@ final class LibraryViewModel: ObservableObject {
                 self?.tracksForAlbumTasks.values.forEach { $0.cancel() }
                 self?.recentAlbumsTask?.cancel()
                 self?.recentlyPlayedTask?.cancel()
+                self?.totalsTask?.cancel()
                 self?.worksLoadTasks.removeAll()
                 self?.tracksForWorkTasks.removeAll()
                 self?.tracksForAlbumTasks.removeAll()
                 self?.recentAlbumsTask = nil
                 self?.recentlyPlayedTask = nil
+                self?.totalsTask = nil
                 self?.recentAlbumsTaskID = nil
                 self?.recentlyPlayedTaskID = nil
                 self?.searchCache.removeAll()
@@ -82,10 +85,26 @@ final class LibraryViewModel: ObservableObject {
     /// Short-circuits if both are already populated (zero network cost on revisit).
     func loadTotals() async {
         guard totalWorks == nil || totalAlbums == nil else { return }
-        async let worksCount:  Int? = try? LyrionAPI.shared.getWorksCount()
-        async let albumsCount: Int? = try? LyrionAPI.shared.getAlbumsCount()
-        let (w, a) = await (worksCount, albumsCount)
-        if let w { totalWorks  = w }
+
+        if let existing = totalsTask {
+            let (w, a) = await existing.value
+            guard !Task.isCancelled else { return }
+            if let w { totalWorks = w }
+            if let a { totalAlbums = a }
+            return
+        }
+
+        let task = Task<(Int?, Int?), Never> {
+            async let worksCount: Int? = try? LyrionAPI.shared.getWorksCount()
+            async let albumsCount: Int? = try? LyrionAPI.shared.getAlbumsCount()
+            return await (worksCount, albumsCount)
+        }
+        totalsTask = task
+        defer { totalsTask = nil }
+
+        let (w, a) = await task.value
+        guard !Task.isCancelled else { return }
+        if let w { totalWorks = w }
         if let a { totalAlbums = a }
     }
 
@@ -263,8 +282,16 @@ final class LibraryViewModel: ObservableObject {
 
     func loadRecentAlbums(force: Bool = false) async {
         if !force && !recentAlbums.isEmpty { return }
-        if !force, let existing = recentAlbumsTask {
-            do { recentAlbums = try await existing.value } catch { }
+        if force {
+            recentAlbumsTask?.cancel()
+            recentAlbumsTask = nil
+            recentAlbumsTaskID = nil
+        } else if let existing = recentAlbumsTask {
+            do {
+                let albums = try await existing.value
+                guard !Task.isCancelled else { return }
+                recentAlbums = albums
+            } catch { }
             return
         }
 
@@ -282,10 +309,13 @@ final class LibraryViewModel: ObservableObject {
         }
 
         do {
-            recentAlbums = try await task.value
+            let albums = try await task.value
+            guard !Task.isCancelled, recentAlbumsTaskID == taskID else { return }
+            recentAlbums = albums
         } catch is CancellationError {
             // Ignore.
         } catch {
+            guard recentAlbumsTaskID == taskID else { return }
             self.error = userFriendlyErrorMessage(for: error)
         }
     }
@@ -296,9 +326,14 @@ final class LibraryViewModel: ObservableObject {
         let local = PlaybackHistoryStore.shared.recentlyPlayedAlbums(limit: 20)
         recentlyPlayed = local
 
-        if !force, let existing = recentlyPlayedTask {
+        if force {
+            recentlyPlayedTask?.cancel()
+            recentlyPlayedTask = nil
+            recentlyPlayedTaskID = nil
+        } else if let existing = recentlyPlayedTask {
             do {
                 let server = try await existing.value
+                guard !Task.isCancelled else { return }
                 recentlyPlayed = mergeRecentlyPlayed(local: local, server: server, limit: 20)
             } catch { }
             return
@@ -319,6 +354,7 @@ final class LibraryViewModel: ObservableObject {
 
         do {
             let server = try await task.value
+            guard !Task.isCancelled, recentlyPlayedTaskID == taskID else { return }
             recentlyPlayed = mergeRecentlyPlayed(local: local, server: server, limit: 20)
         } catch is CancellationError {
             // Ignore.
@@ -546,6 +582,7 @@ final class LibraryViewModel: ObservableObject {
         tracksForAlbumTasks.values.forEach { $0.cancel() }
         recentAlbumsTask?.cancel()
         recentlyPlayedTask?.cancel()
+        totalsTask?.cancel()
         isLoadingComposers = false
         isLoadingWorks     = false
         isLoadingAlbums    = false
@@ -569,6 +606,7 @@ final class LibraryViewModel: ObservableObject {
         tracksForAlbumTasks.removeAll()
         recentAlbumsTask     = nil
         recentlyPlayedTask   = nil
+        totalsTask           = nil
         recentAlbumsTaskID   = nil
         recentlyPlayedTaskID = nil
     }

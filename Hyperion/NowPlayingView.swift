@@ -39,18 +39,15 @@ struct LMSAudioQuality {
             }
         }
 
-        /// Purple for Hi-Res (Roon uses blue/purple), green for Lossless,
-        /// amber for High Quality (matches existing DesignSystem tokens).
         var dotColor: Color {
             switch self {
-            case .hiRes:       return Color(hex: "#7b6cf6")                     // purple
-            case .lossless:    return Color(red: 0.20, green: 0.85, blue: 0.40) // green
-            case .highQuality: return Color(red: 0.95, green: 0.75, blue: 0.20) // amber
+            case .hiRes:       return Color(hex: "#7b6cf6")
+            case .lossless:    return Color(red: 0.20, green: 0.85, blue: 0.40)
+            case .highQuality: return Color(red: 0.95, green: 0.75, blue: 0.20)
             }
         }
     }
 
-    /// Subtitle shown in the signal-path sheet, e.g. "FLAC 96 kHz / 24-bit"
     var detailSubtitle: String {
         let khz = sampleRate >= 1000
             ? String(format: "%.1f kHz", Double(sampleRate) / 1000)
@@ -92,7 +89,7 @@ struct AudioFormat {
         case "mp3":          return AudioFormat(label: "MP3",  isLossless: false)
         case "aac":          return AudioFormat(label: "AAC",  isLossless: false)
         case "ogg":          return AudioFormat(label: "OGG",  isLossless: false)
-        default:             return nil
+        default:              return nil
         }
     }
 }
@@ -100,70 +97,58 @@ struct AudioFormat {
 // MARK: - Now Playing
 
 struct NowPlayingView: View {
-
     @ObservedObject private var player = PlayerViewModel.shared
     @Environment(\.dismiss) private var dismiss
 
     @State private var isDraggingProgress: Bool = false
-    @State private var dragProgress: Double     = 0
+    @State private var dragProgress: Double = 0
 
     @State private var showSignalPath: Bool = false
     @State private var showQueuePanel: Bool = false
+    @State private var showMoreActions: Bool = false
 
-    // Swipe-down-to-dismiss
-    @State private var dragOffset: CGFloat  = 0
+    @State private var dragOffset: CGFloat = 0
     @State private var isDraggingDown: Bool = false
 
     @State private var isLiked: Bool = false
+    @State private var isPillPulsing: Bool = false
 
+<<<<<<< HEAD
     @State private var isPillPulsing: Bool = false
 
     // Artwork swipe
+=======
+>>>>>>> 6d77a84 (Fixed general)
     @State private var artworkDragOffset: CGFloat = 0
-    @State private var artworkOpacity: Double     = 1.0
+    @State private var artworkOpacity: Double = 1.0
     @State private var artworkTransitioning: Bool = false
     @State private var artworkSwipeTask: Task<Void, Never>? = nil
 
-    // -------------------------------------------------------------------------
-    // Quality pill — resolved in priority order:
-    //   1. Live LMS data via lmsAudioQuality on PlayerViewModel (add per patch)
-    //   2. File-extension fallback from track URL
-    //   3. Generic "Signal" placeholder (so pill is always visible)
-    // -------------------------------------------------------------------------
     private var qualityPillInfo: (label: String, dotColor: Color, isLosslessOrBetter: Bool) {
-        // Priority 1: Live LMS quality data — uses the canonical colours
-        // defined in LMSAudioQuality.Tier so they stay in sync with the struct.
         if let lmsQ = player.lmsAudioQuality {
             let tier = lmsQ.tier
             return (tier.label, tier.dotColor, tier != .highQuality)
         }
 
-        // Priority 2: sourceFormat string set by PlayerViewModel from the track URL extension.
         let srcFmt = player.sourceFormat.uppercased()
         if !srcFmt.isEmpty && srcFmt != "UNKNOWN" {
             let isLossless = AudioFormats.isLossless(srcFmt)
             let color: Color = isLossless
-                ? Color(red: 0.20, green: 0.85, blue: 0.40) // green
-                : Color(red: 0.95, green: 0.75, blue: 0.20) // amber
-            let label = isLossless ? "Lossless" : "High Quality"
-            return (label, color, isLossless)
+                ? Color(red: 0.20, green: 0.85, blue: 0.40)
+                : Color(red: 0.95, green: 0.75, blue: 0.20)
+            return (isLossless ? "Lossless" : "High Quality", color, isLossless)
         }
-        // Priority 3: URL-extension fallback
+
         if let fmt = player.currentTrack.flatMap({ AudioFormat.from(track: $0) }) {
             let color = fmt.isLossless
                 ? Color(red: 0.20, green: 0.85, blue: 0.40)
                 : Color(red: 0.95, green: 0.75, blue: 0.20)
-            let label = fmt.isLossless ? "Lossless" : "High Quality"
-            return (label, color, fmt.isLossless)
+            return (fmt.isLossless ? "Lossless" : "High Quality", color, fmt.isLossless)
         }
-        // Placeholder — pill is always rendered so the tap target exists
+
         return ("Signal", Color.roonTertiary, false)
     }
 
-    // PERF: `signalPath` is expensive to compute — it allocates multiple
-    // AudioPathStep structs (each with a UUID) on every call. Since it's used
-    // only by the signal-path sheet, we build it lazily in the sheet's content
-    // rather than as a computed var on the view body.
     private var signalPath: AudioSignalPath {
         guard let track = player.currentTrack else { return .mockPath }
         return AudioSignalPath.fromPlaybackState(
@@ -176,28 +161,30 @@ struct NowPlayingView: View {
         )
     }
 
+    private var shouldShowQueuePosition: Bool {
+        player.queue.count > 1 && player.currentIndex >= 0 && player.currentIndex < player.queue.count
+    }
+
+    private var queuePositionText: String {
+        let pos = player.currentIndex + 1
+        let tot = player.queue.count
+        let isSingleWork = player.queueWorkGroups.count == 1
+            && player.currentWorkGroup != nil
+            && player.currentTrack?.work != nil
+            && player.queueWorkGroups.first?.tracks.count == tot
+        return isSingleWork ? "Movement \(pos) of \(tot)" : "\(pos) of \(tot)"
+    }
+
     var body: some View {
         ZStack(alignment: .bottom) {
-            // 1. Blurred artwork ambient background
             backgroundLayer
                 .ignoresSafeArea()
-                .opacity(isDraggingDown ? max(0.4, 1.0 - dragOffset / 300) : 1.0)
+                .overlay(backgroundChrome)
+                .opacity(isDraggingDown ? max(0.45, 1.0 - dragOffset / 260) : 1.0)
 
-            // 2. Very light scrim at bottom for controls legibility
-            LinearGradient(
-                gradient: Gradient(stops: [
-                    .init(color: Color.black.opacity(0.00), location: 0.00),
-                    .init(color: Color.black.opacity(0.00), location: 0.50),
-                    .init(color: Color.black.opacity(0.55), location: 1.00),
-                ]),
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .ignoresSafeArea()
-
-            // 3. Main content column — Roon ARC layout
             GeometryReader { geo in
                 let safeTop = geo.safeAreaInsets.top
+<<<<<<< HEAD
                 let safeBot = geo.safeAreaInsets.bottom
                 let screenW = geo.size.width
                 let screenH = geo.size.height
@@ -205,15 +192,22 @@ struct NowPlayingView: View {
                 // fit below, but never wider than screen minus horizontal margins.
                 let usableH  = screenH - safeTop - safeBot
                 let artworkSide = min(screenW - 32, usableH * 0.56)
+=======
+                let safeBottom = geo.safeAreaInsets.bottom
+                let contentWidth = max(geo.size.width - 32, 280)
+                let usableHeight = max(geo.size.height - safeTop - safeBottom, 480)
+                let artworkSide = min(contentWidth, max(260, usableHeight * 0.39))
+>>>>>>> 6d77a84 (Fixed general)
 
                 VStack(spacing: 0) {
-                    // ── Top bar (chevron down | pill | waveform)
-                    topBar
+                    headerBar
+                        .padding(.horizontal, 16)
                         .padding(.top, safeTop + 6)
                         .padding(.bottom, 4)
 
                     ScrollView(showsIndicators: false) {
                         VStack(spacing: 0) {
+<<<<<<< HEAD
 
                             // ── Album art: centered, constrained (Roon ARC style)
                             artworkSection(side: artworkSide)
@@ -231,67 +225,100 @@ struct NowPlayingView: View {
                                 .padding(.horizontal, 20)
                                 .padding(.top, 12)
                                 .padding(.bottom, 4)
+=======
+                            artworkSection(side: artworkSide)
+                                .padding(.top, 18)
+                                .padding(.bottom, 14)
 
-                            // ── Progress bar + timestamps
+                            if shouldShowQueuePosition {
+                                queuePositionLabel
+                                    .padding(.bottom, 10)
+                            }
+
+                            trackInfo
+                                .padding(.horizontal, 8)
+                                .padding(.bottom, 20)
+>>>>>>> 6d77a84 (Fixed general)
+
                             progressSection
-                                .padding(.horizontal, 20)
-                                .padding(.top, 12)
-                                .padding(.bottom, 4)
+                                .padding(.bottom, 20)
 
-                            // ── Transport controls
                             transportControls
-                                .padding(.horizontal, 20)
-                                .padding(.top, 12)
-                                .padding(.bottom, 4)
+                                .padding(.bottom, 30)
 
-                            // ── Bottom toolbar
                             bottomToolbar
-                                .padding(.horizontal, 20)
-                                .padding(.top, 8)
-                                .padding(.bottom, max(safeBot, 20))
+                                .padding(.bottom, max(safeBottom, 20))
                         }
-                        .frame(width: screenW)
+                        .padding(.horizontal, 16)
+                        .frame(
+                            minWidth: geo.size.width,
+                            maxWidth: .infinity,
+                            minHeight: usableHeight - 44,
+                            alignment: .top
+                        )
                     }
                     .simultaneousGesture(swipeDownToDismissGesture)
                 }
             }
             .offset(y: dragOffset)
-            .animation(isDraggingDown ? .none : .spring(response: 0.38, dampingFraction: 0.82), value: dragOffset)
+            .animation(isDraggingDown ? .none : .spring(response: 0.34, dampingFraction: 0.84), value: dragOffset)
 
-            // 4. Full queue sheet overlay
             if showQueuePanel {
                 queuePanelOverlay
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .overlay(alignment: .topTrailing) {
-            AudioDebugToggle()
-        }
+        .overlay(alignment: .topTrailing) { debugOverlay }
         .gesture(swipeDownToDismissGesture)
         .preferredColorScheme(.dark)
         .statusBarHidden(false)
         .sheet(isPresented: $showSignalPath) {
             AudioSignalPathView(path: signalPath)
         }
+        .confirmationDialog("Now Playing", isPresented: $showMoreActions, titleVisibility: .visible) {
+            Button("Queue") {
+                Haptics.light()
+                withAnimation { showQueuePanel = true }
+            }
+            Button("Signal Path") {
+                Haptics.light()
+                showSignalPath = true
+            }
+            Button(player.isPlaying ? "Pause" : "Play") {
+                Haptics.medium()
+                player.togglePlayPause()
+            }
+            Button("Cancel", role: .cancel) { }
+        }
         .animation(.spring(response: 0.36, dampingFraction: 0.80), value: showQueuePanel)
         .onAppear {
+<<<<<<< HEAD
             // Kick off the quality pill pulse ring — must be deferred one
             // run-loop tick so SwiftUI registers the initial state before animating.
+=======
+>>>>>>> 6d77a84 (Fixed general)
             DispatchQueue.main.async { isPillPulsing = true }
         }
         .onChange(of: player.currentTrack?.id) { _, _ in
-            isDraggingProgress  = false
-            dragProgress        = 0
-            artworkDragOffset   = 0
-            artworkOpacity      = 1.0
-            isLiked             = false
+            isDraggingProgress = false
+            dragProgress = 0
+            artworkDragOffset = 0
+            artworkOpacity = 1.0
+            isLiked = false
             artworkSwipeTask?.cancel()
-            artworkSwipeTask    = nil
+            artworkSwipeTask = nil
             artworkTransitioning = false
         }
         .onDisappear {
             artworkSwipeTask?.cancel()
         }
+    }
+
+    @ViewBuilder
+    private var debugOverlay: some View {
+        #if DEBUG
+        AudioDebugToggle()
+        #endif
     }
 
     // MARK: - Swipe-down-to-dismiss
@@ -315,35 +342,59 @@ struct NowPlayingView: View {
     }
 
     // MARK: - Background
-    //
-    // Roon ARC style: a flat, deeply-desaturated tint extracted from the album art.
-    // We reuse the blurred artwork approach but crank saturation down and brightness
-    // way down so the result reads as a near-solid muted hue rather than a bloom.
 
     @ViewBuilder
     private var backgroundLayer: some View {
         if let coverid = player.currentTrack?.coverid, !coverid.isEmpty {
             FlatTintBackground(coverid: coverid)
         } else {
-            Color.roonBase
+            LinearGradient(
+                colors: [Color.roonBase, Color.roonSurface.opacity(0.9), Color.roonBase],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        }
+    }
+
+    private var backgroundChrome: some View {
+        ZStack {
+            LinearGradient(
+                gradient: Gradient(stops: [
+                    .init(color: Color.black.opacity(0.18), location: 0.0),
+                    .init(color: Color.black.opacity(0.03), location: 0.22),
+                    .init(color: Color.black.opacity(0.22), location: 0.72),
+                    .init(color: Color.black.opacity(0.44), location: 1.0)
+                ]),
+                startPoint: .top,
+                endPoint: .bottom
+            )
+
+            RadialGradient(
+                colors: [Color.white.opacity(0.06), Color.clear],
+                center: .top,
+                startRadius: 30,
+                endRadius: 480
+            )
+            .blendMode(.screen)
         }
     }
 
     // MARK: - Top bar
-    //
-    // Layout: [chevron.down]  [quality pill]  [waveform icon]
-    // The pill is ALWAYS rendered — it shows a placeholder when format is unknown.
-    // Using a ZStack with leading/trailing overlay avoids the pill being squeezed
-    // by a greedy centre VStack.
 
-    private var topBar: some View {
-        let pill = qualityPillInfo
-        return ZStack {
-            // Centre pill — rendered first so it truly sits at centre
+    private var headerBar: some View {
+        HStack(spacing: 12) {
+            TopChromeButton(systemName: "chevron.down", accessibilityLabel: "Close") {
+                Haptics.light()
+                dismiss()
+            }
+
+            Spacer(minLength: 0)
+
             Button {
                 Haptics.light()
                 showSignalPath = true
             } label: {
+<<<<<<< HEAD
                 HStack(spacing: 7) {
                     ZStack {
                         Circle()
@@ -375,51 +426,41 @@ struct NowPlayingView: View {
                     Capsule()
                         .fill(Color.black.opacity(0.35))
                         .overlay(Capsule().strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
+=======
+                QualityPillView(
+                    label: qualityPillInfo.label,
+                    dotColor: qualityPillInfo.dotColor,
+                    isAnimating: qualityPillInfo.isLosslessOrBetter,
+                    isPillPulsing: isPillPulsing
+>>>>>>> 6d77a84 (Fixed general)
                 )
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Audio quality: \(pill.label). Tap for signal path.")
+            .accessibilityLabel("Audio quality: \(qualityPillInfo.label). Tap for signal path.")
 
-            // Leading: dismiss chevron
-            HStack {
-                Button {
-                    Haptics.light()
-                    dismiss()
-                } label: {
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundColor(.roonSecondary)
-                        .frame(width: 44, height: 44)
-                }
-                .accessibilityLabel("Close")
-                Spacer()
-            }
+            Spacer(minLength: 0)
 
-            // Trailing: waveform / signal path icon
-            HStack {
-                Spacer()
-                Button {
-                    Haptics.light()
-                    showSignalPath = true
-                } label: {
-                    Image(systemName: "waveform.badge.magnifyingglass")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundColor(.roonTertiary)
-                        .frame(width: 44, height: 44)
-                }
-                .accessibilityLabel("Signal path details")
+            TopChromeButton(systemName: "waveform.path", accessibilityLabel: "Signal path details") {
+                Haptics.light()
+                showSignalPath = true
             }
         }
-        .padding(.horizontal, 12)
     }
 
     // MARK: - Artwork
 
     private func artworkSection(side: CGFloat) -> some View {
+<<<<<<< HEAD
         // Roon ARC style: constrained square artwork, centered by caller.
         // Use .fit so non-square covers are letterboxed rather than cropped.
         ZStack {
             Color.black  // letterbox background for non-square covers
+=======
+        ZStack {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.black.opacity(0.9))
+
+>>>>>>> 6d77a84 (Fixed general)
             ArtworkView(
                 coverid: player.currentTrack?.coverid,
                 size: side,
@@ -427,10 +468,21 @@ struct NowPlayingView: View {
             )
         }
         .frame(width: side, height: side)
+<<<<<<< HEAD
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .shadow(color: .black.opacity(0.4), radius: 20, x: 0, y: 8)
         .scaleEffect(player.isPlaying ? 1.0 : 0.96)
         .animation(.spring(response: 0.35, dampingFraction: 0.72), value: player.isPlaying)
+=======
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.white.opacity(0.06), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.28), radius: 28, x: 0, y: 10)
+        .scaleEffect(player.isPlaying ? 1.0 : 0.985)
+        .animation(.spring(response: 0.30, dampingFraction: 0.78), value: player.isPlaying)
+>>>>>>> 6d77a84 (Fixed general)
         .offset(x: artworkDragOffset)
         .opacity(artworkOpacity)
         .contentShape(Rectangle())
@@ -442,8 +494,8 @@ struct NowPlayingView: View {
             .onChanged { value in
                 guard !artworkTransitioning else { return }
                 guard abs(value.translation.width) > abs(value.translation.height) else { return }
-                artworkDragOffset = value.translation.width * 0.4
-                artworkOpacity = max(0.5, 1.0 - abs(value.translation.width) / 400.0)
+                artworkDragOffset = value.translation.width * 0.42
+                artworkOpacity = max(0.55, 1.0 - abs(value.translation.width) / 420.0)
             }
             .onEnded { value in
                 guard !artworkTransitioning else { return }
@@ -453,7 +505,7 @@ struct NowPlayingView: View {
                 } else if value.translation.width > threshold {
                     commitArtworkSwipe(direction: .prev)
                 } else {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.78)) {
                         artworkDragOffset = 0
                         artworkOpacity = 1
                     }
@@ -491,57 +543,52 @@ struct NowPlayingView: View {
     }
 
     // MARK: - Queue position label
-    //
-    // Subtle caption: small, muted, centred — sits just below the artwork.
-    // For a classical work queue shows "Movement X of Y", otherwise "X of Y".
 
     private var queuePositionLabel: some View {
-        let pos = player.currentIndex + 1
-        let tot = player.queue.count
-        let isSingleWork = player.queueWorkGroups.count == 1
-            && player.currentWorkGroup != nil
-            && player.currentTrack?.work != nil
-            && player.queueWorkGroups.first?.tracks.count == tot
-        let label = isSingleWork ? "Movement \(pos) of \(tot)" : "\(pos) of \(tot)"
-        return Text(label)
-            .font(.roonBody(11, weight: .regular))
+        Text(queuePositionText)
+            .font(.roonBody(12, weight: .medium))
             .foregroundColor(.roonTertiary)
             .kerning(0.3)
             .frame(maxWidth: .infinity, alignment: .center)
     }
 
     // MARK: - Track info
-    //
-    // Roon ARC layout: left-aligned, no small-caps album line above.
-    // Large bold title, artist/composer below in secondary colour.
 
     private var trackInfo: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            // Title — allow up to 2 lines for long classical movement names
+        VStack(spacing: 6) {
             Text(player.currentTrack?.title ?? "")
-                .font(.system(size: 22, weight: .bold, design: .default))
+                .font(.system(size: 26, weight: .semibold, design: .default))
                 .foregroundColor(.roonPrimary)
-                .multilineTextAlignment(.leading)
-                .lineLimit(2)
+                .multilineTextAlignment(.center)
+                .lineLimit(3)
                 .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity)
 
-            // Artist / composer line
             let artistLine = player.currentTrack?.composer
-                          ?? player.currentTrack?.albumartist
-                          ?? player.currentTrack?.trackartist
-                          ?? ""
+                ?? player.currentTrack?.albumartist
+                ?? player.currentTrack?.trackartist
+                ?? ""
             if !artistLine.isEmpty {
                 Text(artistLine)
-                    .font(.system(size: 15, weight: .regular, design: .default))
+                    .font(.system(size: 17, weight: .regular, design: .default))
                     .foregroundColor(.roonSecondary)
-                    .multilineTextAlignment(.leading)
+                    .multilineTextAlignment(.center)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(maxWidth: .infinity)
+            }
+
+            if let album = player.currentTrack?.album, !album.isEmpty {
+                Text(album)
+                    .font(.system(size: 13, weight: .medium, design: .default))
+                    .foregroundColor(.roonTertiary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 2)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity)
     }
 
     // MARK: - Progress
@@ -555,7 +602,7 @@ struct NowPlayingView: View {
             ) { finalProgress in
                 player.seek(to: finalProgress * max(player.duration, 1))
             }
-            .frame(height: 20)
+            .frame(height: 22)
 
             HStack {
                 let effectiveDuration = player.duration > 0
@@ -565,58 +612,43 @@ struct NowPlayingView: View {
                     ? dragProgress * effectiveDuration
                     : player.currentTime
 
-                // Roon ARC shows elapsed on left, total duration on right
                 Text(formatTime(displayTime))
                     .font(.system(size: 12, weight: .medium, design: .monospaced))
-                    .foregroundColor(.roonTertiary)
+                    .foregroundColor(.white.opacity(0.78))
                     .monospacedDigit()
 
                 Spacer()
 
                 Text(formatTime(effectiveDuration))
                     .font(.system(size: 12, weight: .medium, design: .monospaced))
-                    .foregroundColor(.roonTertiary)
+                    .foregroundColor(.white.opacity(0.78))
                     .monospacedDigit()
             }
         }
     }
 
     // MARK: - Transport controls
-    //
-    // Roon ARC layout: [repeat] [prev] [play/pause] [next] [shuffle]
-    // Play button is a large flat icon — no circle background — matching ARC's minimal style.
 
     private var transportControls: some View {
         HStack(spacing: 0) {
-            // Repeat
-            Button {
+            SmallTransportButton(
+                systemName: "shuffle",
+                isActive: player.isShuffle,
+                accessibilityLabel: player.isShuffle ? "Shuffle on" : "Shuffle off"
+            ) {
                 Haptics.light()
-                player.cycleRepeat()
-            } label: {
-                Image(systemName: repeatIcon)
-                    .font(.system(size: 20, weight: .medium))
-                    .foregroundColor(player.repeatMode > 0 ? .roonAccent : .roonTertiary)
-                    .frame(width: 52, height: 52)
+                player.toggleShuffle()
             }
-            .accessibilityLabel(repeatAccessibilityLabel)
 
-            Spacer()
+            Spacer(minLength: 0)
 
-            // Previous
-            Button {
+            MainTransportButton(systemName: "backward.fill", size: 28, accessibilityLabel: "Previous track") {
                 Haptics.light()
                 player.previousTrack()
-            } label: {
-                Image(systemName: "backward.fill")
-                    .font(.system(size: 28, weight: .medium))
-                    .foregroundColor(.roonPrimary)
-                    .frame(width: 56, height: 56)
             }
-            .accessibilityLabel("Previous track")
 
-            Spacer()
+            Spacer(minLength: 0)
 
-            // Play / Pause — flat large icon, no circle background (Roon ARC style)
             Button {
                 Haptics.medium()
                 player.togglePlayPause()
@@ -624,40 +656,32 @@ struct NowPlayingView: View {
                 Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                     .font(.system(size: 44, weight: .medium))
                     .foregroundColor(.roonPrimary)
-                    .frame(width: 72, height: 72)
+                    .frame(width: 92, height: 92)
+                    .contentShape(Rectangle())
                     .offset(x: player.isPlaying ? 0 : 2)
             }
-            .scaleEffect(player.isPlaying ? 1.0 : 0.97)
-            .animation(.spring(response: 0.28, dampingFraction: 0.7), value: player.isPlaying)
+            .buttonStyle(.plain)
+            .scaleEffect(player.isPlaying ? 1.0 : 0.98)
+            .animation(.spring(response: 0.28, dampingFraction: 0.76), value: player.isPlaying)
             .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
 
-            Spacer()
+            Spacer(minLength: 0)
 
-            // Next
-            Button {
+            MainTransportButton(systemName: "forward.fill", size: 28, accessibilityLabel: "Next track") {
                 Haptics.light()
                 player.nextTrack()
-            } label: {
-                Image(systemName: "forward.fill")
-                    .font(.system(size: 28, weight: .medium))
-                    .foregroundColor(.roonPrimary)
-                    .frame(width: 56, height: 56)
             }
-            .accessibilityLabel("Next track")
 
-            Spacer()
+            Spacer(minLength: 0)
 
-            // Shuffle
-            Button {
+            SmallTransportButton(
+                systemName: repeatIcon,
+                isActive: player.repeatMode > 0,
+                accessibilityLabel: repeatAccessibilityLabel
+            ) {
                 Haptics.light()
-                player.toggleShuffle()
-            } label: {
-                Image(systemName: "shuffle")
-                    .font(.system(size: 20, weight: .medium))
-                    .foregroundColor(player.isShuffle ? .roonAccent : .roonTertiary)
-                    .frame(width: 52, height: 52)
+                player.cycleRepeat()
             }
-            .accessibilityLabel(player.isShuffle ? "Shuffle on" : "Shuffle off")
         }
     }
 
@@ -674,75 +698,45 @@ struct NowPlayingView: View {
     }
 
     // MARK: - Bottom toolbar
-    //
-    // Roon ARC layout: queue | heart | (centre spacer) | airplay | more (···)
-    // Five items, evenly spaced.
 
     private var bottomToolbar: some View {
         HStack(spacing: 0) {
-            // Queue
-            Button {
+            BottomToolbarButton(systemName: "list.bullet.below.rectangle", accessibilityLabel: "Queue") {
                 Haptics.light()
                 withAnimation { showQueuePanel = true }
-            } label: {
-                Image(systemName: "list.bullet.below.rectangle")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundColor(.roonTertiary)
-                    .frame(width: 48, height: 48)
             }
-            .accessibilityLabel("Queue")
 
-            Spacer()
+            Spacer(minLength: 0)
 
-            // Heart / Favourite
-            Button {
+            BottomToolbarButton(
+                systemName: isLiked ? "heart.fill" : "heart",
+                tint: isLiked ? .red : .white.opacity(0.36),
+                accessibilityLabel: isLiked ? "Unlike" : "Like"
+            ) {
                 Haptics.light()
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.5)) {
+                withAnimation(.spring(response: 0.28, dampingFraction: 0.58)) {
                     isLiked.toggle()
                 }
-            } label: {
-                Image(systemName: isLiked ? "heart.fill" : "heart")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundColor(isLiked ? .red : .roonTertiary)
-                    .scaleEffect(isLiked ? 1.2 : 1.0)
-                    .animation(.spring(response: 0.3, dampingFraction: 0.5), value: isLiked)
-                    .frame(width: 48, height: 48)
             }
-            .accessibilityLabel(isLiked ? "Unlike" : "Like")
 
-            Spacer()
+            Spacer(minLength: 0)
 
-            // Song info / signal path (centre)
-            Button {
+            BottomToolbarButton(systemName: "opticaldisc", tint: .white, accessibilityLabel: "Track info & signal path") {
                 Haptics.light()
                 showSignalPath = true
-            } label: {
-                Image(systemName: "info.circle")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundColor(.roonTertiary)
-                    .frame(width: 48, height: 48)
             }
-            .accessibilityLabel("Track info & signal path")
 
-            Spacer()
+            Spacer(minLength: 0)
 
-            // AirPlay / output picker
             AirPlayButton()
                 .frame(width: 48, height: 48)
 
-            Spacer()
+            Spacer(minLength: 0)
 
-            // Volume (uses speaker icon as a visual anchor for the volume HUD)
-            Button {
+            BottomToolbarButton(systemName: "ellipsis", accessibilityLabel: "More options") {
                 Haptics.light()
-                // Future: open volume/output picker sheet
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundColor(.roonTertiary)
-                    .frame(width: 48, height: 48)
+                showMoreActions = true
             }
-            .accessibilityLabel("More options")
         }
     }
 
@@ -847,15 +841,143 @@ struct NowPlayingView: View {
     }
 }
 
+// MARK: - Small UI components
+
+private struct TopChromeButton: View {
+    let systemName: String
+    let accessibilityLabel: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundColor(.white.opacity(0.84))
+                .frame(width: 44, height: 44)
+                .background(
+                    Circle()
+                        .fill(Color.black.opacity(0.16))
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(accessibilityLabel)
+    }
+}
+
+private struct QualityPillView: View {
+    let label: String
+    let dotColor: Color
+    let isAnimating: Bool
+    let isPillPulsing: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ZStack {
+                Circle()
+                    .fill(dotColor)
+                    .frame(width: 9, height: 9)
+
+                if isAnimating {
+                    Circle()
+                        .stroke(dotColor.opacity(0.42), lineWidth: 1.5)
+                        .frame(width: 9, height: 9)
+                        .scaleEffect(isPillPulsing ? 2.1 : 1.0)
+                        .opacity(isPillPulsing ? 0.0 : 0.75)
+                        .animation(
+                            .easeOut(duration: 1.35).repeatForever(autoreverses: false),
+                            value: isPillPulsing
+                        )
+                }
+            }
+
+            Text(label)
+                .font(.roonBody(13, weight: .semibold))
+                .foregroundColor(.white.opacity(0.94))
+
+            Image(systemName: "chevron.right")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(.white.opacity(0.42))
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .background(
+            Capsule()
+                .fill(Color.black.opacity(0.22))
+                .overlay(
+                    Capsule()
+                        .stroke(Color.white.opacity(0.10), lineWidth: 1)
+                )
+        )
+    }
+}
+
+private struct SmallTransportButton: View {
+    let systemName: String
+    let isActive: Bool
+    let accessibilityLabel: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 19, weight: .medium))
+                .foregroundColor(isActive ? .white.opacity(0.96) : .white.opacity(0.42))
+                .frame(width: 48, height: 48)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(accessibilityLabel)
+    }
+}
+
+private struct MainTransportButton: View {
+    let systemName: String
+    let size: CGFloat
+    let accessibilityLabel: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: size, weight: .medium))
+                .foregroundColor(.white.opacity(0.96))
+                .frame(width: 64, height: 64)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(accessibilityLabel)
+    }
+}
+
+private struct BottomToolbarButton: View {
+    let systemName: String
+    var tint: Color = .white.opacity(0.36)
+    let accessibilityLabel: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 21, weight: .medium))
+                .foregroundColor(tint)
+                .frame(width: 48, height: 48)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(accessibilityLabel)
+    }
+}
+
 // MARK: - AirPlay button wrapper
 
 struct AirPlayButton: UIViewRepresentable {
     func makeUIView(context: Context) -> AVRoutePickerView {
         let picker = AVRoutePickerView()
-        picker.tintColor       = UIColor(Color.roonTertiary)
-        picker.activeTintColor = UIColor(Color.roonAccent)
+        picker.tintColor = UIColor(Color.white.opacity(0.36))
+        picker.activeTintColor = UIColor(Color.white)
+        picker.prioritizesVideoDevices = false
         return picker
     }
+
     func updateUIView(_ uiView: AVRoutePickerView, context: Context) {}
 }
 
@@ -871,36 +993,36 @@ struct ProgressBarView: View {
         GeometryReader { geo in
             let width = max(geo.size.width, 1)
             let displayProgress = isDragging ? dragProgress : progress
-            let clampedDisplay  = max(0, min(1, displayProgress))
-            let filledWidth     = width * clampedDisplay
-            let thumbOffset     = max(0, min(width - 16, filledWidth - 8))
+            let clampedDisplay = max(0, min(1, displayProgress))
+            let filledWidth = width * clampedDisplay
+            let thumbOffset = max(0, min(width - 18, filledWidth - 9))
 
             ZStack(alignment: .leading) {
-                RoundedRectangle(cornerRadius: 1.5)
-                    .fill(Color.white.opacity(0.18))
-                    .frame(height: 3)
+                Capsule()
+                    .fill(Color.white.opacity(0.22))
+                    .frame(height: 4)
                     .frame(maxWidth: .infinity)
 
-                RoundedRectangle(cornerRadius: 1.5)
-                    .fill(Color.roonAccent)
-                    .frame(width: max(0, filledWidth), height: 3)
+                Capsule()
+                    .fill(Color.white.opacity(0.96))
+                    .frame(width: max(0, filledWidth), height: 4)
 
                 Circle()
                     .fill(Color.white)
-                    .frame(width: 16, height: 16)
-                    .shadow(color: .black.opacity(0.35), radius: 4)
+                    .frame(width: 18, height: 18)
+                    .shadow(color: .black.opacity(0.30), radius: 5)
                     .offset(x: thumbOffset)
-                    .scaleEffect(isDragging ? 1.35 : 1.0)
+                    .scaleEffect(isDragging ? 1.18 : 1.0)
                     .animation(.spring(response: 0.2), value: isDragging)
             }
-            .frame(height: 20)
+            .frame(height: 22)
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 0)
-                    .onChanged { v in
+                    .onChanged { value in
                         if !isDragging { Haptics.light() }
-                        isDragging   = true
-                        dragProgress = max(0, min(1, v.location.x / width))
+                        isDragging = true
+                        dragProgress = max(0, min(1, value.location.x / width))
                     }
                     .onEnded { _ in
                         let finalProgress = dragProgress
@@ -909,15 +1031,11 @@ struct ProgressBarView: View {
                     }
             )
         }
-        .frame(height: 20)
+        .frame(height: 22)
     }
 }
 
-// MARK: - Flat tint background (Roon ARC style)
-//
-// Blurs the artwork heavily, crushes saturation and brightness, giving a
-// near-solid muted hue rather than a colourful bloom. The result matches
-// Roon ARC's "flat deep tint extracted from album art" aesthetic.
+// MARK: - Flat tint background
 
 struct FlatTintBackground: View {
     let coverid: String
@@ -925,7 +1043,7 @@ struct FlatTintBackground: View {
     @Environment(\.displayScale) private var displayScale
     @State private var image: UIImage? = nil
 
-    private let targetPoints: CGFloat = 400
+    private let targetPoints: CGFloat = 420
 
     var body: some View {
         Group {
@@ -933,20 +1051,16 @@ struct FlatTintBackground: View {
                 Image(uiImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
-                    // Heavy blur first — flattens the image to a colour field
-                    .blur(radius: 120)
+                    .blur(radius: 115)
                     .scaleEffect(2.0)
-                    // Crush saturation: keeps hue readable but mutes vibrancy
-                    .saturation(0.55)
-                    // Darken significantly so it reads as a deep tint, not a photo
-                    .brightness(-0.28)
+                    .saturation(0.72)
+                    .brightness(-0.18)
                     .drawingGroup()
             } else {
                 Color.roonBase
             }
         }
-        // Final dark overlay so the minimum brightness never gets too high
-        .overlay(Color.black.opacity(0.30))
+        .overlay(Color.black.opacity(0.24))
         .task(id: coverid) {
             let scale = max(displayScale, 1)
             if let cached = ArtworkCache.shared.cachedImage(
@@ -954,16 +1068,21 @@ struct FlatTintBackground: View {
                 targetPoints: targetPoints,
                 scale: scale
             ) {
-                withAnimation(.easeOut(duration: 0.25)) { image = cached }
+                withAnimation(.easeOut(duration: 0.22)) { image = cached }
                 return
             }
+
             let loaded = await ArtworkCache.shared.loadImage(
                 coverid: coverid,
                 targetPoints: targetPoints,
                 scale: scale
             )
             guard !Task.isCancelled else { return }
+<<<<<<< HEAD
             withAnimation(.easeOut(duration: 0.5)) { image = loaded }
+=======
+            withAnimation(.easeOut(duration: 0.45)) { image = loaded }
+>>>>>>> 6d77a84 (Fixed general)
         }
     }
 }

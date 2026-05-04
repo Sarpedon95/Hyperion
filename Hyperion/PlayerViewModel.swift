@@ -1571,6 +1571,7 @@ final class PlayerViewModel: ObservableObject {
         lmsAudioQualityTask?.cancel()
         lmsAudioQualityTask = Task { @MainActor [weak self] in
             guard let self else { return }
+<<<<<<< HEAD
             guard !Task.isCancelled, playbackID == self.activePlaybackID else { return }
 
             do {
@@ -1583,6 +1584,51 @@ final class PlayerViewModel: ObservableObject {
                 ServerLogStore.shared.debug(
                     "LMS quality: \(quality.type.uppercased()) \(quality.sampleRate) Hz / \(quality.sampleSize > 0 ? "\(quality.sampleSize)-bit" : "unknown depth")"
                 )
+=======
+            // Small delay: LMS populates samplerate/samplesize ~200–500 ms
+            // after the play command is acknowledged. 600 ms is conservative
+            // but avoids a blank quality result on fast local networks.
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            guard !Task.isCancelled, playbackID == self.activePlaybackID else { return }
+
+            do {
+                let result = try await LyrionAPI.shared.request(params: ["status", "-", 1, "tags:uYo"])
+                guard !Task.isCancelled, playbackID == self.activePlaybackID else { return }
+
+                if let songInfo = (result["playlist_loop"] as? [[String: Any]])?.first {
+                    // samplerate is Int in recent LMS but String in older builds.
+                    let rate: Int
+                    if let intRate = songInfo["samplerate"] as? Int {
+                        rate = intRate
+                    } else if let strRate = songInfo["samplerate"] as? String, let parsed = Int(strRate) {
+                        rate = parsed
+                    } else {
+                        rate = 0
+                    }
+
+                    let size: Int
+                    if let intSize = songInfo["samplesize"] as? Int {
+                        size = intSize
+                    } else if let strSize = songInfo["samplesize"] as? String, let parsed = Int(strSize) {
+                        size = parsed
+                    } else {
+                        size = 0
+                    }
+
+                    let type = (songInfo["type"] as? String ?? "").lowercased()
+
+                    if rate > 0 {
+                        self.lmsAudioQuality = LMSAudioQuality(
+                            sampleRate: rate,
+                            sampleSize: size,
+                            type:       type
+                        )
+                        ServerLogStore.shared.debug(
+                            "LMS quality: \(type.uppercased()) \(rate) Hz / \(size > 0 ? "\(size)-bit" : "unknown depth")"
+                        )
+                    }
+                }
+>>>>>>> 6d77a84 (Fixed general)
             } catch is CancellationError {
                 // Track changed; no UI update needed.
             } catch {

@@ -158,6 +158,7 @@ struct ContentView: View {
 
             // ConnectionManager.init() already sets baseURL from saved UserDefaults,
             // so API calls succeed immediately with the cached URL without waiting for
+<<<<<<< HEAD
             // a full network probe. Run everything concurrently: library loads begin
             // instantly; resolveConnection() verifies reachability in parallel and
             // may upgrade to a faster candidate.
@@ -167,6 +168,18 @@ struct ContentView: View {
             async let _recentAlbums: ()   = library.loadRecentAlbums()
             async let _recentlyPlayed: () = library.loadRecentlyPlayed()
             _ = await (_resolve, _composers, _recentAlbums, _recentlyPlayed)
+=======
+            // a full network probe. Start library warm-up immediately, but only await
+            // connection resolution before the restore banner so a large library does
+            // not delay “Resume where you left off”.
+            async let resolve: Void              = connection.resolveConnection()
+            async let composersWarmup: Void      = library.loadComposers()
+            async let recentAlbumsWarmup: Void   = library.loadRecentAlbums()
+            async let recentlyPlayedWarmup: Void = library.loadRecentlyPlayed()
+
+            await resolve
+            guard !Task.isCancelled else { return }
+>>>>>>> 6d77a84 (Fixed general)
 
             // Auto mode may switch from the initially persisted URL to a
             // faster reachable endpoint while the first library requests are
@@ -208,6 +221,10 @@ struct ContentView: View {
                     }
                 }
             }
+
+            // Keep the startup task alive long enough to observe warm-up
+            // cancellation, but do not block any visible interaction or restore UI.
+            _ = await (composersWarmup, recentAlbumsWarmup, recentlyPlayedWarmup)
         }
         .preferredColorScheme(.dark)
         .onDisappear {
@@ -432,9 +449,12 @@ final class ArtworkCache {
     /// load that started for the same key (e.g. after a memory warning).
     private var inFlightToken: [String: UInt64] = [:]
     private var nextInFlightToken: UInt64 = 0
+<<<<<<< HEAD
     /// Negative cache keyed by artwork URL, not size bucket. A truly missing
     /// cover should not be retried just because another view asks for 512 px
     /// instead of 256 px.
+=======
+>>>>>>> 6d77a84 (Fixed general)
     private var missingArtworkUntil: [String: Date] = [:]
     private var memoryWarningObserver: NSObjectProtocol?
 
@@ -476,6 +496,7 @@ final class ArtworkCache {
                 self?.inFlight.values.forEach { $0.cancel() }
                 self?.inFlight.removeAll()
                 self?.inFlightToken.removeAll()
+                self?.missingArtworkUntil.removeAll()
                 self?.clear()
             }
         }
@@ -501,7 +522,11 @@ final class ArtworkCache {
               let url = LyrionAPI.shared.artworkURL(coverid: coverid) else { return nil }
         let pixels = Int((targetPoints * scale).rounded(.up))
         let key = Self.cacheKey(identifier: url.absoluteString, targetPixels: pixels)
+<<<<<<< HEAD
         guard !isTemporarilyMissing(url.absoluteString) else { return nil }
+=======
+        guard !isTemporarilyMissing(key) else { return nil }
+>>>>>>> 6d77a84 (Fixed general)
         return cache.object(forKey: key as NSString)
     }
 
@@ -515,9 +540,15 @@ final class ArtworkCache {
         let pixels = Int((targetPoints * scale).rounded(.up))
         let key = Self.cacheKey(identifier: url.absoluteString, targetPixels: pixels)
 
+<<<<<<< HEAD
         guard !isTemporarilyMissing(url.absoluteString) else { return nil }
         if let cached = cache.object(forKey: key as NSString) { return cached }
         if let existing = inFlight[key] { return (await existing.value).image }
+=======
+        guard !isTemporarilyMissing(key) else { return nil }
+        if let cached = cache.object(forKey: key as NSString) { return cached }
+        if let existing = inFlight[key] { return await existing.value }
+>>>>>>> 6d77a84 (Fixed general)
 
         return await loadAndCache(key: key, url: url, targetPixels: pixels)
     }
@@ -528,16 +559,27 @@ final class ArtworkCache {
     func loadImage(url: URL, targetPoints: CGFloat, scale: CGFloat) async -> UIImage? {
         let pixels = Int((targetPoints * scale).rounded(.up))
         let key = Self.cacheKey(identifier: url.absoluteString, targetPixels: pixels)
+<<<<<<< HEAD
         guard !isTemporarilyMissing(url.absoluteString) else { return nil }
+=======
+        guard !isTemporarilyMissing(key) else { return nil }
+>>>>>>> 6d77a84 (Fixed general)
         if let cached = cache.object(forKey: key as NSString) { return cached }
         if let existing = inFlight[key] { return (await existing.value).image }
         return await loadAndCache(key: key, url: url, targetPixels: pixels)
     }
 
+<<<<<<< HEAD
     private func isTemporarilyMissing(_ urlKey: String) -> Bool {
         guard let until = missingArtworkUntil[urlKey] else { return false }
         if until > Date() { return true }
         missingArtworkUntil[urlKey] = nil
+=======
+    private func isTemporarilyMissing(_ key: String) -> Bool {
+        guard let until = missingArtworkUntil[key] else { return false }
+        if until > Date() { return true }
+        missingArtworkUntil[key] = nil
+>>>>>>> 6d77a84 (Fixed general)
         return false
     }
 
@@ -593,16 +635,35 @@ final class ArtworkCache {
         inFlight[key]      = nil
         inFlightToken[key] = nil
 
+<<<<<<< HEAD
         if let image {
             missingArtworkUntil[missingKey] = nil
+=======
+        // Only commit the result if this is still the latest load for `key`.
+        // A memory warning or a newer request may have cancelled/removed our token;
+        // in that case a nil result should not become a five-minute missing-art mark.
+        guard inFlightToken[key] == myToken else { return image }
+        inFlight[key]      = nil
+        inFlightToken[key] = nil
+
+        if let image {
+            missingArtworkUntil[key] = nil
+>>>>>>> 6d77a84 (Fixed general)
             let cgWidth  = image.cgImage?.width  ?? Int(image.size.width  * image.scale)
             let cgHeight = image.cgImage?.height ?? Int(image.size.height * image.scale)
             let cost = max(1, cgWidth * cgHeight * 4)
             cache.setObject(image, forKey: key as NSString, cost: cost)
+<<<<<<< HEAD
         } else if result.shouldMarkMissing {
             // Missing art is common on LMS. Avoid hammering /music/<id>/cover.jpg
             // every time a recycled cell appears; retry later in case scans update.
             missingArtworkUntil[missingKey] = Date().addingTimeInterval(5 * 60)
+=======
+        } else {
+            // Missing art is common on LMS. Avoid hammering /music/<id>/cover.jpg
+            // every time a recycled cell appears; retry later in case scans update.
+            missingArtworkUntil[key] = Date().addingTimeInterval(5 * 60)
+>>>>>>> 6d77a84 (Fixed general)
         }
         return image
     }
@@ -636,9 +697,12 @@ final class ArtworkCache {
         inFlightToken.removeAll()
         cache.removeAllObjects()
         missingArtworkUntil.removeAll()
+<<<<<<< HEAD
         if includeDiskCache {
             session.configuration.urlCache?.removeAllCachedResponses()
         }
+=======
+>>>>>>> 6d77a84 (Fixed general)
     }
 }
 

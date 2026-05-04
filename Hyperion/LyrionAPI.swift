@@ -18,7 +18,9 @@ final class LyrionAPI {
         config.timeoutIntervalForRequest  = 15
         config.timeoutIntervalForResource = 30
         config.httpMaximumConnectionsPerHost = 4
-        config.waitsForConnectivity = true
+        // Fail quickly for bad/offline LMS hosts. The connection manager owns
+        // reachability/retry; waiting here makes visible UI requests feel hung.
+        config.waitsForConnectivity = false
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         return URLSession(configuration: config)
     }()
@@ -29,7 +31,14 @@ final class LyrionAPI {
     //   u=url w=work y=year o=type
     private let trackTags = "ACGSXcdeiltuwyo"
 
+    private var nextRPCID: Int = 0
+
     private init() {}
+
+    private func makeRPCID() -> Int {
+        nextRPCID = nextRPCID == Int.max ? 1 : nextRPCID + 1
+        return nextRPCID
+    }
 
     // MARK: - URL helpers
 
@@ -184,10 +193,14 @@ final class LyrionAPI {
 
     func request(playerID: String = "0", params: [Any]) async throws -> [String: Any] {
         try Task.checkCancellation()
-        guard let url = jsonRPCURL() else { throw HyperionError.invalidURL }
+        let baseURLSnapshot = baseURL
+        guard !baseURLSnapshot.isEmpty,
+              let url = URL(string: "\(baseURLSnapshot)/jsonrpc.js") else {
+            throw HyperionError.invalidURL
+        }
 
         let body: [String: Any] = [
-            "id": 1,
+            "id": makeRPCID(),
             "method": "slim.request",
             "params": [playerID, params]
         ]
@@ -196,7 +209,7 @@ final class LyrionAPI {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         req.setValue("Hyperion iOS",      forHTTPHeaderField: "User-Agent")
-        HyperionURLAuth.addAuthorizationHeader(to: &req, baseURL: baseURL)
+        HyperionURLAuth.addAuthorizationHeader(to: &req, baseURL: baseURLSnapshot)
         req.timeoutInterval = 10
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
 

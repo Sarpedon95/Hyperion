@@ -613,7 +613,11 @@ struct SettingsView: View {
         // Clear server-scoped data so a changed LMS endpoint never shows stale
         // albums/artwork from the previous library while reconnecting.
         LibraryViewModel.shared.clearCache()
+<<<<<<< HEAD
         ArtworkCache.shared.clear(includeDiskCache: true)
+=======
+        ArtworkCache.shared.clear()
+>>>>>>> 6d77a84 (Fixed general)
         connection.forceReconnect()
     }
 
@@ -658,22 +662,13 @@ struct SettingsView: View {
                 if candidates.isEmpty {
                     probe = await ConnectionManager.probeBestServer("")
                 } else {
-                    probe = await withTaskGroup(of: ConnectionProbeResult.self) { group in
-                        for url in candidates {
-                            group.addTask { await ConnectionManager.probeServer(url) }
-                        }
-                        var lastFailure: ConnectionProbeResult?
-                        for await result in group {
-                            if result.isSuccess {
-                                group.cancelAll()
-                                return result
-                            }
-                            lastFailure = result
-                        }
-                        if let lastFailure {
-                            return lastFailure
-                        }
-                        return await ConnectionManager.probeBestServer("")
+                    // Reuse ConnectionManager's optimized candidate race so the
+                    // Settings test behaves like Auto connection resolution and
+                    // does not create a separate URLSession/socket pool per URL.
+                    if let result = await ConnectionManager.probeFirstSuccessful(candidates: candidates) {
+                        probe = result
+                    } else {
+                        probe = await ConnectionManager.probeServer("")
                     }
                 }
             }

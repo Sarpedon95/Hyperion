@@ -396,7 +396,7 @@ final class ConnectionManager: ObservableObject {
         return await probeServer("")
     }
 
-    private nonisolated static func probeFirstSuccessful(candidates: [String]) async -> ConnectionProbeResult? {
+    nonisolated static func probeFirstSuccessful(candidates: [String]) async -> ConnectionProbeResult? {
         guard !candidates.isEmpty else { return nil }
 
         // One shared ephemeral session for the whole race.  Creating a new
@@ -553,7 +553,11 @@ final class ConnectionManager: ObservableObject {
                 serverVersion: nil,
                 errorMessage: Self.describeNetworkError(error)
             )
-            await logProbeResult(result)
+            if Self.isCancellation(error) {
+                await ServerLogStore.shared.debug("Probe cancelled: \(result.summary)")
+            } else {
+                await logProbeResult(result)
+            }
             return result
         }
     }
@@ -653,6 +657,12 @@ final class ConnectionManager: ObservableObject {
         case 504: return "HTTP 504 Gateway Timeout — proxy timed out reaching Lyrion"
         default:  return "HTTP \(status)"
         }
+    }
+
+    private nonisolated static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        if let urlError = error as? URLError, urlError.code == .cancelled { return true }
+        return false
     }
 
     private nonisolated static func describeNetworkError(_ error: Error) -> String {
