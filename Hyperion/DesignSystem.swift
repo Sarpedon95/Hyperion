@@ -5,21 +5,21 @@ import UIKit
 
 extension Color {
 
-    // Backgrounds
-    static let roonBase     = Color(hex: "#0e0f14")   // deepest background
-    static let roonSurface  = Color(hex: "#1a1b24")   // cards, tab bar, nav bar
-    static let roonElevated = Color(hex: "#22243a")   // modals, elevated surfaces
+    // Backgrounds — Roon ARC dark olive/green theme
+    static let roonBase     = Color(hex: "#1a1e14")   // deep olive-black
+    static let roonSurface  = Color(hex: "#232a1b")   // surface olive
+    static let roonElevated = Color(hex: "#2c3522")   // elevated olive
 
     // Borders / separators
     static let roonBorder   = Color(white: 1, opacity: 0.07)
     static let roonDivider  = Color(white: 1, opacity: 0.11)
 
-    // Accent
-    static let roonAccent   = Color(hex: "#7b6cf6")
+    // Accent — ARC uses muted olive-green
+    static let roonAccent   = Color(hex: "#8db84a")
 
     // Quality indicators
     static let roonQualityGreen  = Color(red: 0.20, green: 0.85, blue: 0.40)
-    static let roonQualityPurple = Color(hex: "#7b6cf6")
+    static let roonQualityPurple = Color(hex: "#8db84a")
 
     // Text hierarchy
     static let roonPrimary   = Color.white

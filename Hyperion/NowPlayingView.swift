@@ -181,7 +181,7 @@ struct NowPlayingView: View {
                 let safeBottom = geo.safeAreaInsets.bottom
                 let contentWidth = max(geo.size.width - 32, 280)
                 let usableHeight = max(geo.size.height - safeTop - safeBottom, 480)
-                let artworkSide = min(contentWidth, max(260, usableHeight * 0.39))
+                let artworkSide = geo.size.width  // ARC: full-width artwork
 
                 VStack(spacing: 0) {
                     headerBar
@@ -192,8 +192,9 @@ struct NowPlayingView: View {
                     ScrollView(showsIndicators: false) {
                         VStack(spacing: 0) {
                             artworkSection(side: artworkSide)
-                                .padding(.top, 18)
-                                .padding(.bottom, 14)
+                                .padding(.horizontal, -16) // break out of parent padding for edge-to-edge
+                                .padding(.top, 0)
+                                .padding(.bottom, 0)
 
                             if shouldShowQueuePosition {
                                 queuePositionLabel
@@ -202,7 +203,8 @@ struct NowPlayingView: View {
 
                             trackInfo
                                 .padding(.horizontal, 8)
-                                .padding(.bottom, 20)
+                                .padding(.top, 16)
+                                .padding(.bottom, 16)
 
                             progressSection
                                 .padding(.bottom, 20)
@@ -304,38 +306,20 @@ struct NowPlayingView: View {
 
     @ViewBuilder
     private var backgroundLayer: some View {
-        if let coverid = player.currentTrack?.coverid, !coverid.isEmpty {
-            FlatTintBackground(coverid: coverid)
-        } else {
-            LinearGradient(
-                colors: [Color.roonBase, Color.roonSurface.opacity(0.9), Color.roonBase],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        }
+        // ARC-style: deep olive-green background, always
+        Color(hex: "#1a1e14")
     }
 
     private var backgroundChrome: some View {
-        ZStack {
-            LinearGradient(
-                gradient: Gradient(stops: [
-                    .init(color: Color.black.opacity(0.18), location: 0.0),
-                    .init(color: Color.black.opacity(0.03), location: 0.22),
-                    .init(color: Color.black.opacity(0.22), location: 0.72),
-                    .init(color: Color.black.opacity(0.44), location: 1.0)
-                ]),
-                startPoint: .top,
-                endPoint: .bottom
-            )
-
-            RadialGradient(
-                colors: [Color.white.opacity(0.06), Color.clear],
-                center: .top,
-                startRadius: 30,
-                endRadius: 480
-            )
-            .blendMode(.screen)
-        }
+        // ARC-style: very subtle top vignette only
+        LinearGradient(
+            gradient: Gradient(stops: [
+                .init(color: Color.black.opacity(0.10), location: 0.0),
+                .init(color: Color.clear, location: 0.15)
+            ]),
+            startPoint: .top,
+            endPoint: .bottom
+        )
     }
 
     // MARK: - Top bar
@@ -375,25 +359,17 @@ struct NowPlayingView: View {
     // MARK: - Artwork
 
     private func artworkSection(side: CGFloat) -> some View {
+        // ARC-style: full-width, no rounded corners, no shadow
         ZStack {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.black.opacity(0.9))
-
+            Color.black
             ArtworkView(
                 coverid: player.currentTrack?.coverid,
                 size: side,
-                contentMode: .fit
+                contentMode: .fill
             )
         }
         .frame(width: side, height: side)
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(Color.white.opacity(0.06), lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.28), radius: 28, x: 0, y: 10)
-        .scaleEffect(player.isPlaying ? 1.0 : 0.985)
-        .animation(.spring(response: 0.30, dampingFraction: 0.78), value: player.isPlaying)
+        .clipped()
         .offset(x: artworkDragOffset)
         .opacity(artworkOpacity)
         .contentShape(Rectangle())
@@ -457,23 +433,25 @@ struct NowPlayingView: View {
 
     private var queuePositionLabel: some View {
         Text(queuePositionText)
-            .font(.roonBody(12, weight: .medium))
+            .font(.roonBody(11, weight: .medium))
             .foregroundColor(.roonTertiary)
             .kerning(0.3)
-            .frame(maxWidth: .infinity, alignment: .center)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 8)
     }
 
     // MARK: - Track info
 
     private var trackInfo: some View {
-        VStack(spacing: 6) {
+        // ARC-style: left-aligned track info
+        VStack(alignment: .leading, spacing: 4) {
             Text(player.currentTrack?.title ?? "")
-                .font(.system(size: 26, weight: .semibold, design: .default))
+                .font(.system(size: 22, weight: .bold, design: .default))
                 .foregroundColor(.roonPrimary)
-                .multilineTextAlignment(.center)
-                .lineLimit(3)
+                .multilineTextAlignment(.leading)
+                .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
             let artistLine = player.currentTrack?.composer
                 ?? player.currentTrack?.albumartist
@@ -481,25 +459,14 @@ struct NowPlayingView: View {
                 ?? ""
             if !artistLine.isEmpty {
                 Text(artistLine)
-                    .font(.system(size: 17, weight: .regular, design: .default))
+                    .font(.system(size: 15, weight: .regular, design: .default))
                     .foregroundColor(.roonSecondary)
-                    .multilineTextAlignment(.center)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity)
-            }
-
-            if let album = player.currentTrack?.album, !album.isEmpty {
-                Text(album)
-                    .font(.system(size: 13, weight: .medium, design: .default))
-                    .foregroundColor(.roonTertiary)
-                    .multilineTextAlignment(.center)
+                    .multilineTextAlignment(.leading)
                     .lineLimit(1)
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: - Progress
@@ -962,16 +929,17 @@ struct FlatTintBackground: View {
                 Image(uiImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
-                    .blur(radius: 115)
+                    .blur(radius: 120)
                     .scaleEffect(2.0)
-                    .saturation(0.72)
-                    .brightness(-0.18)
+                    .saturation(0.4)
+                    .brightness(-0.28)
+                    .hueRotation(.degrees(50)) // shift toward green/olive
                     .drawingGroup()
             } else {
                 Color.roonBase
             }
         }
-        .overlay(Color.black.opacity(0.24))
+        .overlay(Color(hex: "#1a1e14").opacity(0.55))
         .task(id: coverid) {
             let scale = max(displayScale, 1)
             if let cached = ArtworkCache.shared.cachedImage(
