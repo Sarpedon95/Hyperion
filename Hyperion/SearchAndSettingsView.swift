@@ -304,6 +304,7 @@ struct ComposerSmallRow: View {
 
 struct SearchResultsView: View {
     let results: (composers: [Composer], works: [Work], albums: [Album])
+    @ObservedObject private var library = LibraryViewModel.shared
 
     var body: some View {
         ScrollView {

@@ -494,11 +494,10 @@ final class LyrionAPI {
         async let catalogTask = searchCatalog(term: trimmed, count: count)
         async let artistTask  = getAlbumsByArtist(term: trimmed, count: count)
 
-        let (titleAlbums, catalogResult, artistAlbums) = await (
-            (try? await titleTask)   ?? [],
-            (try? await catalogTask),
-            (try? await artistTask)  ?? []
-        )
+        // Await each independently so Swift drives all three concurrently.
+        let titleAlbums   = (try? await titleTask)   ?? []
+        let catalogResult = try? await catalogTask
+        let artistAlbums  = (try? await artistTask)  ?? []
 
         // 1. Canonical LMS album-title search.
         merge(matching(titleAlbums))
