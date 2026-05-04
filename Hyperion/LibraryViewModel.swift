@@ -38,7 +38,7 @@ final class LibraryViewModel: ObservableObject {
     private var recentAlbumsTaskID: UUID?
     private var recentlyPlayedTaskID: UUID?
 
-    private let pageSize = 100
+    private let pageSize = 500
 
     private var memoryWarningObserver: NSObjectProtocol?
 

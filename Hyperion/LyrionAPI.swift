@@ -489,17 +489,28 @@ final class LyrionAPI {
             }
         }
 
+        // Steps 1-3 run in parallel — biggest speed-up for slow LMS installs.
+        async let titleTask   = getAlbums(start: 0, count: count, search: trimmed)
+        async let catalogTask = searchCatalog(term: trimmed, count: count)
+        async let artistTask  = getAlbumsByArtist(term: trimmed, count: count)
+
+        let (titleAlbums, catalogResult, artistAlbums) = await (
+            (try? await titleTask)   ?? [],
+            (try? await catalogTask),
+            (try? await artistTask)  ?? []
+        )
+
         // 1. Canonical LMS album-title search.
-        merge(matching((try? await getAlbums(start: 0, count: count, search: trimmed)) ?? []))
+        merge(matching(titleAlbums))
 
         // 2. Broad LMS search.
         if results.count < count {
-            merge(matching(((try? await searchCatalog(term: trimmed, count: count))?.albums) ?? []))
+            merge(matching(catalogResult?.albums ?? []))
         }
 
         // 3. Artist/composer-name album lookup.
         if results.count < count {
-            merge(matching((try? await getAlbumsByArtist(term: trimmed, count: count)) ?? []))
+            merge(matching(artistAlbums))
         }
 
         // 4. Bounded local server scan — safety net for mid-title matches.

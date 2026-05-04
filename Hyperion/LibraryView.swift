@@ -625,6 +625,13 @@ struct AlbumListView: View {
                             AlbumGridCell(album: album, cellWidth: cellWidth)
                         }
                         .buttonStyle(.plain)
+                        // Prefetch album tracks on press-down so they're warm when the
+                        // detail view opens. The cache deduplicates concurrent requests.
+                        .simultaneousGesture(DragGesture(minimumDistance: 0)
+                            .onChanged { _ in
+                                Task { try? await library.getTracksForAlbum(album.id) }
+                            }
+                        )
                         .onAppear {
                             // Pagination trigger: load next page when near the end.
                             // Guard the index access — library.albums can shrink

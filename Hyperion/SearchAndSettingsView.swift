@@ -78,10 +78,10 @@ struct SearchView: View {
         // ugly flash of "No results" between keystrokes.
         isSearching = true
         searchTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 300_000_000)
+            try? await Task.sleep(nanoseconds: 150_000_000)
             // BUG FIX: always reset isSearching when exiting early. Previously the
             // guard returned without resetting the flag, leaving the spinner visible
-            // after the user cleared the search field during the 300 ms debounce window.
+            // after the user cleared the search field during the 150 ms debounce window.
             guard !Task.isCancelled, searchSequence == sequence else {
                 isSearching = false
                 return
@@ -320,6 +320,12 @@ struct SearchResultsView: View {
                                     .padding(.vertical, 8)
                             }
                             .buttonStyle(.plain)
+                            // Prefetch tracks on press-down so detail opens instantly.
+                            .simultaneousGesture(DragGesture(minimumDistance: 0)
+                                .onChanged { _ in
+                                    Task { try? await library.getTracksForAlbum(album.id) }
+                                }
+                            )
                             if album.id != results.albums.last?.id {
                                 Color.roonBorder.frame(height: 0.5).padding(.leading, 68)
                             }
