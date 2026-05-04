@@ -8,17 +8,26 @@ final class LibraryViewModel: ObservableObject {
     static let shared = LibraryViewModel()
 
     @Published var composers: [Composer] = []
+    @Published var artists: [Artist] = []
+    @Published var songs: [Track] = []
     @Published var albums: [Album] = []
     @Published var recentAlbums: [Album] = []
     @Published var recentlyPlayed: [Album] = []
     @Published var isLoadingComposers: Bool = false
     @Published var isLoadingWorks: Bool = false
     @Published var isLoadingAlbums: Bool = false
+    @Published var isLoadingArtists: Bool = false
+    @Published var isLoadingSongs: Bool = false
     @Published var error: String? = nil
     @Published var totalWorks:  Int? = nil
     @Published var totalAlbums: Int? = nil
+    @Published var totalSongs:  Int? = nil
+    @Published var totalArtists: Int? = nil
 
     private var composerCache: [Composer]? = nil
+    private var artistCache: [Artist]? = nil
+    private var artistsLoadTask: Task<[Artist], Error>?
+    private var songsLoadTask: Task<[Track], Error>?
 
     private enum WorksCacheKey: Hashable {
         case all
@@ -77,7 +86,7 @@ final class LibraryViewModel: ObservableObject {
     /// Fetches and caches total works + albums counts for HomeView stat tiles.
     /// Short-circuits if both are already populated (zero network cost on revisit).
     func loadTotals() async {
-        guard totalWorks == nil || totalAlbums == nil else { return }
+        guard totalWorks == nil || totalAlbums == nil || totalSongs == nil || totalArtists == nil else { return }
 
         if let existing = totalsTask {
             let (w, a) = await existing.value
@@ -95,10 +104,17 @@ final class LibraryViewModel: ObservableObject {
         totalsTask = task
         defer { totalsTask = nil }
 
+        async let songsCount: Int? = try? LyrionAPI.shared.getSongsCount()
+        async let artistsCount: Int? = try? LyrionAPI.shared.getArtistsCount()
+
         let (w, a) = await task.value
+        let s = await songsCount
+        let ar = await artistsCount
         guard !Task.isCancelled else { return }
-        if let w { totalWorks = w }
-        if let a { totalAlbums = a }
+        if let w  { totalWorks   = w  }
+        if let a  { totalAlbums  = a  }
+        if let s  { totalSongs   = s  }
+        if let ar { totalArtists = ar }
     }
 
     // MARK: - Composers
@@ -166,6 +182,78 @@ final class LibraryViewModel: ObservableObject {
                 userMessage = error.localizedDescription
             }
             self.error = userMessage
+        }
+    }
+
+
+    // MARK: - Artists
+
+    func loadArtists() async {
+        if let cached = artistCache {
+            artists = cached
+            return
+        }
+        if let existing = artistsLoadTask {
+            do { artists = try await existing.value } catch { }
+            return
+        }
+        isLoadingArtists = true
+        let pageSize = self.pageSize
+        let task = Task<[Artist], Error> {
+            var all: [Artist] = []
+            var start = 0
+            while true {
+                try Task.checkCancellation()
+                let batch = try await LyrionAPI.shared.getAllArtists(start: start, count: pageSize)
+                all.append(contentsOf: batch)
+                if batch.count < pageSize { break }
+                start += pageSize
+            }
+            all.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            return all
+        }
+        artistsLoadTask = task
+        defer { artistsLoadTask = nil; isLoadingArtists = false }
+        do {
+            let all = try await task.value
+            artistCache = all
+            artists = all
+        } catch is CancellationError {
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    // MARK: - Songs
+
+    func loadSongs() async {
+        if !songs.isEmpty { return }
+        if let existing = songsLoadTask {
+            do { songs = try await existing.value } catch { }
+            return
+        }
+        isLoadingSongs = true
+        let pageSize = self.pageSize
+        let task = Task<[Track], Error> {
+            var all: [Track] = []
+            var start = 0
+            while true {
+                try Task.checkCancellation()
+                let batch = try await LyrionAPI.shared.getAllSongs(start: start, count: pageSize)
+                all.append(contentsOf: batch)
+                if batch.count < pageSize { break }
+                start += pageSize
+            }
+            return all
+        }
+        songsLoadTask = task
+        defer { songsLoadTask = nil; isLoadingSongs = false }
+        do {
+            let all = try await task.value
+            songs = all
+        } catch is CancellationError {
+        } catch {
+            self.error = error.localizedDescription
         }
     }
 
@@ -553,6 +641,10 @@ final class LibraryViewModel: ObservableObject {
     func clearCache() {
         composersLoadTask?.cancel()
         composersLoadTask = nil
+        artistsLoadTask?.cancel()
+        artistsLoadTask = nil
+        songsLoadTask?.cancel()
+        songsLoadTask = nil
         worksLoadTasks.values.forEach { $0.cancel() }
         tracksForWorkTasks.values.forEach { $0.cancel() }
         tracksForAlbumTasks.values.forEach { $0.cancel() }
@@ -562,16 +654,23 @@ final class LibraryViewModel: ObservableObject {
         isLoadingComposers = false
         isLoadingWorks     = false
         isLoadingAlbums    = false
+        isLoadingArtists   = false
+        isLoadingSongs     = false
         error              = nil
         composers          = []
+        artists            = []
+        songs              = []
         albums             = []
         recentAlbums       = []
         recentlyPlayed     = []
         totalWorks         = nil
         totalAlbums        = nil
+        totalSongs         = nil
+        totalArtists       = nil
         hasLoadedAllAlbums = false
         albumsLoadGeneration = UUID()
         composerCache  = nil
+        artistCache    = nil
         worksCache     = [:]
         tracksForWork  = [:]
         tracksForAlbum = [:]

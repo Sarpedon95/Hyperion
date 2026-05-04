@@ -37,9 +37,9 @@ struct HomeView: View {
 
                     HStack(spacing: 10) {
                         NavigationLink {
-                            WorkListView(composerID: nil, composerName: nil)
+                            SongListView()
                         } label: {
-                            RoonStatTile(icon: "music.quarternote.3", value: library.totalWorks, label: "WORKS")
+                            RoonStatTile(icon: "music.note", value: library.totalSongs, label: "SONGS")
                         }
                         .buttonStyle(.plain)
 
@@ -51,14 +51,14 @@ struct HomeView: View {
                         .buttonStyle(.plain)
 
                         NavigationLink {
-                            ComposerListView()
+                            ArtistListView()
                         } label: {
                             RoonStatTile(
                                 icon: "person.crop.circle",
-                                value: library.isLoadingComposers && library.composers.isEmpty
+                                value: library.isLoadingArtists && library.artists.isEmpty
                                     ? nil
-                                    : library.composers.count,
-                                label: "COMPOSERS"
+                                    : library.totalArtists,
+                                label: "ARTISTS"
                             )
                         }
                         .buttonStyle(.plain)
@@ -91,19 +91,19 @@ struct HomeView: View {
                         .padding(.bottom, 32)
                     }
 
-                    // MARK: Composers
-                    if !library.composers.isEmpty {
-                        HomeSectionHeader(label: "YOUR LIBRARY", title: "Composers")
+                    // MARK: Artists
+                    if !library.artists.isEmpty {
+                        HomeSectionHeader(label: "YOUR LIBRARY", title: "Artists")
                             .padding(.horizontal, 16)
                             .padding(.bottom, 14)
 
                         ScrollView(.horizontal, showsIndicators: false) {
                             LazyHStack(spacing: 16) {
-                                ForEach(library.composers.prefix(25)) { composer in
+                                ForEach(library.artists.prefix(25)) { artist in
                                     NavigationLink {
-                                        WorkListView(composerID: composer.id, composerName: composer.artist)
+                                        ArtistDetailView(artist: artist)
                                     } label: {
-                                        ComposerCircleCard(composer: composer)
+                                        ArtistCircleCard(artist: artist)
                                     }
                                     .buttonStyle(.plain)
                                 }
@@ -134,7 +134,8 @@ struct HomeView: View {
                 async let totals: Void       = library.loadTotals()
                 async let recentAdded: Void  = library.loadRecentAlbums()
                 async let recentPlayed: Void = library.loadRecentlyPlayed()
-                _ = await (totals, recentAdded, recentPlayed)
+                async let artistsLoad: Void  = library.loadArtists()
+                _ = await (totals, recentAdded, recentPlayed, artistsLoad)
             }
         }
     }
@@ -302,6 +303,42 @@ struct ComposerCircleCard: View {
                     .foregroundColor(.roonAccent)
             }
             Text(NameFormatting.lastName(composer.artist))
+                .font(.roonBody(12, weight: .medium))
+                .foregroundColor(.roonSecondary)
+                .lineLimit(1)
+                .frame(width: size + 16)
+        }
+        .contentShape(Rectangle())
+    }
+}
+
+struct ArtistCircleCard: View {
+    let artist: Artist
+    private let size: CGFloat = 80
+
+    private var initials: String {
+        let parts = artist.name.split(separator: " ")
+        if parts.count >= 2 {
+            return String((parts.first?.prefix(1) ?? "") + (parts.last?.prefix(1) ?? ""))
+        }
+        return String(artist.name.prefix(2)).uppercased()
+    }
+
+    private var lastName: String {
+        artist.name.split(separator: " ").last.map(String.init) ?? artist.name
+    }
+
+    var body: some View {
+        VStack(spacing: 8) {
+            ZStack {
+                Circle()
+                    .fill(Color.roonElevated)
+                    .frame(width: size, height: size)
+                Text(initials)
+                    .font(.roonTitle(24))
+                    .foregroundColor(.roonAccent)
+            }
+            Text(lastName)
                 .font(.roonBody(12, weight: .medium))
                 .foregroundColor(.roonSecondary)
                 .lineLimit(1)

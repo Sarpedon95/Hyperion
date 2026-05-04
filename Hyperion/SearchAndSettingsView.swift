@@ -1,16 +1,50 @@
 import SwiftUI
 import UIKit
 
+// MARK: - Search view model (persists across navigation pushes)
+
+final class SearchViewModel: ObservableObject {
+    @Published var searchText: String = ""
+    @Published var results: (composers: [Composer], works: [Work], albums: [Album]) = ([], [], [])
+    @Published var isSearching: Bool = false
+
+    private var searchTask: Task<Void, Never>? = nil
+    private var searchSequence: Int = 0
+
+    func performSearch(query: String, library: LibraryViewModel) {
+        searchTask?.cancel()
+        searchSequence += 1
+        let sequence = searchSequence
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            results = ([], [], [])
+            isSearching = false
+            return
+        }
+        isSearching = true
+        searchTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            guard !Task.isCancelled, self.searchSequence == sequence else { return }
+            let r = await library.search(query: trimmed)
+            guard !Task.isCancelled, self.searchSequence == sequence else { return }
+            self.results = r
+            self.isSearching = false
+        }
+    }
+
+    func cancelSearch() {
+        searchTask?.cancel()
+        searchTask = nil
+        isSearching = false
+    }
+}
+
 // MARK: - Search
 
 struct SearchView: View {
 
     @ObservedObject private var library = LibraryViewModel.shared
-    @State private var searchText: String = ""
-    @State private var searchResults: (composers: [Composer], works: [Work], albums: [Album]) = ([], [], [])
-    @State private var isSearching: Bool = false
-    @State private var searchTask: Task<Void, Never>? = nil
-    @State private var searchSequence: Int = 0
+    @StateObject private var vm = SearchViewModel()
 
     var body: some View {
         NavigationStack {
@@ -22,73 +56,37 @@ struct SearchView: View {
                     .padding(.top, 8)
                     .padding(.bottom, 16)
 
-                SearchInputField(text: $searchText)
+                SearchInputField(text: $vm.searchText)
                     .padding(.horizontal, 16)
                     .padding(.bottom, 16)
 
                 Group {
-                    if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    if vm.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         SearchSuggestionsView()
-                    } else if isSearching {
+                    } else if vm.isSearching {
                         ProgressView()
                             .tint(.roonAccent)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else if searchResults.composers.isEmpty
-                                && searchResults.works.isEmpty
-                                && searchResults.albums.isEmpty {
-                        NoResultsView(query: searchText)
+                    } else if vm.results.composers.isEmpty
+                                && vm.results.works.isEmpty
+                                && vm.results.albums.isEmpty {
+                        NoResultsView(query: vm.searchText)
                     } else {
-                        SearchResultsView(results: searchResults)
+                        SearchResultsView(results: vm.results)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .background(Color.roonBase.ignoresSafeArea())
-            // Same transparent-nav-bar fix as HomeView — see comment there.
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(.hidden, for: .navigationBar)
             .toolbarColorScheme(.dark, for: .navigationBar)
-            .onChange(of: searchText) { _, newValue in performSearch(query: newValue) }
+            .onChange(of: vm.searchText) { _, newValue in
+                vm.performSearch(query: newValue, library: library)
+            }
             .task {
-                // Ensure composers are loaded for the suggestions panel.
-                // This is a no-op if ContentView.task already loaded them.
                 if library.composers.isEmpty { await library.loadComposers() }
             }
-            .onDisappear {
-                searchTask?.cancel()
-                searchTask    = nil
-                isSearching   = false
-                searchResults = ([], [], [])
-            }
-        }
-    }
-
-    private func performSearch(query: String) {
-        searchTask?.cancel()
-        searchSequence += 1
-        let sequence = searchSequence
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            searchResults = ([], [], [])
-            isSearching   = false
-            return
-        }
-        // Mark searching immediately so the spinner shows, but keep the old
-        // results visible during the debounce window — this prevents an
-        // ugly flash of "No results" between keystrokes.
-        isSearching = true
-        searchTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 150_000_000)
-            guard !Task.isCancelled, searchSequence == sequence else { return }
-
-            // Clear stale results only after the debounce fires, so the
-            // transition is: spinner → results, not: results → blank → results.
-            searchResults = ([], [], [])
-            let results = await library.search(query: trimmed)
-            guard !Task.isCancelled, searchSequence == sequence else { return }
-
-            searchResults = results
-            isSearching   = false
         }
     }
 }

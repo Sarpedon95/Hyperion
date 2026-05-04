@@ -369,6 +369,48 @@ final class LyrionAPI {
         return JSON.int(result["count"]) ?? JSON.int(result["_count"])
     }
 
+    func getSongsCount() async throws -> Int? {
+        try Task.checkCancellation()
+        let result = try await request(params: ["titles", 0, 0, "tags:"])
+        return JSON.int(result["count"]) ?? JSON.int(result["_count"])
+    }
+
+    func getArtistsCount() async throws -> Int? {
+        try Task.checkCancellation()
+        // All artists (not just composers) — no role filter
+        let result = try await request(params: ["artists", 0, 0])
+        return JSON.int(result["count"]) ?? JSON.int(result["_count"])
+    }
+
+    func getAllSongs(start: Int = 0, count: Int = 500) async throws -> [Track] {
+        try Task.checkCancellation()
+        let result = try await request(params: [
+            "titles", start, count, "tags:\(trackTags)", "sort:title"
+        ])
+        let raw = Self.parseTracks(result["titles_loop"] as? [[String: Any]] ?? [])
+        return raw
+    }
+
+    func getAllArtists(start: Int = 0, count: Int = 500) async throws -> [Artist] {
+        try Task.checkCancellation()
+        let result = try await request(params: ["artists", start, count])
+        guard let arr = result["artists_loop"] as? [[String: Any]] else { return [] }
+        return arr.compactMap { dict in
+            guard let id     = JSON.int(dict["id"]),
+                  let name   = dict["artist"] as? String else { return nil }
+            return Artist(id: id, name: name)
+        }
+    }
+
+    func getAlbumsForArtist(artistID: Int) async throws -> [Album] {
+        try Task.checkCancellation()
+        let result = try await request(params: [
+            "albums", 0, 500, "artist_id:\(artistID)", "tags:aljySC"
+        ])
+        let arr = result["albums_loop"] as? [[String: Any]] ?? []
+        return Self.parseAlbums(arr)
+    }
+
     func getTracksForWork(workID: Int) async throws -> [Track] {
         try Task.checkCancellation()
         let result = try await request(params: [

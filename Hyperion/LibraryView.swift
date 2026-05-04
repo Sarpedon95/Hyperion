@@ -17,6 +17,13 @@ struct LibraryView: View {
                         .padding(.bottom, 24)
 
                     VStack(spacing: 0) {
+                        NavigationLink(destination: SongListView()) {
+                            LibraryMenuRow(icon: "music.note",               label: "Songs")
+                        }
+                        .buttonStyle(.plain)
+
+                        Color.roonBorder.frame(height: 0.5).padding(.leading, 66)
+
                         NavigationLink(destination: AlbumListView()) {
                             LibraryMenuRow(icon: "square.stack.fill",        label: "Albums")
                         }
@@ -24,8 +31,15 @@ struct LibraryView: View {
 
                         Color.roonBorder.frame(height: 0.5).padding(.leading, 66)
 
+                        NavigationLink(destination: ArtistListView()) {
+                            LibraryMenuRow(icon: "person.crop.circle.fill",  label: "Artists")
+                        }
+                        .buttonStyle(.plain)
+
+                        Color.roonBorder.frame(height: 0.5).padding(.leading, 66)
+
                         NavigationLink(destination: ComposerListView()) {
-                            LibraryMenuRow(icon: "person.crop.circle.fill",  label: "Composers")
+                            LibraryMenuRow(icon: "person.badge.key.fill",    label: "Composers")
                         }
                         .buttonStyle(.plain)
 
@@ -1103,6 +1117,229 @@ struct WorkGroupSectionView: View {
             }
 
             Color.roonDivider.frame(height: 0.5)
+        }
+    }
+}
+
+// MARK: - Song list
+
+struct SongListView: View {
+
+    @ObservedObject private var library = LibraryViewModel.shared
+    @ObservedObject private var player  = PlayerViewModel.shared
+    @State private var searchText: String = ""
+    @State private var searchNeedle: SearchTextNormalizer.Needle = .empty
+
+    private var filtered: [Track] {
+        guard !searchNeedle.isEmpty else { return library.songs }
+        return library.songs.filter {
+            searchNeedle.matches($0.title) ||
+            searchNeedle.matches($0.albumartist ?? "") ||
+            searchNeedle.matches($0.trackartist ?? "") ||
+            searchNeedle.matches($0.album ?? "")
+        }
+    }
+
+    var body: some View {
+        List {
+            ForEach(filtered) { track in
+                Button {
+                    Haptics.light()
+                    player.playSingleTrack(track)
+                } label: {
+                    SongRowView(track: track, isActive: player.currentTrack?.id == track.id)
+                }
+                .buttonStyle(.plain)
+                .listRowBackground(Color.clear)
+                .listRowSeparatorTint(Color.roonBorder)
+            }
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .background(Color.roonBase)
+        .searchable(text: $searchText, prompt: "Search songs")
+        .onChange(of: searchText) { _, new in searchNeedle = .init(new) }
+        .navigationTitle("Songs")
+        .navigationBarTitleDisplayMode(.large)
+        .toolbarBackground(Color.roonBase, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
+        .toolbarColorScheme(.dark, for: .navigationBar)
+        .overlay {
+            if library.isLoadingSongs && library.songs.isEmpty {
+                ProgressView().tint(.roonAccent)
+            } else if !library.isLoadingSongs && library.songs.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "music.note")
+                        .font(.system(size: 40))
+                        .foregroundColor(.roonTertiary)
+                    Text("No songs found")
+                        .font(.roonTitle(18))
+                        .foregroundColor(.roonPrimary)
+                }
+            }
+        }
+        .task {
+            if library.songs.isEmpty { await library.loadSongs() }
+        }
+    }
+}
+
+struct SongRowView: View {
+    let track: Track
+    let isActive: Bool
+
+    var body: some View {
+        HStack(spacing: 14) {
+            ArtworkView(coverid: track.coverid, size: 44)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(track.title)
+                    .font(.roonBody(15, weight: .medium))
+                    .foregroundColor(isActive ? .roonAccent : .roonPrimary)
+                    .lineLimit(1)
+                if let artist = track.trackartist ?? track.albumartist, !artist.isEmpty {
+                    Text(artist)
+                        .font(.roonBody(13))
+                        .foregroundColor(.roonSecondary)
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer()
+
+            Text(track.durationFormatted)
+                .font(.roonMono(12))
+                .foregroundColor(.roonTertiary)
+        }
+        .padding(.vertical, 6)
+        .contentShape(Rectangle())
+    }
+}
+
+// MARK: - Artist list
+
+struct ArtistListView: View {
+
+    @ObservedObject private var library = LibraryViewModel.shared
+    @State private var searchText: String = ""
+    @State private var searchNeedle: SearchTextNormalizer.Needle = .empty
+
+    private var filtered: [Artist] {
+        guard !searchNeedle.isEmpty else { return library.artists }
+        return library.artists.filter { searchNeedle.matches($0.name) }
+    }
+
+    var body: some View {
+        List {
+            ForEach(filtered) { artist in
+                NavigationLink {
+                    ArtistDetailView(artist: artist)
+                } label: {
+                    ArtistRowView(artist: artist)
+                }
+                .listRowBackground(Color.clear)
+                .listRowSeparatorTint(Color.roonBorder)
+            }
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .background(Color.roonBase)
+        .searchable(text: $searchText, prompt: "Search artists")
+        .onChange(of: searchText) { _, new in searchNeedle = .init(new) }
+        .navigationTitle("Artists")
+        .navigationBarTitleDisplayMode(.large)
+        .toolbarBackground(Color.roonBase, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
+        .toolbarColorScheme(.dark, for: .navigationBar)
+        .overlay {
+            if library.isLoadingArtists && library.artists.isEmpty {
+                ProgressView().tint(.roonAccent)
+            }
+        }
+        .task {
+            if library.artists.isEmpty { await library.loadArtists() }
+        }
+    }
+}
+
+struct ArtistRowView: View {
+    let artist: Artist
+
+    private var initials: String {
+        let parts = artist.name.split(separator: " ")
+        if parts.count >= 2 {
+            return String((parts.first?.prefix(1) ?? "") + (parts.last?.prefix(1) ?? ""))
+        }
+        return String(artist.name.prefix(2)).uppercased()
+    }
+
+    var body: some View {
+        HStack(spacing: 14) {
+            ZStack {
+                Circle()
+                    .fill(Color.roonElevated)
+                    .frame(width: 46, height: 46)
+                Text(initials)
+                    .font(.roonTitle(16))
+                    .foregroundColor(.roonAccent)
+            }
+            Text(artist.name)
+                .font(.roonBody(16, weight: .medium))
+                .foregroundColor(.roonPrimary)
+            Spacer()
+        }
+        .padding(.vertical, 6)
+    }
+}
+
+// MARK: - Artist detail (their albums)
+
+struct ArtistDetailView: View {
+
+    let artist: Artist
+    @State private var albums: [Album] = []
+    @State private var isLoading: Bool = true
+
+    var body: some View {
+        List {
+            ForEach(albums) { album in
+                NavigationLink {
+                    AlbumDetailView(album: album)
+                } label: {
+                    AlbumListRow(album: album)
+                }
+                .listRowBackground(Color.clear)
+                .listRowSeparatorTint(Color.roonBorder)
+            }
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .background(Color.roonBase)
+        .navigationTitle(artist.name)
+        .navigationBarTitleDisplayMode(.large)
+        .toolbarBackground(Color.roonBase, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
+        .toolbarColorScheme(.dark, for: .navigationBar)
+        .overlay {
+            if isLoading {
+                ProgressView().tint(.roonAccent)
+            } else if albums.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "square.stack")
+                        .font(.system(size: 40))
+                        .foregroundColor(.roonTertiary)
+                    Text("No albums found")
+                        .font(.roonTitle(18))
+                        .foregroundColor(.roonPrimary)
+                }
+            }
+        }
+        .task(id: artist.id) {
+            isLoading = true
+            defer { isLoading = false }
+            albums = (try? await LyrionAPI.shared.getAlbumsForArtist(artistID: artist.id)) ?? []
+            albums.sort { $0.album.localizedCaseInsensitiveCompare($1.album) == .orderedAscending }
         }
     }
 }

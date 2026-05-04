@@ -852,6 +852,15 @@ final class PlayerViewModel: ObservableObject {
         playCurrentTrack()
     }
 
+    func playSingleTrack(_ track: Track) {
+        originalQueueBeforeShuffle = nil
+        isShuffle        = false
+        currentWorkGroup = nil
+        queue            = [track]
+        currentIndex     = 0
+        playCurrentTrack()
+    }
+
     func addWorkToQueue(_ workGroup: WorkGroup) {
         addWorkGroupsToQueue([workGroup])
     }
