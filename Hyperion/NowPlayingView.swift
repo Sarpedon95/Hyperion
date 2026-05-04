@@ -394,19 +394,20 @@ struct NowPlayingView: View {
     // MARK: - Artwork
 
     private func artworkSection(side: CGFloat) -> some View {
-        // Roon ARC style: artwork is full-width, square, flush to edges — no
-        // padding, no rounded corners, no shadow. The dynamic background tint
-        // provides the visual context instead.
+        // Roon ARC style: full-width square artwork, flush to edges.
+        // Use .fit so non-square source images are never zoomed/cropped —
+        // letterboxed against the dark background instead.
         ZStack {
+            Color.black  // letterbox background for non-square covers
+
             ArtworkView(
                 coverid: player.currentTrack?.coverid,
                 size: side,
-                contentMode: .fill
+                contentMode: .fit
             )
-            .frame(width: side, height: side)
-            .clipped()
         }
         .frame(width: side, height: side)
+        .clipped()
         .scaleEffect(player.isPlaying ? 1.0 : 0.98)
         .animation(.easeInOut(duration: 0.22), value: player.isPlaying)
         .offset(x: artworkDragOffset)
