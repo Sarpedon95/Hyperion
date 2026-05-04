@@ -369,33 +369,6 @@ final class LyrionAPI {
         return JSON.int(result["count"]) ?? JSON.int(result["_count"])
     }
 
-    /// Returns source-file quality metadata for a library track.
-    ///
-    /// This uses `songinfo` with LMS tags instead of `status` so Hyperion does
-    /// not depend on a server-side LMS player named "0" being in sync with the
-    /// direct AVPlayer stream running on iOS.
-    func getAudioQuality(trackID: Int) async throws -> LMSAudioQuality? {
-        try Task.checkCancellation()
-        let result = try await request(
-            playerID: "",
-            params: ["songinfo", 0, 100, "track_id:\(trackID)", "tags:uYo"]
-        )
-        let info = Self.flattenSongInfo(result)
-
-        let sampleRate = JSON.int(
-            info["samplerate"] ?? info["sample_rate"] ?? info["rate"]
-        ) ?? 0
-        let sampleSize = JSON.int(
-            info["samplesize"] ?? info["sample_size"] ?? info["bits_per_sample"] ?? info["bitdepth"]
-        ) ?? 0
-        let type = Self.normalizeString(
-            JSON.string(info["type"] ?? info["content_type"] ?? info["codec"] ?? info["mime"])
-        )?.lowercased() ?? ""
-
-        guard sampleRate > 0 || sampleSize > 0 || !type.isEmpty else { return nil }
-        return LMSAudioQuality(sampleRate: sampleRate, sampleSize: sampleSize, type: type)
-    }
-
     func getTracksForWork(workID: Int) async throws -> [Track] {
         try Task.checkCancellation()
         let result = try await request(params: [
@@ -753,33 +726,6 @@ final class LyrionAPI {
         }
 
         return albums
-    }
-
-    nonisolated private static func flattenSongInfo(_ result: [String: Any]) -> [String: Any] {
-        var merged: [String: Any] = [:]
-
-        func merge(_ dict: [String: Any]) {
-            for (key, value) in dict {
-                merged[key.lowercased()] = value
-            }
-
-            // Some LMS builds/plugins return songinfo rows as label/value pairs
-            // rather than direct keys. Support both shapes defensively.
-            if let name = JSON.string(dict["name"] ?? dict["field"] ?? dict["key"] ?? dict["title"])?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .lowercased(),
-               !name.isEmpty,
-               let value = dict["value"] ?? dict["val"] ?? dict["text"] {
-                merged[name] = value
-            }
-        }
-
-        merge(result)
-        for loopKey in ["songinfo_loop", "item_loop", "playlist_loop", "titles_loop"] {
-            guard let rows = result[loopKey] as? [[String: Any]] else { continue }
-            rows.forEach { merge($0) }
-        }
-        return merged
     }
 
     nonisolated private static func albumTitle(from dict: [String: Any]) -> String? {

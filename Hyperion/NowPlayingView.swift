@@ -4,13 +4,13 @@ import AVKit
 
 // MARK: - LMS Audio Quality Info
 //
-// Populated by PlayerViewModel from LMS `songinfo` metadata fields:
+// Populated by PlayerViewModel from the LMS `status` JSON fields:
 //   `samplerate`  – e.g. 44100, 48000, 96000, 192000
 //   `samplesize`  – e.g. 16, 24, 32
 //   `type`        – e.g. "flac", "alac", "mp3", "aac"
 //
 // This struct drives the quality pill label and dot color, replacing the
-// file-extension heuristic that misses remote/proxied streams.
+// old file-extension heuristic that missed remote/proxied streams.
 
 struct LMSAudioQuality {
     let sampleRate: Int    // Hz
@@ -113,12 +113,6 @@ struct NowPlayingView: View {
     @State private var isLiked: Bool = false
     @State private var isPillPulsing: Bool = false
 
-<<<<<<< HEAD
-    @State private var isPillPulsing: Bool = false
-
-    // Artwork swipe
-=======
->>>>>>> 6d77a84 (Fixed general)
     @State private var artworkDragOffset: CGFloat = 0
     @State private var artworkOpacity: Double = 1.0
     @State private var artworkTransitioning: Bool = false
@@ -184,20 +178,10 @@ struct NowPlayingView: View {
 
             GeometryReader { geo in
                 let safeTop = geo.safeAreaInsets.top
-<<<<<<< HEAD
-                let safeBot = geo.safeAreaInsets.bottom
-                let screenW = geo.size.width
-                let screenH = geo.size.height
-                // Artwork: constrained to ~56% of usable height so controls always
-                // fit below, but never wider than screen minus horizontal margins.
-                let usableH  = screenH - safeTop - safeBot
-                let artworkSide = min(screenW - 32, usableH * 0.56)
-=======
                 let safeBottom = geo.safeAreaInsets.bottom
                 let contentWidth = max(geo.size.width - 32, 280)
                 let usableHeight = max(geo.size.height - safeTop - safeBottom, 480)
                 let artworkSide = min(contentWidth, max(260, usableHeight * 0.39))
->>>>>>> 6d77a84 (Fixed general)
 
                 VStack(spacing: 0) {
                     headerBar
@@ -207,25 +191,6 @@ struct NowPlayingView: View {
 
                     ScrollView(showsIndicators: false) {
                         VStack(spacing: 0) {
-<<<<<<< HEAD
-
-                            // ── Album art: centered, constrained (Roon ARC style)
-                            artworkSection(side: artworkSide)
-                                .padding(.top, 16)
-                                .padding(.bottom, 4)
-                                .frame(maxWidth: .infinity) // center within the full-width VStack
-
-                            // ── Queue position  e.g. "Movement 2 of 4" / "3 of 12"
-                            queuePositionLabel
-                                .padding(.top, 6)
-                                .padding(.bottom, 0)
-
-                            // ── Track metadata — left aligned, Roon ARC style
-                            trackInfo
-                                .padding(.horizontal, 20)
-                                .padding(.top, 12)
-                                .padding(.bottom, 4)
-=======
                             artworkSection(side: artworkSide)
                                 .padding(.top, 18)
                                 .padding(.bottom, 14)
@@ -238,7 +203,6 @@ struct NowPlayingView: View {
                             trackInfo
                                 .padding(.horizontal, 8)
                                 .padding(.bottom, 20)
->>>>>>> 6d77a84 (Fixed general)
 
                             progressSection
                                 .padding(.bottom, 20)
@@ -292,11 +256,6 @@ struct NowPlayingView: View {
         }
         .animation(.spring(response: 0.36, dampingFraction: 0.80), value: showQueuePanel)
         .onAppear {
-<<<<<<< HEAD
-            // Kick off the quality pill pulse ring — must be deferred one
-            // run-loop tick so SwiftUI registers the initial state before animating.
-=======
->>>>>>> 6d77a84 (Fixed general)
             DispatchQueue.main.async { isPillPulsing = true }
         }
         .onChange(of: player.currentTrack?.id) { _, _ in
@@ -394,45 +353,11 @@ struct NowPlayingView: View {
                 Haptics.light()
                 showSignalPath = true
             } label: {
-<<<<<<< HEAD
-                HStack(spacing: 7) {
-                    ZStack {
-                        Circle()
-                            .fill(pill.dotColor)
-                            .frame(width: 9, height: 9)
-                        // Pulsing ring for lossless/hi-res
-                        if pill.isLosslessOrBetter {
-                            Circle()
-                                .stroke(pill.dotColor.opacity(0.45), lineWidth: 1.5)
-                                .frame(width: 9, height: 9)
-                                .scaleEffect(isPillPulsing ? 2.2 : 1.0)
-                                .opacity(isPillPulsing ? 0.0 : 0.7)
-                                .animation(
-                                    .easeOut(duration: 1.4).repeatForever(autoreverses: false),
-                                    value: isPillPulsing
-                                )
-                        }
-                    }
-                    Text(pill.label)
-                        .font(.roonBody(13, weight: .semibold))
-                        .foregroundColor(.roonPrimary)
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundColor(.roonTertiary)
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 8)
-                .background(
-                    Capsule()
-                        .fill(Color.black.opacity(0.35))
-                        .overlay(Capsule().strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
-=======
                 QualityPillView(
                     label: qualityPillInfo.label,
                     dotColor: qualityPillInfo.dotColor,
                     isAnimating: qualityPillInfo.isLosslessOrBetter,
                     isPillPulsing: isPillPulsing
->>>>>>> 6d77a84 (Fixed general)
                 )
             }
             .buttonStyle(.plain)
@@ -450,17 +375,10 @@ struct NowPlayingView: View {
     // MARK: - Artwork
 
     private func artworkSection(side: CGFloat) -> some View {
-<<<<<<< HEAD
-        // Roon ARC style: constrained square artwork, centered by caller.
-        // Use .fit so non-square covers are letterboxed rather than cropped.
-        ZStack {
-            Color.black  // letterbox background for non-square covers
-=======
         ZStack {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(Color.black.opacity(0.9))
 
->>>>>>> 6d77a84 (Fixed general)
             ArtworkView(
                 coverid: player.currentTrack?.coverid,
                 size: side,
@@ -468,12 +386,6 @@ struct NowPlayingView: View {
             )
         }
         .frame(width: side, height: side)
-<<<<<<< HEAD
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .shadow(color: .black.opacity(0.4), radius: 20, x: 0, y: 8)
-        .scaleEffect(player.isPlaying ? 1.0 : 0.96)
-        .animation(.spring(response: 0.35, dampingFraction: 0.72), value: player.isPlaying)
-=======
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -482,7 +394,6 @@ struct NowPlayingView: View {
         .shadow(color: .black.opacity(0.28), radius: 28, x: 0, y: 10)
         .scaleEffect(player.isPlaying ? 1.0 : 0.985)
         .animation(.spring(response: 0.30, dampingFraction: 0.78), value: player.isPlaying)
->>>>>>> 6d77a84 (Fixed general)
         .offset(x: artworkDragOffset)
         .opacity(artworkOpacity)
         .contentShape(Rectangle())
@@ -1078,11 +989,7 @@ struct FlatTintBackground: View {
                 scale: scale
             )
             guard !Task.isCancelled else { return }
-<<<<<<< HEAD
-            withAnimation(.easeOut(duration: 0.5)) { image = loaded }
-=======
             withAnimation(.easeOut(duration: 0.45)) { image = loaded }
->>>>>>> 6d77a84 (Fixed general)
         }
     }
 }

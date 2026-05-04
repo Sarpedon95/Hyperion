@@ -613,11 +613,7 @@ struct SettingsView: View {
         // Clear server-scoped data so a changed LMS endpoint never shows stale
         // albums/artwork from the previous library while reconnecting.
         LibraryViewModel.shared.clearCache()
-<<<<<<< HEAD
-        ArtworkCache.shared.clear(includeDiskCache: true)
-=======
         ArtworkCache.shared.clear()
->>>>>>> 6d77a84 (Fixed general)
         connection.forceReconnect()
     }
 

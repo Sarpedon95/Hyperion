@@ -1564,27 +1564,18 @@ final class PlayerViewModel: ObservableObject {
         fetchLMSAudioQuality(for: track, playbackID: playbackID)
     }
 
-    /// Fetches LMS source-file quality metadata for the active track and
-    /// populates `lmsAudioQuality`. The result is discarded if playback has
-    /// moved on before the request completes.
+    /// Fires a lightweight LMS `status` call to retrieve the sample rate, bit
+    /// depth, and codec for the currently playing track and populates
+    /// `lmsAudioQuality`.  The result is discarded if playback has moved on.
+    ///
+    /// LMS tag reference for `status` params:
+    ///   "u" → samplerate (may be Int or String depending on LMS version)
+    ///   "Y" → samplesize (bit depth, e.g. 16, 24)
+    ///   "o" → type (codec string, e.g. "flac", "mp3")
     private func fetchLMSAudioQuality(for track: Track, playbackID: UUID) {
         lmsAudioQualityTask?.cancel()
         lmsAudioQualityTask = Task { @MainActor [weak self] in
             guard let self else { return }
-<<<<<<< HEAD
-            guard !Task.isCancelled, playbackID == self.activePlaybackID else { return }
-
-            do {
-                guard let quality = try await LyrionAPI.shared.getAudioQuality(trackID: track.id) else {
-                    return
-                }
-                guard !Task.isCancelled, playbackID == self.activePlaybackID else { return }
-
-                self.lmsAudioQuality = quality
-                ServerLogStore.shared.debug(
-                    "LMS quality: \(quality.type.uppercased()) \(quality.sampleRate) Hz / \(quality.sampleSize > 0 ? "\(quality.sampleSize)-bit" : "unknown depth")"
-                )
-=======
             // Small delay: LMS populates samplerate/samplesize ~200–500 ms
             // after the play command is acknowledged. 600 ms is conservative
             // but avoids a blank quality result on fast local networks.
@@ -1628,7 +1619,6 @@ final class PlayerViewModel: ObservableObject {
                         )
                     }
                 }
->>>>>>> 6d77a84 (Fixed general)
             } catch is CancellationError {
                 // Track changed; no UI update needed.
             } catch {

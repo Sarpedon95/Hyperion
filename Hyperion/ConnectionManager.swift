@@ -281,13 +281,13 @@ final class ConnectionManager: ObservableObject {
         switch modeSnapshot {
         case .local:
             selectedURL = localSnapshot
-            result = await probeConfiguredURL(selectedURL, missingMessage: "Home LAN URL is empty", mode: modeSnapshot)
+            result = await probeConfiguredURL(selectedURL, missingMessage: "Home LAN URL is empty")
         case .tailscale:
             selectedURL = tailscaleSnapshot
-            result = await probeConfiguredURL(selectedURL, missingMessage: "Tailscale URL is empty", mode: modeSnapshot)
+            result = await probeConfiguredURL(selectedURL, missingMessage: "Tailscale URL is empty")
         case .proxy:
             selectedURL = proxySnapshot
-            result = await probeConfiguredURL(selectedURL, missingMessage: "Remote proxy URL is empty", mode: modeSnapshot)
+            result = await probeConfiguredURL(selectedURL, missingMessage: "Remote proxy URL is empty")
         case .auto:
             if let winner = await fastestRespondingProbe(
                 local:     localSnapshot,
@@ -329,9 +329,6 @@ final class ConnectionManager: ObservableObject {
         if selectedURL != previousURL {
             PlaybackHistoryStore.shared.invalidateCache()
             PlaybackStateStore.shared.cancelPendingSave()
-            LibraryViewModel.shared.clearCache()
-            ArtworkCache.shared.clear(includeDiskCache: true)
-            ServerLogStore.shared.info("Cleared library, playback-state, and artwork caches after active server changed")
         }
 
         if let result {
@@ -350,7 +347,7 @@ final class ConnectionManager: ObservableObject {
         }
     }
 
-    private func probeConfiguredURL(_ url: String, missingMessage: String, mode: ConnectionMode) async -> ConnectionProbeResult? {
+    private func probeConfiguredURL(_ url: String, missingMessage: String) async -> ConnectionProbeResult? {
         guard !url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             // Return a normal probe result instead of mutating connection state here.
             // performResolve() owns state transitions and server-change invalidation.
@@ -365,7 +362,7 @@ final class ConnectionManager: ObservableObject {
                 errorMessage: missingMessage
             )
         }
-        return await Self.probeBestServer(url, mode: mode)
+        return await Self.probeBestServer(url, mode: connectionMode)
     }
 
     private func fastestRespondingProbe(

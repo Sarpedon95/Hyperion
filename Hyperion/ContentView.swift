@@ -158,17 +158,6 @@ struct ContentView: View {
 
             // ConnectionManager.init() already sets baseURL from saved UserDefaults,
             // so API calls succeed immediately with the cached URL without waiting for
-<<<<<<< HEAD
-            // a full network probe. Run everything concurrently: library loads begin
-            // instantly; resolveConnection() verifies reachability in parallel and
-            // may upgrade to a faster candidate.
-            let launchURL = connection.currentURL
-            async let _resolve: ()        = connection.resolveConnection()
-            async let _composers: ()      = library.loadComposers()
-            async let _recentAlbums: ()   = library.loadRecentAlbums()
-            async let _recentlyPlayed: () = library.loadRecentlyPlayed()
-            _ = await (_resolve, _composers, _recentAlbums, _recentlyPlayed)
-=======
             // a full network probe. Start library warm-up immediately, but only await
             // connection resolution before the restore banner so a large library does
             // not delay “Resume where you left off”.
@@ -179,19 +168,6 @@ struct ContentView: View {
 
             await resolve
             guard !Task.isCancelled else { return }
->>>>>>> 6d77a84 (Fixed general)
-
-            // Auto mode may switch from the initially persisted URL to a
-            // faster reachable endpoint while the first library requests are
-            // still running. ConnectionManager clears server-scoped caches in
-            // that case; reload once against the confirmed URL so launch does
-            // not land on an empty library until the user changes tabs.
-            if !connection.currentURL.isEmpty, connection.currentURL != launchURL {
-                async let _verifiedComposers: ()      = library.loadComposers()
-                async let _verifiedRecentAlbums: ()   = library.loadRecentAlbums()
-                async let _verifiedRecentlyPlayed: () = library.loadRecentlyPlayed()
-                _ = await (_verifiedComposers, _verifiedRecentAlbums, _verifiedRecentlyPlayed)
-            }
 
             // Attempt to restore the previous playback session exactly once
             // per cold start, after the connection URL is confirmed.
@@ -436,25 +412,14 @@ struct MiniPlayerView: View {
 final class ArtworkCache {
     static let shared = ArtworkCache()
 
-    private struct ArtworkLoadResult {
-        let image: UIImage?
-        let shouldMarkMissing: Bool
-    }
-
     private let cache = NSCache<NSString, UIImage>()
-    private var inFlight: [String: Task<ArtworkLoadResult, Never>] = [:]
+    private var inFlight: [String: Task<UIImage?, Never>] = [:]
     /// Monotonically-incrementing token assigned to each in-flight load.
     /// On completion we only clear `inFlight[key]` if its associated token
     /// matches ours, preventing a completing task from clobbering a newer
     /// load that started for the same key (e.g. after a memory warning).
     private var inFlightToken: [String: UInt64] = [:]
     private var nextInFlightToken: UInt64 = 0
-<<<<<<< HEAD
-    /// Negative cache keyed by artwork URL, not size bucket. A truly missing
-    /// cover should not be retried just because another view asks for 512 px
-    /// instead of 256 px.
-=======
->>>>>>> 6d77a84 (Fixed general)
     private var missingArtworkUntil: [String: Date] = [:]
     private var memoryWarningObserver: NSObjectProtocol?
 
@@ -522,11 +487,7 @@ final class ArtworkCache {
               let url = LyrionAPI.shared.artworkURL(coverid: coverid) else { return nil }
         let pixels = Int((targetPoints * scale).rounded(.up))
         let key = Self.cacheKey(identifier: url.absoluteString, targetPixels: pixels)
-<<<<<<< HEAD
-        guard !isTemporarilyMissing(url.absoluteString) else { return nil }
-=======
         guard !isTemporarilyMissing(key) else { return nil }
->>>>>>> 6d77a84 (Fixed general)
         return cache.object(forKey: key as NSString)
     }
 
@@ -540,15 +501,9 @@ final class ArtworkCache {
         let pixels = Int((targetPoints * scale).rounded(.up))
         let key = Self.cacheKey(identifier: url.absoluteString, targetPixels: pixels)
 
-<<<<<<< HEAD
-        guard !isTemporarilyMissing(url.absoluteString) else { return nil }
-        if let cached = cache.object(forKey: key as NSString) { return cached }
-        if let existing = inFlight[key] { return (await existing.value).image }
-=======
         guard !isTemporarilyMissing(key) else { return nil }
         if let cached = cache.object(forKey: key as NSString) { return cached }
         if let existing = inFlight[key] { return await existing.value }
->>>>>>> 6d77a84 (Fixed general)
 
         return await loadAndCache(key: key, url: url, targetPixels: pixels)
     }
@@ -559,27 +514,16 @@ final class ArtworkCache {
     func loadImage(url: URL, targetPoints: CGFloat, scale: CGFloat) async -> UIImage? {
         let pixels = Int((targetPoints * scale).rounded(.up))
         let key = Self.cacheKey(identifier: url.absoluteString, targetPixels: pixels)
-<<<<<<< HEAD
-        guard !isTemporarilyMissing(url.absoluteString) else { return nil }
-=======
         guard !isTemporarilyMissing(key) else { return nil }
->>>>>>> 6d77a84 (Fixed general)
         if let cached = cache.object(forKey: key as NSString) { return cached }
-        if let existing = inFlight[key] { return (await existing.value).image }
+        if let existing = inFlight[key] { return await existing.value }
         return await loadAndCache(key: key, url: url, targetPixels: pixels)
     }
 
-<<<<<<< HEAD
-    private func isTemporarilyMissing(_ urlKey: String) -> Bool {
-        guard let until = missingArtworkUntil[urlKey] else { return false }
-        if until > Date() { return true }
-        missingArtworkUntil[urlKey] = nil
-=======
     private func isTemporarilyMissing(_ key: String) -> Bool {
         guard let until = missingArtworkUntil[key] else { return false }
         if until > Date() { return true }
         missingArtworkUntil[key] = nil
->>>>>>> 6d77a84 (Fixed general)
         return false
     }
 
@@ -588,36 +532,25 @@ final class ArtworkCache {
         let headers = LyrionAPI.shared.httpHeaders(accept: "image/*,*/*")
         let session = self.session
         let bucket  = Self.bucketed(targetPixels)
-        let missingKey = url.absoluteString
 
         // Hop OFF the main actor for the network fetch + ImageIO decode. This
         // is the whole point of downsampling — keeping it on @MainActor would
         // re-introduce the very main-thread stall we're trying to fix.
-        let task = Task<ArtworkLoadResult, Never>.detached(priority: .userInitiated) {
+        let task = Task<UIImage?, Never>.detached(priority: .userInitiated) {
             var request = URLRequest(url: url)
             for (k, v) in headers { request.setValue(v, forHTTPHeaderField: k) }
             request.cachePolicy = .returnCacheDataElseLoad
 
             do {
                 let (data, response) = try await session.data(for: request)
-                if Task.isCancelled { return ArtworkLoadResult(image: nil, shouldMarkMissing: false) }
+                if Task.isCancelled { return nil }
                 if let http = response as? HTTPURLResponse,
                    !(200..<300).contains(http.statusCode) {
-                    let isPermanentMissing = http.statusCode == 404 || http.statusCode == 410
-                    return ArtworkLoadResult(image: nil, shouldMarkMissing: isPermanentMissing)
+                    return nil
                 }
-                guard let image = Self.downsampledImage(from: data, maxPixelSize: bucket) else {
-                    // A successful non-image response is almost certainly an LMS
-                    // placeholder/error body for this cover id, not a transient network issue.
-                    return ArtworkLoadResult(image: nil, shouldMarkMissing: true)
-                }
-                return ArtworkLoadResult(image: image, shouldMarkMissing: false)
-            } catch is CancellationError {
-                return ArtworkLoadResult(image: nil, shouldMarkMissing: false)
+                return Self.downsampledImage(from: data, maxPixelSize: bucket)
             } catch {
-                // Do not negative-cache timeouts/offline failures; otherwise the UI
-                // can stay art-less for minutes after the connection recovers.
-                return ArtworkLoadResult(image: nil, shouldMarkMissing: false)
+                return nil
             }
         }
         nextInFlightToken &+= 1
@@ -625,20 +558,8 @@ final class ArtworkCache {
         inFlight[key]      = task
         inFlightToken[key] = myToken
 
-        let result = await task.value
-        let image = result.image
+        let image = await task.value
 
-        // Only commit the result if this is still the latest load for `key`.
-        // A memory warning or a newer request may have cancelled/removed our token;
-        // in that case a nil result should not become a five-minute missing-art mark.
-        guard inFlightToken[key] == myToken else { return image }
-        inFlight[key]      = nil
-        inFlightToken[key] = nil
-
-<<<<<<< HEAD
-        if let image {
-            missingArtworkUntil[missingKey] = nil
-=======
         // Only commit the result if this is still the latest load for `key`.
         // A memory warning or a newer request may have cancelled/removed our token;
         // in that case a nil result should not become a five-minute missing-art mark.
@@ -648,22 +569,14 @@ final class ArtworkCache {
 
         if let image {
             missingArtworkUntil[key] = nil
->>>>>>> 6d77a84 (Fixed general)
             let cgWidth  = image.cgImage?.width  ?? Int(image.size.width  * image.scale)
             let cgHeight = image.cgImage?.height ?? Int(image.size.height * image.scale)
             let cost = max(1, cgWidth * cgHeight * 4)
             cache.setObject(image, forKey: key as NSString, cost: cost)
-<<<<<<< HEAD
-        } else if result.shouldMarkMissing {
-            // Missing art is common on LMS. Avoid hammering /music/<id>/cover.jpg
-            // every time a recycled cell appears; retry later in case scans update.
-            missingArtworkUntil[missingKey] = Date().addingTimeInterval(5 * 60)
-=======
         } else {
             // Missing art is common on LMS. Avoid hammering /music/<id>/cover.jpg
             // every time a recycled cell appears; retry later in case scans update.
             missingArtworkUntil[key] = Date().addingTimeInterval(5 * 60)
->>>>>>> 6d77a84 (Fixed general)
         }
         return image
     }
@@ -691,18 +604,9 @@ final class ArtworkCache {
         return UIImage(cgImage: cgImage)
     }
 
-    func clear(includeDiskCache: Bool = false) {
-        inFlight.values.forEach { $0.cancel() }
-        inFlight.removeAll()
-        inFlightToken.removeAll()
+    func clear() {
         cache.removeAllObjects()
         missingArtworkUntil.removeAll()
-<<<<<<< HEAD
-        if includeDiskCache {
-            session.configuration.urlCache?.removeAllCachedResponses()
-        }
-=======
->>>>>>> 6d77a84 (Fixed general)
     }
 }
 
