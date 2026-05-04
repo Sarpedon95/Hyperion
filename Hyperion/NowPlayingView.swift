@@ -195,25 +195,6 @@ struct NowPlayingView: View {
             )
             .ignoresSafeArea()
 
-            // 3. Error banner
-            if let error = player.error {
-                HStack(spacing: 10) {
-                    Image(systemName: "exclamationmark.circle.fill")
-                        .foregroundColor(.red)
-                    Text(error)
-                        .font(.roonBody(14))
-                        .foregroundColor(.roonPrimary)
-                        .lineLimit(2)
-                    Spacer()
-                }
-                .padding(12)
-                .background(Color.red.opacity(0.15))
-                .cornerRadius(8)
-                .padding(16)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                .transition(.move(edge: .top).combined(with: .opacity))
-            }
-
             // 4. Main content column
             GeometryReader { geo in
                 let totalH      = geo.size.height
@@ -222,9 +203,11 @@ struct NowPlayingView: View {
                 let usableH     = max(0, totalH - safeTop - safeBot)
                 let screenW     = geo.size.width
 
-                // Artwork: full screen width, square aspect ratio.
-                // This gives the edge-to-edge Roon ARC look.
-                let artworkSide = screenW
+                // Artwork size: square, capped so all controls remain visible without scrolling.
+                // We reserve ~54% of usable height for the artwork, then also cap it at
+                // screenW - 48pt (horizontal inset) so it doesn't fill edge-to-edge on
+                // landscape or large-screen devices. Minimum 180pt to avoid looking tiny.
+                let artworkSide = max(180, min(screenW - 48, usableH * 0.46))
 
                 VStack(spacing: 0) {
                     // ── Top bar (outside ScrollView — always visible, never scrolls)
@@ -246,10 +229,13 @@ struct NowPlayingView: View {
                         VStack(spacing: 0) {
 
                             // ── Album art ─────────────────────────────────────
-                            // Edge-to-edge: zero horizontal padding intentional.
+                            // Horizontally centred with rounded corners for a refined look.
                             artworkSection(side: artworkSide)
-                                .padding(.top, 0)
-                                .padding(.bottom, 0)
+                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                .shadow(color: .black.opacity(0.45), radius: 24, y: 8)
+                                .padding(.top, 8)
+                                .padding(.bottom, 4)
+                                .frame(maxWidth: .infinity, alignment: .center)
 
                             // ── Queue position — subtle caption beneath artwork ─
                             if player.queue.count > 1 {
@@ -261,26 +247,26 @@ struct NowPlayingView: View {
                             // ── Track metadata ────────────────────────────────
                             trackInfo
                                 .padding(.horizontal, 24)
-                                .padding(.top, 20)
-                                .padding(.bottom, 8)
+                                .padding(.top, 14)
+                                .padding(.bottom, 4)
 
                             // ── Progress bar + timestamps ──────────────────────
                             progressSection
                                 .padding(.horizontal, 24)
-                                .padding(.top, 8)
-                                .padding(.bottom, 8)
+                                .padding(.top, 6)
+                                .padding(.bottom, 4)
 
                             // ── Transport controls ─────────────────────────────
                             transportControls
                                 .padding(.horizontal, 20)
-                                .padding(.top, 12)
-                                .padding(.bottom, 8)
+                                .padding(.top, 8)
+                                .padding(.bottom, 4)
 
                             // ── Bottom toolbar ─────────────────────────────────
                             bottomToolbar
                                 .padding(.horizontal, 24)
-                                .padding(.top, 8)
-                                .padding(.bottom, safeBot + 12)
+                                .padding(.top, 6)
+                                .padding(.bottom, max(safeBot, 16))
                         }
                         // Explicit width so multiline text wraps inside ScrollView
                         .frame(width: screenW)
@@ -442,22 +428,23 @@ struct NowPlayingView: View {
     // MARK: - Artwork
 
     private func artworkSection(side: CGFloat) -> some View {
-        // Full-width edge-to-edge artwork — no rounded corners, no shadow,
-        // aspect ratio 1:1 locked. Scales down slightly when paused (Roon ARC style).
-        GeometryReader { geo in
+        // Artwork is sized to `side` which is passed as min(screenW, usableH * 0.46)
+        // from the GeometryReader — this keeps the square artwork proportional on all
+        // device sizes (small SE, regular, Plus/Max) without pushing controls off-screen.
+        ZStack {
             ArtworkView(
                 coverid: player.currentTrack?.coverid,
-                size: geo.size.width,
+                size: side,
                 contentMode: .fill
             )
-            .frame(width: geo.size.width, height: geo.size.width)
+            .frame(width: side, height: side)
             .clipped()
-            .scaleEffect(player.isPlaying ? 1.0 : 0.96)
-            .animation(.easeInOut(duration: 0.22), value: player.isPlaying)
-            .offset(x: artworkDragOffset)
-            .opacity(artworkOpacity)
         }
-        .frame(height: side)
+        .frame(width: side, height: side)
+        .scaleEffect(player.isPlaying ? 1.0 : 0.96)
+        .animation(.easeInOut(duration: 0.22), value: player.isPlaying)
+        .offset(x: artworkDragOffset)
+        .opacity(artworkOpacity)
         .contentShape(Rectangle())
         .gesture(artworkSwipeGesture)
     }
@@ -557,12 +544,12 @@ struct NowPlayingView: View {
                     .frame(maxWidth: .infinity, alignment: .center)
             }
 
-            // Title — allow up to 3 lines so long classical movement names don't clip
+            // Title — allow up to 2 lines so long classical movement names don't clip
             Text(player.currentTrack?.title ?? "")
-                .font(.system(size: 26, weight: .bold, design: .default))
+                .font(.system(size: 22, weight: .bold, design: .default))
                 .foregroundColor(.roonPrimary)
                 .multilineTextAlignment(.center)
-                .lineLimit(3)
+                .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .center)
 
@@ -573,7 +560,7 @@ struct NowPlayingView: View {
                           ?? ""
             if !artistLine.isEmpty {
                 Text(artistLine)
-                    .font(.system(size: 16, weight: .regular, design: .default))
+                    .font(.system(size: 15, weight: .regular, design: .default))
                     .foregroundColor(.roonSecondary)
                     .multilineTextAlignment(.center)
                     .lineLimit(2)
