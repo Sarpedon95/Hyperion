@@ -38,6 +38,11 @@ final class LibraryViewModel: ObservableObject {
     private var recentAlbumsTaskID: UUID?
     private var recentlyPlayedTaskID: UUID?
 
+    private typealias SearchResults = (composers: [Composer], works: [Work], albums: [Album])
+    private var searchCache: [String: SearchResults] = [:]
+    private var searchCacheOrder: [String] = []
+    private let searchCacheLimit = 12
+
     private let pageSize = 500
 
     private var memoryWarningObserver: NSObjectProtocol?
@@ -64,6 +69,8 @@ final class LibraryViewModel: ObservableObject {
                 self?.recentlyPlayedTask = nil
                 self?.recentAlbumsTaskID = nil
                 self?.recentlyPlayedTaskID = nil
+                self?.searchCache.removeAll()
+                self?.searchCacheOrder.removeAll()
                 // Keep composerCache — it's small and expensive to refetch.
             }
         }
@@ -400,6 +407,9 @@ final class LibraryViewModel: ObservableObject {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return ([], [], []) }
 
+        let cacheKey = SearchTextNormalizer.folded(trimmed)
+        if let cached = searchCache[cacheKey] { return cached }
+
         let needle = SearchTextNormalizer.Needle(trimmed)
 
         var foundComposers: [Composer] = []
@@ -505,11 +515,25 @@ final class LibraryViewModel: ObservableObject {
             return lhs.album.localizedCaseInsensitiveCompare(rhs.album) == .orderedAscending
         }
 
-        return (
+        let results: SearchResults = (
             Array(sortedComposers.prefix(30)),
             Array(sortedWorks.prefix(50)),
             Array(sortedAlbums.prefix(60))
         )
+        cacheSearchResults(results, for: cacheKey)
+        return results
+    }
+
+    private func cacheSearchResults(_ results: SearchResults, for key: String) {
+        guard !key.isEmpty else { return }
+        if searchCache[key] == nil {
+            searchCacheOrder.append(key)
+        }
+        searchCache[key] = results
+        while searchCacheOrder.count > searchCacheLimit {
+            let evictedKey = searchCacheOrder.removeFirst()
+            searchCache.removeValue(forKey: evictedKey)
+        }
     }
 
     // MARK: - Cache management
@@ -525,10 +549,21 @@ final class LibraryViewModel: ObservableObject {
         isLoadingComposers = false
         isLoadingWorks     = false
         isLoadingAlbums    = false
+        error              = nil
+        composers          = []
+        albums             = []
+        recentAlbums       = []
+        recentlyPlayed     = []
+        totalWorks         = nil
+        totalAlbums        = nil
+        hasLoadedAllAlbums = false
+        albumsLoadGeneration = UUID()
         composerCache  = nil
         worksCache     = [:]
         tracksForWork  = [:]
         tracksForAlbum = [:]
+        searchCache.removeAll()
+        searchCacheOrder.removeAll()
         worksLoadTasks.removeAll()
         tracksForWorkTasks.removeAll()
         tracksForAlbumTasks.removeAll()

@@ -265,18 +265,18 @@ enum QualityStatus: Equatable, Hashable {
 }
 
 struct AudioPathStep: Identifiable, Hashable {
-    let id: UUID
+    let id: String
     let icon: String
     let title: String
     let subtitle: String
     let status: QualityStatus
 
     init(icon: String, title: String, subtitle: String, status: QualityStatus) {
-        self.id = UUID()
         self.icon = icon
         self.title = title
         self.subtitle = subtitle
         self.status = status
+        self.id = "\(icon)|\(title)|\(subtitle)|\(status.displayLabel)"
     }
 
     func hash(into hasher: inout Hasher) {

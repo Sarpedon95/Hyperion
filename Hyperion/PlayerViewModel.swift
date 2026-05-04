@@ -43,6 +43,8 @@ final class PlayerViewModel: ObservableObject {
     @Published var queue: [Track] = [] {
         didSet {
             recomputeWorkGroups()
+            prefetchTask?.cancel()
+            prefetchTask = nil
             prefetchedNextAsset = nil   // queue changed — cached asset may be wrong
             postQueueChangedNotification()
         }
@@ -98,6 +100,8 @@ final class PlayerViewModel: ObservableObject {
     /// track starts playing so the asset headers are already loaded when the
     /// user skips forward. Discarded whenever the queue changes.
     private var prefetchedNextAsset: (trackID: Int, asset: AVURLAsset)? = nil
+    private var prefetchTask: Task<Void, Never>? = nil
+    private var lmsAudioQualityTask: Task<Void, Never>? = nil
 
     // MARK: - "Resume where you left off" state persistence
 
@@ -201,6 +205,8 @@ final class PlayerViewModel: ObservableObject {
         if let token = itemEndObservation { NotificationCenter.default.removeObserver(token) }
         if let token = itemFailureObservation { NotificationCenter.default.removeObserver(token) }
         if let token = itemStalledObservation { NotificationCenter.default.removeObserver(token) }
+        prefetchTask?.cancel()
+        lmsAudioQualityTask?.cancel()
     }
 
     // MARK: - CarPlay notification
@@ -1031,6 +1037,10 @@ final class PlayerViewModel: ObservableObject {
         pendingSeekWatchdogTask = nil
         playbackStartupWatchdogTask?.cancel()
         playbackStartupWatchdogTask = nil
+        prefetchTask?.cancel()
+        prefetchTask = nil
+        lmsAudioQualityTask?.cancel()
+        lmsAudioQualityTask = nil
 
         // Invalidate all KVO observations first.
         statusObservation?.invalidate()
@@ -1147,8 +1157,8 @@ final class PlayerViewModel: ObservableObject {
 
     // MARK: - Artwork (delegates to ArtworkCache)
     //
-    // PASS 6 — kept as a public API for AsyncArtworkBackground / lock-screen
-    // callers, but now backed by the single ArtworkCache. The `targetPoints`
+    // PASS 6 — kept as a public API for artwork view / lock-screen callers,
+    // but now backed by the single ArtworkCache. The `targetPoints`
     // parameter lets us decode at the right size: lock-screen ~600pt,
     // blurred Now Playing background ~600pt (it gets blurred to oblivion
     // anyway, so a small image is plenty).
@@ -1283,6 +1293,10 @@ final class PlayerViewModel: ObservableObject {
         error           = nil
         clearPendingSeekWatchdog()
         clearPlaybackStartupWatchdog()
+        prefetchTask?.cancel()
+        prefetchTask = nil
+        lmsAudioQualityTask?.cancel()
+        lmsAudioQualityTask = nil
         pendingSeekTime = restoredSeekTime
         if pendingSeekTime != nil { installPendingSeekWatchdog() }
 
@@ -1550,60 +1564,27 @@ final class PlayerViewModel: ObservableObject {
         fetchLMSAudioQuality(for: track, playbackID: playbackID)
     }
 
-    /// Fires a lightweight LMS `status` call to retrieve the sample rate, bit
-    /// depth, and codec for the currently playing track and populates
-    /// `lmsAudioQuality`.  The result is discarded if playback has moved on.
-    ///
-    /// LMS tag reference for `status` params:
-    ///   "u" → samplerate (may be Int or String depending on LMS version)
-    ///   "Y" → samplesize (bit depth, e.g. 16, 24)
-    ///   "o" → type (codec string, e.g. "flac", "mp3")
+    /// Fetches LMS source-file quality metadata for the active track and
+    /// populates `lmsAudioQuality`. The result is discarded if playback has
+    /// moved on before the request completes.
     private func fetchLMSAudioQuality(for track: Track, playbackID: UUID) {
-        Task { @MainActor [weak self] in
+        lmsAudioQualityTask?.cancel()
+        lmsAudioQualityTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            // Small delay: LMS populates samplerate/samplesize ~200–500 ms
-            // after the play command is acknowledged. 600 ms is conservative
-            // but avoids a blank quality result on fast local networks.
-            try? await Task.sleep(nanoseconds: 600_000_000)
-            guard playbackID == self.activePlaybackID else { return }
+            guard !Task.isCancelled, playbackID == self.activePlaybackID else { return }
 
             do {
-                let result = try await LyrionAPI.shared.request(params: ["status", "-", 1, "tags:uYo"])
-                guard playbackID == self.activePlaybackID else { return }
-
-                if let songInfo = (result["playlist_loop"] as? [[String: Any]])?.first {
-                    // samplerate is Int in recent LMS but String in older builds.
-                    let rate: Int
-                    if let intRate = songInfo["samplerate"] as? Int {
-                        rate = intRate
-                    } else if let strRate = songInfo["samplerate"] as? String, let parsed = Int(strRate) {
-                        rate = parsed
-                    } else {
-                        rate = 0
-                    }
-
-                    let size: Int
-                    if let intSize = songInfo["samplesize"] as? Int {
-                        size = intSize
-                    } else if let strSize = songInfo["samplesize"] as? String, let parsed = Int(strSize) {
-                        size = parsed
-                    } else {
-                        size = 0
-                    }
-
-                    let type = (songInfo["type"] as? String ?? "").lowercased()
-
-                    if rate > 0 {
-                        self.lmsAudioQuality = LMSAudioQuality(
-                            sampleRate: rate,
-                            sampleSize: size,
-                            type:       type
-                        )
-                        ServerLogStore.shared.debug(
-                            "LMS quality: \(type.uppercased()) \(rate) Hz / \(size > 0 ? "\(size)-bit" : "unknown depth")"
-                        )
-                    }
+                guard let quality = try await LyrionAPI.shared.getAudioQuality(trackID: track.id) else {
+                    return
                 }
+                guard !Task.isCancelled, playbackID == self.activePlaybackID else { return }
+
+                self.lmsAudioQuality = quality
+                ServerLogStore.shared.debug(
+                    "LMS quality: \(quality.type.uppercased()) \(quality.sampleRate) Hz / \(quality.sampleSize > 0 ? "\(quality.sampleSize)-bit" : "unknown depth")"
+                )
+            } catch is CancellationError {
+                // Track changed; no UI update needed.
             } catch {
                 // Non-fatal — quality pill falls back to URL-extension heuristic.
                 ServerLogStore.shared.debug("LMS quality fetch skipped: \(error.localizedDescription)")
@@ -1691,7 +1672,8 @@ final class PlayerViewModel: ObservableObject {
         ])
         // Load just the duration property to warm the HTTP connection without
         // downloading audio data. This is lightweight and non-blocking.
-        Task.detached(priority: .background) {
+        prefetchTask?.cancel()
+        prefetchTask = Task.detached(priority: .background) {
             _ = try? await asset.load(.duration)
         }
         prefetchedNextAsset = (trackID: nextTrack.id, asset: asset)

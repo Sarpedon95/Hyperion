@@ -281,13 +281,13 @@ final class ConnectionManager: ObservableObject {
         switch modeSnapshot {
         case .local:
             selectedURL = localSnapshot
-            result = await probeConfiguredURL(selectedURL, missingMessage: "Home LAN URL is empty")
+            result = await probeConfiguredURL(selectedURL, missingMessage: "Home LAN URL is empty", mode: modeSnapshot)
         case .tailscale:
             selectedURL = tailscaleSnapshot
-            result = await probeConfiguredURL(selectedURL, missingMessage: "Tailscale URL is empty")
+            result = await probeConfiguredURL(selectedURL, missingMessage: "Tailscale URL is empty", mode: modeSnapshot)
         case .proxy:
             selectedURL = proxySnapshot
-            result = await probeConfiguredURL(selectedURL, missingMessage: "Remote proxy URL is empty")
+            result = await probeConfiguredURL(selectedURL, missingMessage: "Remote proxy URL is empty", mode: modeSnapshot)
         case .auto:
             if let winner = await fastestRespondingProbe(
                 local:     localSnapshot,
@@ -329,6 +329,9 @@ final class ConnectionManager: ObservableObject {
         if selectedURL != previousURL {
             PlaybackHistoryStore.shared.invalidateCache()
             PlaybackStateStore.shared.cancelPendingSave()
+            LibraryViewModel.shared.clearCache()
+            ArtworkCache.shared.clear(includeDiskCache: true)
+            ServerLogStore.shared.info("Cleared library, playback-state, and artwork caches after active server changed")
         }
 
         if let result {
@@ -347,16 +350,22 @@ final class ConnectionManager: ObservableObject {
         }
     }
 
-    private func probeConfiguredURL(_ url: String, missingMessage: String) async -> ConnectionProbeResult? {
+    private func probeConfiguredURL(_ url: String, missingMessage: String, mode: ConnectionMode) async -> ConnectionProbeResult? {
         guard !url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            isConnected = false
-            currentURL = ""
-            LyrionAPI.shared.updateBaseURL("", persist: false)
-            lastConnectionMessage = missingMessage
+            // Return a normal probe result instead of mutating connection state here.
+            // performResolve() owns state transitions and server-change invalidation.
             ServerLogStore.shared.warn(missingMessage)
-            return nil
+            return ConnectionProbeResult(
+                url: "",
+                endpoint: "",
+                startedAt: Date(),
+                duration: 0,
+                statusCode: nil,
+                serverVersion: nil,
+                errorMessage: missingMessage
+            )
         }
-        return await Self.probeBestServer(url, mode: connectionMode)
+        return await Self.probeBestServer(url, mode: mode)
     }
 
     private func fastestRespondingProbe(

@@ -79,21 +79,14 @@ struct SearchView: View {
         isSearching = true
         searchTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 150_000_000)
-            // BUG FIX: always reset isSearching when exiting early. Previously the
-            // guard returned without resetting the flag, leaving the spinner visible
-            // after the user cleared the search field during the 150 ms debounce window.
-            guard !Task.isCancelled, searchSequence == sequence else {
-                isSearching = false
-                return
-            }
+            guard !Task.isCancelled, searchSequence == sequence else { return }
+
             // Clear stale results only after the debounce fires, so the
             // transition is: spinner → results, not: results → blank → results.
             searchResults = ([], [], [])
             let results = await library.search(query: trimmed)
-            guard !Task.isCancelled, searchSequence == sequence else {
-                isSearching = false
-                return
-            }
+            guard !Task.isCancelled, searchSequence == sequence else { return }
+
             searchResults = results
             isSearching   = false
         }
@@ -601,16 +594,26 @@ struct SettingsView: View {
     }
 
     private func saveSettings() {
-        connection.localURL       = localURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        connection.tailscaleURL   = tailscaleURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        connection.proxyURL       = proxyURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let newLocal     = localURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let newTailscale = tailscaleURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let newProxy     = proxyURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let didChange = newLocal != connection.localURL
+            || newTailscale != connection.tailscaleURL
+            || newProxy != connection.proxyURL
+            || selectedMode != connection.connectionMode
+
+        connection.localURL       = newLocal
+        connection.tailscaleURL   = newTailscale
+        connection.proxyURL       = newProxy
         connection.connectionMode = selectedMode
         connection.saveSettings()
-        // Clear the library cache so a server change doesn't show data from
-        // the previous server. forceReconnect() fires the URL-change path that
-        // invalidates PlaybackHistoryStore and PlaybackStateStore; we clear the
-        // broader library cache here in the UI layer where we know settings changed.
+
+        guard didChange else { return }
+
+        // Clear server-scoped data so a changed LMS endpoint never shows stale
+        // albums/artwork from the previous library while reconnecting.
         LibraryViewModel.shared.clearCache()
+        ArtworkCache.shared.clear(includeDiskCache: true)
         connection.forceReconnect()
     }
 

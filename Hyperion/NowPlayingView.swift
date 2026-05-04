@@ -4,13 +4,13 @@ import AVKit
 
 // MARK: - LMS Audio Quality Info
 //
-// Populated by PlayerViewModel from the LMS `status` JSON fields:
+// Populated by PlayerViewModel from LMS `songinfo` metadata fields:
 //   `samplerate`  – e.g. 44100, 48000, 96000, 192000
 //   `samplesize`  – e.g. 16, 24, 32
 //   `type`        – e.g. "flac", "alac", "mp3", "aac"
 //
 // This struct drives the quality pill label and dot color, replacing the
-// old file-extension heuristic that missed remote/proxied streams.
+// file-extension heuristic that misses remote/proxied streams.
 
 struct LMSAudioQuality {
     let sampleRate: Int    // Hz
@@ -116,6 +116,8 @@ struct NowPlayingView: View {
 
     @State private var isLiked: Bool = false
 
+    @State private var isPillPulsing: Bool = false
+
     // Artwork swipe
     @State private var artworkDragOffset: CGFloat = 0
     @State private var artworkOpacity: Double     = 1.0
@@ -198,6 +200,11 @@ struct NowPlayingView: View {
                 let safeTop = geo.safeAreaInsets.top
                 let safeBot = geo.safeAreaInsets.bottom
                 let screenW = geo.size.width
+                let screenH = geo.size.height
+                // Artwork: constrained to ~56% of usable height so controls always
+                // fit below, but never wider than screen minus horizontal margins.
+                let usableH  = screenH - safeTop - safeBot
+                let artworkSide = min(screenW - 32, usableH * 0.56)
 
                 VStack(spacing: 0) {
                     // ── Top bar (chevron down | pill | waveform)
@@ -208,15 +215,21 @@ struct NowPlayingView: View {
                     ScrollView(showsIndicators: false) {
                         VStack(spacing: 0) {
 
-                            // ── Album art: full width, square, flush to edges
-                            artworkSection(side: screenW)
-                                .padding(.top, 8)
+                            // ── Album art: centered, constrained (Roon ARC style)
+                            artworkSection(side: artworkSide)
+                                .padding(.top, 16)
+                                .padding(.bottom, 4)
+                                .frame(maxWidth: .infinity) // center within the full-width VStack
+
+                            // ── Queue position  e.g. "Movement 2 of 4" / "3 of 12"
+                            queuePositionLabel
+                                .padding(.top, 6)
                                 .padding(.bottom, 0)
 
                             // ── Track metadata — left aligned, Roon ARC style
                             trackInfo
                                 .padding(.horizontal, 20)
-                                .padding(.top, 18)
+                                .padding(.top, 12)
                                 .padding(.bottom, 4)
 
                             // ── Progress bar + timestamps
@@ -261,6 +274,11 @@ struct NowPlayingView: View {
             AudioSignalPathView(path: signalPath)
         }
         .animation(.spring(response: 0.36, dampingFraction: 0.80), value: showQueuePanel)
+        .onAppear {
+            // Kick off the quality pill pulse ring — must be deferred one
+            // run-loop tick so SwiftUI registers the initial state before animating.
+            DispatchQueue.main.async { isPillPulsing = true }
+        }
         .onChange(of: player.currentTrack?.id) { _, _ in
             isDraggingProgress  = false
             dragProgress        = 0
@@ -334,10 +352,14 @@ struct NowPlayingView: View {
                         // Pulsing ring for lossless/hi-res
                         if pill.isLosslessOrBetter {
                             Circle()
-                                .stroke(pill.dotColor.opacity(0.35), lineWidth: 1.5)
+                                .stroke(pill.dotColor.opacity(0.45), lineWidth: 1.5)
                                 .frame(width: 9, height: 9)
-                                .scaleEffect(1.5)
-                                .opacity(0.6)
+                                .scaleEffect(isPillPulsing ? 2.2 : 1.0)
+                                .opacity(isPillPulsing ? 0.0 : 0.7)
+                                .animation(
+                                    .easeOut(duration: 1.4).repeatForever(autoreverses: false),
+                                    value: isPillPulsing
+                                )
                         }
                     }
                     Text(pill.label)
@@ -394,12 +416,10 @@ struct NowPlayingView: View {
     // MARK: - Artwork
 
     private func artworkSection(side: CGFloat) -> some View {
-        // Roon ARC style: full-width square artwork, flush to edges.
-        // Use .fit so non-square source images are never zoomed/cropped —
-        // letterboxed against the dark background instead.
+        // Roon ARC style: constrained square artwork, centered by caller.
+        // Use .fit so non-square covers are letterboxed rather than cropped.
         ZStack {
             Color.black  // letterbox background for non-square covers
-
             ArtworkView(
                 coverid: player.currentTrack?.coverid,
                 size: side,
@@ -407,9 +427,10 @@ struct NowPlayingView: View {
             )
         }
         .frame(width: side, height: side)
-        .clipped()
-        .scaleEffect(player.isPlaying ? 1.0 : 0.98)
-        .animation(.easeInOut(duration: 0.22), value: player.isPlaying)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .shadow(color: .black.opacity(0.4), radius: 20, x: 0, y: 8)
+        .scaleEffect(player.isPlaying ? 1.0 : 0.96)
+        .animation(.spring(response: 0.35, dampingFraction: 0.72), value: player.isPlaying)
         .offset(x: artworkDragOffset)
         .opacity(artworkOpacity)
         .contentShape(Rectangle())
@@ -926,51 +947,6 @@ struct FlatTintBackground: View {
         }
         // Final dark overlay so the minimum brightness never gets too high
         .overlay(Color.black.opacity(0.30))
-        .task(id: coverid) {
-            let scale = max(displayScale, 1)
-            if let cached = ArtworkCache.shared.cachedImage(
-                coverid: coverid,
-                targetPoints: targetPoints,
-                scale: scale
-            ) {
-                withAnimation(.easeOut(duration: 0.25)) { image = cached }
-                return
-            }
-            let loaded = await ArtworkCache.shared.loadImage(
-                coverid: coverid,
-                targetPoints: targetPoints,
-                scale: scale
-            )
-            guard !Task.isCancelled else { return }
-            withAnimation(.easeOut(duration: 0.5)) { image = loaded }
-        }
-    }
-}
-
-// MARK: - Blurred artwork background (legacy — kept for reference)
-
-struct AsyncArtworkBackground: View {
-    let coverid: String
-
-    @Environment(\.displayScale) private var displayScale
-    @State private var image: UIImage? = nil
-
-    private let targetPoints: CGFloat = 400
-
-    var body: some View {
-        Group {
-            if let image {
-                Image(uiImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .blur(radius: 80)
-                    .scaleEffect(1.5)
-                    .saturation(1.1)
-                    .drawingGroup()
-            } else {
-                Color.roonBase
-            }
-        }
         .task(id: coverid) {
             let scale = max(displayScale, 1)
             if let cached = ArtworkCache.shared.cachedImage(
