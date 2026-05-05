@@ -30,6 +30,7 @@ struct LinkerDiagnostics {
         return Double(worksWithCandidates) / Double(albumsIndexed) * 100
     }
 
+    @MainActor
     static func snapshot(
         linker: LMSLibraryLinker,
         overrides: OOUserLinkOverrideStore,
