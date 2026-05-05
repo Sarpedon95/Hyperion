@@ -185,8 +185,8 @@ struct ComposerDetailView: View {
     }
 
     private func dateString(birth: String?, death: String?) -> String {
-        let b = birth?.prefix(4).map(String.init) ?? ""
-        let d = death?.prefix(4).map(String.init) ?? ""
+        let b = birth.map { String($0.prefix(4)) } ?? ""
+        let d = death.map { String($0.prefix(4)) } ?? ""
         switch (b.isEmpty, d.isEmpty) {
         case (false, false): return "\(b) – \(d)"
         case (false, true):  return "b. \(b)"

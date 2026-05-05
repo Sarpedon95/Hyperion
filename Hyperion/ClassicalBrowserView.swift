@@ -128,22 +128,25 @@ private struct ComposersTab: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 4) {
                 ForEach(Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ"), id: \.self) { letter in
-                    Button {
-                        vm.selectLetter(letter)
-                    } label: {
-                        Text(String(letter))
-                            .font(.roonMono(13, weight: vm.selectedLetter == letter ? .semibold : .regular))
-                            .foregroundColor(vm.selectedLetter == letter ? .roonBase : .roonTertiary)
-                            .frame(width: 28, height: 28)
-                            .background(vm.selectedLetter == letter ? Color.roonAccent : Color.clear)
-                            .clipShape(Circle())
-                    }
-                    .buttonStyle(.plain)
+                    letterButton(letter)
                 }
             }
             .padding(.horizontal, 16)
             .padding(.bottom, 6)
         }
+    }
+
+    private func letterButton(_ letter: Character) -> some View {
+        let selected = vm.selectedLetter == letter
+        return Button { vm.selectLetter(letter) } label: {
+            Text(String(letter))
+                .font(.roonMono(13, weight: selected ? .semibold : .regular))
+                .foregroundColor(selected ? .roonBase : .roonTertiary)
+                .frame(width: 28, height: 28)
+                .background(selected ? Color.roonAccent : Color.clear)
+                .clipShape(Circle())
+        }
+        .buttonStyle(.plain)
     }
 
     @ViewBuilder
