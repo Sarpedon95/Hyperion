@@ -198,7 +198,7 @@ struct HomeView: View {
                     LazyHStack(spacing: 16) {
                         ForEach(recommendedComposers.prefix(15)) { composer in
                             NavigationLink {
-                                ClassicalBrowserView()
+                                ComposerDetailView(composer: composer)
                             } label: {
                                 ClassicalComposerCard(composer: composer)
                             }
@@ -233,9 +233,9 @@ struct HomeView: View {
     private func loadClassicalComposers() async {
         guard recommendedComposers.isEmpty else { return }
         isLoadingClassical = true
-        recommendedComposers = (try? await OpenOpusService.shared.essentialComposers()) ?? []
+        recommendedComposers = (try? await OpenOpusService.shared.recommendedComposers()) ?? []
         if recommendedComposers.isEmpty {
-            recommendedComposers = (try? await OpenOpusService.shared.recommendedComposers()) ?? []
+            recommendedComposers = (try? await OpenOpusService.shared.popularComposers()) ?? []
         }
         isLoadingClassical = false
     }

@@ -113,9 +113,9 @@ struct ComposerDetailView: View {
                     genreChip("All", selected: vm.selectedGenre == nil) {
                         vm.selectGenre(nil)
                     }
-                    ForEach(vm.genres) { genre in
-                        genreChip(genre.name, selected: vm.selectedGenre == genre.name) {
-                            vm.selectGenre(genre.name)
+                    ForEach(vm.genres, id: \.self) { genre in
+                        genreChip(genre, selected: vm.selectedGenre == genre) {
+                            vm.selectGenre(genre)
                         }
                     }
                 }
@@ -203,10 +203,15 @@ struct OOWorkRow: View {
     let composer: OOComposer
 
     @ObservedObject private var player = PlayerViewModel.shared
+    @ObservedObject private var linker = LMSLibraryLinker.shared
     @State private var matchState: WorkMatchState = .idle
 
     enum WorkMatchState {
-        case idle, searching, found(Album), notFound
+        case idle, searching, found(Int), notFound   // found(albumID)
+    }
+
+    private var storedCandidate: WorkRecordingCandidate? {
+        linker.topCandidate(forWorkID: work.id)
     }
 
     var body: some View {
@@ -223,6 +228,11 @@ struct OOWorkRow: View {
                         .foregroundColor(.roonPrimary)
                         .lineLimit(2)
                         .multilineTextAlignment(.leading)
+                    if linker.isInLibrary(workID: work.id) {
+                        Circle()
+                            .fill(Color.green.opacity(0.8))
+                            .frame(width: 5, height: 5)
+                    }
                 }
                 if let genre = work.genre, !genre.isEmpty {
                     Text(genre)
@@ -245,7 +255,7 @@ struct OOWorkRow: View {
         switch matchState {
         case .idle:
             Button { findAndPlay() } label: {
-                Image(systemName: "play.circle")
+                Image(systemName: storedCandidate != nil ? "play.circle.fill" : "play.circle")
                     .font(.system(size: 24))
                     .foregroundColor(.roonAccent)
             }
@@ -254,10 +264,8 @@ struct OOWorkRow: View {
         case .searching:
             ProgressView().scaleEffect(0.75).tint(.roonAccent)
 
-        case .found:
-            Button {
-                if case .found(let album) = matchState { playAlbum(album) }
-            } label: {
+        case .found(let albumID):
+            Button { playAlbum(albumID: albumID) } label: {
                 Image(systemName: "play.circle.fill")
                     .font(.system(size: 24))
                     .foregroundColor(.roonAccent)
@@ -273,12 +281,17 @@ struct OOWorkRow: View {
     }
 
     private func findAndPlay() {
+        // Use stored candidate directly if available
+        if let candidate = storedCandidate {
+            playAlbum(albumID: candidate.lmsAlbumID)
+            matchState = .found(candidate.lmsAlbumID)
+            return
+        }
         matchState = .searching
         Task {
-            let result = await fuzzyMatchWork(title: work.title, composerName: composer.complete_name)
-            if let album = result {
-                matchState = .found(album)
-                playAlbum(album)
+            if let albumID = await fuzzyMatchAlbumID() {
+                matchState = .found(albumID)
+                playAlbum(albumID: albumID)
             } else {
                 matchState = .notFound
                 Task {
@@ -289,36 +302,46 @@ struct OOWorkRow: View {
         }
     }
 
-    private func playAlbum(_ album: Album) {
+    private func playAlbum(albumID: Int) {
         Task {
-            let tracks = try? await LyrionAPI.shared.getTracksForAlbum(albumID: album.id)
-            guard let tracks, !tracks.isEmpty else { return }
-            let groups = LyrionAPI.shared.groupTracksByWork(tracks)
-            if groups.isEmpty {
-                player.playSingleTrack(tracks[0])
-            } else {
-                player.playAlbum(groups)
+            do {
+                let tracks = try await LyrionAPI.shared.getTracksForAlbum(albumID: albumID)
+                guard !tracks.isEmpty else { return }
+                let groups = LyrionAPI.shared.groupTracksByWork(tracks)
+                if groups.isEmpty {
+                    player.playSingleTrack(tracks[0])
+                } else {
+                    player.playAlbum(groups)
+                }
+            } catch {
+                linkerLog("OOWorkRow.playAlbum failed for albumID \(albumID): \(error)")
             }
         }
     }
 
-    private func fuzzyMatchWork(title: String, composerName: String) async -> Album? {
-        let term = "\(composerName) \(title)"
-        guard let albums = try? await LyrionAPI.shared.searchAlbums(term: term, count: 20) else {
+    private func fuzzyMatchAlbumID() async -> Int? {
+        let term = "\(composer.complete_name) \(work.title)"
+        let albums: [Album]
+        do {
+            albums = try await LyrionAPI.shared.searchAlbums(term: term, count: 20)
+        } catch {
+            linkerLog("OOWorkRow.fuzzyMatchAlbumID search failed for '\(term)': \(error)")
             return nil
         }
-        var best: Album? = nil
+        var best: Int? = nil
         var bestScore: Double = 0.45
         for album in albums {
-            let titleScore    = title.similarity(album.album)
-            let composerScore = composerName.similarity(album.composer ?? album.artist ?? "")
-            let combined      = titleScore * 0.7 + composerScore * 0.3
-            let words         = title.lowercased().split(whereSeparator: \.isWhitespace)
-            let albumLower    = album.album.lowercased()
-            let wordHit       = words.isEmpty ? 0.0
-                : Double(words.filter { albumLower.contains($0) }.count) / Double(words.count)
+            let titleScore    = work.title.similarity(album.album)
+            let composerScore = composer.complete_name.similarity(
+                album.composer ?? album.artist ?? ""
+            )
+            let combined  = titleScore * 0.7 + composerScore * 0.3
+            let words     = work.title.lowercased().split(whereSeparator: \.isWhitespace)
+            let lower     = album.album.lowercased()
+            let wordHit   = words.isEmpty ? 0.0
+                : Double(words.filter { lower.contains($0) }.count) / Double(words.count)
             let score = Swift.max(combined, wordHit * 0.8)
-            if score > bestScore { bestScore = score; best = album }
+            if score > bestScore { bestScore = score; best = album.id }
         }
         return best
     }
@@ -329,7 +352,7 @@ struct OOWorkRow: View {
 @MainActor
 final class ComposerDetailViewModel: ObservableObject {
 
-    @Published var genres: [OOGenreInfo] = []
+    @Published var genres: [String] = []
     @Published var allWorks: [OOWork] = []
     @Published var isLoading: Bool = false
     @Published var selectedGenre: String? = nil
@@ -348,8 +371,11 @@ final class ComposerDetailViewModel: ObservableObject {
         isLoading = true
         async let fetchGenres = OpenOpusService.shared.genresForComposer(composer.id)
         async let fetchWorks  = OpenOpusService.shared.worksForComposer(composer.id)
-        genres = (try? await fetchGenres) ?? []
-        var works = (try? await fetchWorks) ?? []
+        do { genres = try await fetchGenres }
+        catch { linkerLog("ComposerDetailViewModel: genres fetch failed for \(composer.id): \(error)") }
+        var works: [OOWork] = []
+        do { works = try await fetchWorks }
+        catch { linkerLog("ComposerDetailViewModel: works fetch failed for \(composer.id): \(error)") }
         works.sort { lhs, rhs in
             if lhs.isPopular != rhs.isPopular { return lhs.isPopular }
             return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending

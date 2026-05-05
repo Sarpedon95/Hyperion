@@ -604,12 +604,13 @@ struct ClassicalComposerCard: View {
 
 func epochColor(_ epoch: String) -> Color {
     switch epoch.lowercased() {
-    case "baroque":                    return Color(hex: "#d4a042")
-    case "classical":                  return Color(hex: "#5b9ccc")
-    case "romantic":                   return Color(hex: "#cc5b7a")
-    case "medieval", "renaissance":    return Color(hex: "#8a7ec4")
-    case "modern", "contemporary":     return Color(hex: "#5bcc8a")
-    default:                           return .roonAccent
+    case "medieval", "renaissance":                     return Color(hex: "#8a7ec4")
+    case "baroque":                                     return Color(hex: "#d4a042")
+    case "classical":                                   return Color(hex: "#5b9ccc")
+    case "early romantic", "romantic":                  return Color(hex: "#cc5b7a")
+    case "late romantic":                               return Color(hex: "#c4558a")
+    case "20th century", "post-war", "21st century":    return Color(hex: "#5bcc8a")
+    default:                                            return .roonAccent
     }
 }
 
@@ -631,6 +632,10 @@ final class ClassicalBrowserViewModel: ObservableObject {
         isLoading = true
         composers = (try? await OpenOpusService.shared.recommendedComposers()) ?? []
         isLoading = false
+        // Start building the OO↔LMS link index in the background the first
+        // time the Classical section is opened. Subsequent opens within 6 h
+        // are a no-op (freshness check is inside startLinkingFromLibrary).
+        LMSLibraryLinker.shared.startLinkingFromLibrary()
     }
 
     func selectEpoch(_ epoch: OOEpoch) {

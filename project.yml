@@ -81,3 +81,18 @@ targets:
           ENABLE_TESTABILITY: NO
           VALIDATE_PRODUCT: YES
           SWIFT_COMPILATION_MODE: wholemodule
+
+  HyperionTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: HyperionTests
+    dependencies:
+      - target: Hyperion
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.sarpedon.hyperion.tests
+        SWIFT_VERSION: "5.9"
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/Hyperion.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Hyperion
+        BUNDLE_LOADER: $(TEST_HOST)

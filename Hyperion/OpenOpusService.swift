@@ -1,5 +1,19 @@
 import Foundation
 
+// MARK: - Errors
+
+enum OpenOpusError: LocalizedError {
+    case apiFailure(String)
+    case decodingFailure(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .apiFailure(let msg):    return "OpenOpus API error: \(msg)"
+        case .decodingFailure(let msg): return "OpenOpus decode error: \(msg)"
+        }
+    }
+}
+
 // MARK: - Core Models
 
 struct OOComposer: Codable, Identifiable, Hashable {
@@ -42,12 +56,6 @@ struct OOPerformer: Codable, Identifiable, Hashable {
     func hash(into hasher: inout Hasher) { hasher.combine(name) }
 }
 
-struct OOGenreInfo: Codable, Identifiable {
-    let name: String
-    let count: String?
-    var id: String { name }
-}
-
 struct OORandomWork: Codable, Identifiable {
     let work: OOWork
     let composer: OOComposer
@@ -60,8 +68,12 @@ struct OOGuessRequest {
 }
 
 struct OOGuessResult: Codable {
-    let work: OOWork?
-    let composer: OOComposer?
+    struct Requested: Codable {
+        let composer: String?
+        let title: String?
+    }
+    let requested: Requested?
+    let guessed: OOWork?
 }
 
 struct OOOmnisearchResult: Codable, Identifiable {
@@ -80,9 +92,31 @@ struct OOComposerListResponse: Codable {
     let status: OOStatus?
 }
 
+// Work list handles both array {"works":[...]} and keyed-object {"w:15076":{...}} shapes.
 struct OOWorkListResponse: Codable {
     let works: [OOWork]?
     let status: OOStatus?
+
+    private struct DK: CodingKey {
+        var stringValue: String
+        init?(stringValue: String) { self.stringValue = stringValue }
+        var intValue: Int? { nil }
+        init?(intValue: Int) { nil }
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: DK.self)
+        status = try? c.decode(OOStatus.self, forKey: DK(stringValue: "status")!)
+        if let arr = try? c.decode([OOWork].self, forKey: DK(stringValue: "works")!) {
+            works = arr
+        } else {
+            var collected: [OOWork] = []
+            for key in c.allKeys where key.stringValue.hasPrefix("w:") {
+                if let w = try? c.decode(OOWork.self, forKey: key) { collected.append(w) }
+            }
+            works = collected.isEmpty ? nil : collected
+        }
+    }
 }
 
 struct OOWorkDetailResponse: Codable {
@@ -93,7 +127,7 @@ struct OOWorkDetailResponse: Codable {
 }
 
 struct OOGenreListResponse: Codable {
-    let genres: [OOGenreInfo]?
+    let genres: [String]?
     let status: OOStatus?
 }
 
@@ -103,12 +137,16 @@ struct OORandomWorksResponse: Codable {
 }
 
 struct OOPerformerListResponse: Codable {
-    let performers: [OOPerformer]?
+    struct PerformersBag: Codable {
+        let readable: [OOPerformer]?
+        let digest: [OOPerformer]?
+    }
+    let performers: PerformersBag?
     let status: OOStatus?
 }
 
 struct OOGuessWorksResponse: Codable {
-    let results: [OOGuessResult]?
+    let works: [OOGuessResult]?
     let status: OOStatus?
 }
 
@@ -122,19 +160,24 @@ struct OOStatus: Codable {
     let error: String?
     let version: String?
     let processingtime: Double?
+
+    var isSuccess: Bool { success?.lowercased() != "false" }
 }
 
 // MARK: - Epoch + Genre
 
 enum OOEpoch: String, CaseIterable, Identifiable {
-    case all          = "All"
-    case medieval     = "Medieval"
-    case renaissance  = "Renaissance"
-    case baroque      = "Baroque"
-    case classical    = "Classical"
-    case romantic     = "Romantic"
-    case modern       = "Modern"
-    case contemporary = "Contemporary"
+    case all            = "All"
+    case medieval       = "Medieval"
+    case renaissance    = "Renaissance"
+    case baroque        = "Baroque"
+    case classical      = "Classical"
+    case earlyRomantic  = "Early Romantic"
+    case romantic       = "Romantic"
+    case lateRomantic   = "Late Romantic"
+    case twentieth      = "20th Century"
+    case postWar        = "Post-War"
+    case twentyFirst    = "21st Century"
 
     var id: String { rawValue }
     var apiValue: String? { self == .all ? nil : rawValue }
@@ -157,7 +200,9 @@ final class OpenOpusService {
 
     static let shared = OpenOpusService()
 
-    private let session: URLSession = {
+    // nonisolated(unsafe): URLSession is created once and never mutated;
+    // safe to access from the nonisolated networking primitives below.
+    nonisolated(unsafe) private let session: URLSession = {
         let cfg = URLSessionConfiguration.default
         cfg.timeoutIntervalForRequest  = 15
         cfg.timeoutIntervalForResource = 60
@@ -173,23 +218,21 @@ final class OpenOpusService {
     // MARK: Composers
 
     func popularComposers() async throws -> [OOComposer] {
-        let r: OOComposerListResponse = try await get("/composer/list/popular.json")
-        return r.composers ?? []
-    }
-
-    func essentialComposers() async throws -> [OOComposer] {
-        let r: OOComposerListResponse = try await get("/composer/list/essential.json")
+        let r: OOComposerListResponse = try await get("/composer/list/pop.json")
+        try checkStatus(r.status)
         return r.composers ?? []
     }
 
     func recommendedComposers() async throws -> [OOComposer] {
         let r: OOComposerListResponse = try await get("/composer/list/rec.json")
+        try checkStatus(r.status)
         return r.composers ?? []
     }
 
     func composersByLetter(_ letter: Character) async throws -> [OOComposer] {
         let l = String(letter).uppercased()
-        let r: OOComposerListResponse = try await get("/composer/list/letter/\(l).json")
+        let r: OOComposerListResponse = try await get("/composer/list/name/\(l).json")
+        try checkStatus(r.status)
         return r.composers ?? []
     }
 
@@ -197,6 +240,7 @@ final class OpenOpusService {
         guard let ev = epoch.apiValue else { return try await recommendedComposers() }
         let enc = ev.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? ev
         let r: OOComposerListResponse = try await get("/composer/list/epoch/\(enc).json")
+        try checkStatus(r.status)
         return r.composers ?? []
     }
 
@@ -204,6 +248,7 @@ final class OpenOpusService {
         guard !name.isEmpty else { return try await recommendedComposers() }
         let enc = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name
         let r: OOComposerListResponse = try await get("/composer/list/search/\(enc).json")
+        try checkStatus(r.status)
         return r.composers ?? []
     }
 
@@ -211,13 +256,15 @@ final class OpenOpusService {
         guard !ids.isEmpty else { return [] }
         let joined = ids.joined(separator: ",")
         let r: OOComposerListResponse = try await get("/composer/list/ids/\(joined).json")
+        try checkStatus(r.status)
         return r.composers ?? []
     }
 
     // MARK: Genres
 
-    func genresForComposer(_ composerID: String) async throws -> [OOGenreInfo] {
+    func genresForComposer(_ composerID: String) async throws -> [String] {
         let r: OOGenreListResponse = try await get("/genre/list/composer/\(composerID).json")
+        try checkStatus(r.status)
         return r.genres ?? []
     }
 
@@ -226,6 +273,7 @@ final class OpenOpusService {
     func worksForComposer(_ composerID: String, genre: String = "all") async throws -> [OOWork] {
         let enc = genre.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? genre
         let r: OOWorkListResponse = try await get("/work/list/composer/\(composerID)/genre/\(enc).json")
+        try checkStatus(r.status)
         return r.works ?? []
     }
 
@@ -234,13 +282,16 @@ final class OpenOpusService {
     }
 
     func workDetail(_ workID: String) async throws -> OOWorkDetailResponse {
-        try await get("/work/detail/\(workID).json")
+        let r: OOWorkDetailResponse = try await get("/work/detail/\(workID).json")
+        try checkStatus(r.status)
+        return r
     }
 
     func worksByIDs(_ ids: [String]) async throws -> [OOWork] {
         guard !ids.isEmpty else { return [] }
         let joined = ids.joined(separator: ",")
         let r: OOWorkListResponse = try await get("/work/list/ids/\(joined).json")
+        try checkStatus(r.status)
         return r.works ?? []
     }
 
@@ -253,29 +304,32 @@ final class OpenOpusService {
         popularWork: Bool = false
     ) async throws -> [OORandomWork] {
         var params: [String: String] = [:]
-        if let g = genre,    !g.isEmpty { params["genre"]      = g }
-        if let e = epoch,    !e.isEmpty { params["epoch"]      = e }
-        if let c = composer, !c.isEmpty { params["composer"]   = c }
+        if let g = genre,    !g.isEmpty { params["genre"]       = g }
+        if let e = epoch,    !e.isEmpty { params["epoch"]       = e }
+        if let c = composer, !c.isEmpty { params["composer"]    = c }
         if popularWork { params["popularwork"] = "1" }
         let r: OORandomWorksResponse = try await post("/dyn/work/random", formParams: params)
+        try checkStatus(r.status)
         return r.works ?? []
     }
 
     func performerRoles(names: [String]) async throws -> [OOPerformer] {
         guard !names.isEmpty else { return [] }
-        let encoded = (try? String(data: JSONEncoder().encode(names), encoding: .utf8)) ?? "[]"
-        let r: OOPerformerListResponse = try await post("/dyn/performer/role",
-                                                        formParams: ["names": encoded])
-        return r.performers ?? []
+        let encoded = String(data: try JSONEncoder().encode(names), encoding: .utf8) ?? "[]"
+        let r: OOPerformerListResponse = try await post("/dyn/performer/list",
+                                                         formParams: ["names": encoded])
+        try checkStatus(r.status)
+        return r.performers?.readable ?? r.performers?.digest ?? []
     }
 
     func guessWorks(_ requests: [OOGuessRequest]) async throws -> [OOGuessResult] {
         guard !requests.isEmpty else { return [] }
-        let queries = requests.map { ["title": $0.title, "composer": $0.composer] }
-        let encoded = (try? String(data: JSONEncoder().encode(queries), encoding: .utf8)) ?? "[]"
+        let payload = requests.map { ["composer": $0.composer, "title": $0.title] }
+        let encoded = String(data: try JSONEncoder().encode(payload), encoding: .utf8) ?? "[]"
         let r: OOGuessWorksResponse = try await post("/dyn/work/guess",
-                                                     formParams: ["queries": encoded])
-        return r.results ?? []
+                                                      formParams: ["works": encoded])
+        try checkStatus(r.status)
+        return r.works ?? []
     }
 
     // MARK: Omnisearch
@@ -283,7 +337,8 @@ final class OpenOpusService {
     func omnisearch(_ query: String, offset: Int = 0) async throws -> [OOOmnisearchResult] {
         guard !query.isEmpty else { return [] }
         let enc = query.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? query
-        let r: OOOmnisearchResponse = try await get("/dyn/omnisearch/\(enc)/\(offset).json")
+        let r: OOOmnisearchResponse = try await get("/omnisearch/\(enc)/\(offset).json")
+        try checkStatus(r.status)
         return r.results ?? []
     }
 
@@ -328,6 +383,13 @@ final class OpenOpusService {
         if let http = response as? HTTPURLResponse,
            !(200..<300).contains(http.statusCode) { throw URLError(.badServerResponse) }
         return try JSONDecoder().decode(T.self, from: data)
+    }
+
+    private func checkStatus(_ status: OOStatus?) throws {
+        guard let s = status else { return }
+        if !s.isSuccess {
+            throw OpenOpusError.apiFailure(s.error ?? "Unknown error")
+        }
     }
 }
 

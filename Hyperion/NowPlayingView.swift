@@ -119,6 +119,7 @@ struct NowPlayingView: View {
     @State private var artworkSwipeTask: Task<Void, Never>? = nil
 
     @State private var ooWorkDetail: OOWorkDetailResponse? = nil
+    @State private var showLyrics: Bool = false
 
     private var qualityPillInfo: (label: String, dotColor: Color, isLosslessOrBetter: Bool) {
         if let lmsQ = player.lmsAudioQuality {
@@ -250,10 +251,19 @@ struct NowPlayingView: View {
         .sheet(isPresented: $showSignalPath) {
             AudioSignalPathView(path: signalPath)
         }
+        .fullScreenCover(isPresented: $showLyrics) {
+            if let track = player.currentTrack {
+                LyricsView(track: track)
+            }
+        }
         .confirmationDialog("Now Playing", isPresented: $showMoreActions, titleVisibility: .visible) {
             Button("Queue") {
                 Haptics.light()
                 withAnimation { showQueuePanel = true }
+            }
+            Button("Lyrics") {
+                Haptics.light()
+                showLyrics = true
             }
             Button("Signal Path") {
                 Haptics.light()
@@ -612,9 +622,9 @@ struct NowPlayingView: View {
 
             Spacer(minLength: 0)
 
-            BottomToolbarButton(systemName: "opticaldisc", tint: .white, accessibilityLabel: "Track info & signal path") {
+            BottomToolbarButton(systemName: "quote.bubble", accessibilityLabel: "Lyrics") {
                 Haptics.light()
-                showSignalPath = true
+                showLyrics = true
             }
 
             Spacer(minLength: 0)
@@ -773,18 +783,32 @@ struct NowPlayingView: View {
     }
 
     private func fetchOOWorkDetail() async {
-        ooWorkDetail = nil
-        guard let track = player.currentTrack else { return }
+        guard let track = player.currentTrack else {
+            ooWorkDetail = nil
+            return
+        }
         let title: String
         if let w = track.work, !w.isEmpty { title = w }
         else if let a = track.album, !a.isEmpty { title = a }
         else { title = track.title }
         let composer = track.composer ?? track.albumartist ?? ""
-        guard !composer.isEmpty else { return }
+        guard !composer.isEmpty else {
+            ooWorkDetail = nil
+            return
+        }
+        // Keep old detail visible while fetching — prevents flash on track change.
         guard let result = await LMSLibraryLinker.shared.guessWork(title: title,
                                                                     composerName: composer),
-              let workID = result.work?.id else { return }
-        ooWorkDetail = try? await OpenOpusService.shared.workDetail(workID)
+              let workID = result.guessed?.id else {
+            ooWorkDetail = nil
+            return
+        }
+        do {
+            ooWorkDetail = try await OpenOpusService.shared.workDetail(workID)
+        } catch {
+            linkerLog("NowPlaying workDetail failed for workID \(workID): \(error)")
+            ooWorkDetail = nil
+        }
     }
 
     // MARK: - Helpers

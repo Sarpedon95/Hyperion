@@ -121,6 +121,7 @@ struct RandomWorksView: View {
 struct RandomWorkCard: View {
 
     let item: OORandomWork
+    @ObservedObject private var linker = LMSLibraryLinker.shared
     @State private var isInLibrary: Bool? = nil   // nil = not yet checked
 
     var body: some View {
@@ -205,6 +206,10 @@ struct RandomWorkCard: View {
                 .strokeBorder(Color.white.opacity(0.06), lineWidth: 1)
         )
         .task(id: item.id) { await checkLibrary() }
+        .onChange(of: linker.linkedCount) { _, _ in
+            // Re-check library status when the linker finishes a build pass.
+            if linker.isInLibrary(workID: item.work.id) { isInLibrary = true }
+        }
     }
 
     private var composerPortraitURL: URL? {
@@ -213,12 +218,24 @@ struct RandomWorkCard: View {
     }
 
     private func checkLibrary() async {
-        guard isInLibrary == nil else { return }
+        // Fast path: O(1) linker lookup, no network call
+        if linker.isInLibrary(workID: item.work.id) {
+            isInLibrary = true
+            return
+        }
+        // If the linker has run at least once, trust its "not found"
+        if linker.linkedCount > 0 || linker.lastRebuilt != nil {
+            isInLibrary = false
+            return
+        }
+        // Linker cache is empty (first launch before any indexing).
+        // Fall back to a single lightweight title search so the user gets
+        // some library indicators while the background index is building.
         let term = "\(item.composer.complete_name) \(item.work.title)"
         if let albums = try? await LyrionAPI.shared.searchAlbums(term: term, count: 5) {
-            isInLibrary = albums.contains {
-                item.work.title.similarity($0.album) > 0.5
-            }
+            isInLibrary = albums.contains { item.work.title.similarity($0.album) > 0.5 }
+        } else {
+            isInLibrary = false
         }
     }
 }
@@ -235,6 +252,7 @@ final class RandomWorksViewModel: ObservableObject {
     var popularOnly: Bool = false
 
     private var page: Int = 0
+    private var reloadTask: Task<Void, Never>?
 
     func load() async {
         guard works.isEmpty else { return }
@@ -242,13 +260,25 @@ final class RandomWorksViewModel: ObservableObject {
     }
 
     func reload() async {
+        // Cancel any in-flight reload before starting a new one.
+        // This prevents stale filter results overwriting fresh ones when
+        // the user taps filter chips rapidly.
+        reloadTask?.cancel()
         page = 0
         isLoading = true
-        works = (try? await OpenOpusService.shared.randomWorks(
-            genre:       selectedGenre,
-            popularWork: popularOnly
-        )) ?? []
-        isLoading = false
+        let genre   = selectedGenre
+        let popular = popularOnly
+        let task = Task {
+            let fetched = (try? await OpenOpusService.shared.randomWorks(
+                genre:       genre,
+                popularWork: popular
+            )) ?? []
+            guard !Task.isCancelled else { return }
+            self.works = fetched
+            self.isLoading = false
+        }
+        reloadTask = task
+        await task.value
     }
 
     func loadMore() async {
@@ -258,7 +288,7 @@ final class RandomWorksViewModel: ObservableObject {
             genre:       selectedGenre,
             popularWork: popularOnly
         )) ?? []
-        // deduplicate by work ID
+        // Deduplicate by work ID
         let existing = Set(works.map(\.id))
         works += more.filter { !existing.contains($0.id) }
         isLoading = false
