@@ -13,6 +13,7 @@ struct LyricsView: View {
 
     @State private var loadState: LyricsLoadState = .loading
     @State private var activeLineIndex: Int = 0
+    @State private var showManualSearch: Bool = false
 
     var body: some View {
         ZStack {
@@ -22,6 +23,13 @@ struct LyricsView: View {
         .overlay(alignment: .top) { topBar }
         .preferredColorScheme(.dark)
         .task(id: track.id) { await loadLyrics() }
+        .sheet(isPresented: $showManualSearch) {
+            ManualLyricsSearchView(track: track) { candidate in
+                Task { @MainActor in
+                    pinAndReload(candidate)
+                }
+            }
+        }
     }
 
     // MARK: - Content dispatch
@@ -49,7 +57,8 @@ struct LyricsView: View {
                 emptyState(
                     icon: "music.note",
                     primary: "No lyrics available",
-                    secondary: "Lyrics not found for this track."
+                    secondary: "Lyrics not found for this track.",
+                    searchAction: { showManualSearch = true }
                 )
             }
         }
@@ -152,7 +161,12 @@ struct LyricsView: View {
 
     // MARK: - Empty state
 
-    private func emptyState(icon: String, primary: String, secondary: String?) -> some View {
+    private func emptyState(
+        icon: String,
+        primary: String,
+        secondary: String?,
+        searchAction: (() -> Void)? = nil
+    ) -> some View {
         VStack(spacing: 14) {
             Image(systemName: icon)
                 .font(.system(size: 44))
@@ -166,6 +180,19 @@ struct LyricsView: View {
                     .foregroundColor(.roonTertiary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 40)
+            }
+            if let searchAction {
+                Button("Search manually", action: searchAction)
+                    .font(.roonBody(14, weight: .medium))
+                    .foregroundColor(.roonAccent)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 10)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(Color.roonAccent, lineWidth: 1)
+                    )
+                    .buttonStyle(.plain)
+                    .padding(.top, 4)
             }
         }
     }
@@ -248,6 +275,22 @@ struct LyricsView: View {
             loadState = .loaded(result)
         }
     }
+
+    private func pinAndReload(_ candidate: LyricsCandidate) {
+        let artist = track.composer ?? track.albumartist ?? track.trackartist ?? ""
+        let artistResolved = artist.isEmpty ? (track.albumartist ?? track.title) : artist
+        let title  = track.work?.isEmpty == false ? track.work! : track.title
+        let album  = track.album ?? ""
+        LyricsService.shared.pinResult(
+            candidate,
+            artist: artistResolved,
+            track:  title,
+            album:  album
+        )
+        withAnimation(.easeIn(duration: 0.2)) {
+            loadState = .loaded(candidate.result)
+        }
+    }
 }
 
 // MARK: - Load state
@@ -255,4 +298,186 @@ struct LyricsView: View {
 private enum LyricsLoadState {
     case loading
     case loaded(LyricsResult)
+}
+
+// MARK: - Manual lyrics search sheet
+
+struct ManualLyricsSearchView: View {
+
+    let track:  Track
+    let onPin:  (LyricsCandidate) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var artist:      String
+    @State private var title:       String
+    @State private var candidates:  [LyricsCandidate] = []
+    @State private var isSearching: Bool = false
+    @State private var hasSearched: Bool = false
+
+    init(track: Track, onPin: @escaping (LyricsCandidate) -> Void) {
+        self.track = track
+        self.onPin = onPin
+        let a = track.composer ?? track.albumartist ?? track.trackartist ?? ""
+        _artist = State(initialValue: a)
+        _title  = State(initialValue:
+            (track.work?.isEmpty == false ? track.work! : nil) ?? track.title
+        )
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                fieldsSection
+                Divider()
+                resultsSection
+            }
+            .background(Color.roonBase.ignoresSafeArea())
+            .navigationTitle("Search Lyrics")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                        .foregroundColor(.roonAccent)
+                }
+            }
+        }
+    }
+
+    // MARK: - Fields
+
+    private var fieldsSection: some View {
+        VStack(spacing: 10) {
+            fieldRow(label: "Artist", text: $artist)
+            fieldRow(label: "Title",  text: $title)
+            Button {
+                Task { await search() }
+            } label: {
+                Text(isSearching ? "Searching…" : "Search")
+                    .font(.roonBody(14, weight: .semibold))
+                    .foregroundColor(.roonBase)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 11)
+                    .background(Color.roonAccent)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+            .buttonStyle(.plain)
+            .disabled(isSearching || artist.isEmpty || title.isEmpty)
+            .opacity((isSearching || artist.isEmpty || title.isEmpty) ? 0.5 : 1)
+        }
+        .padding(16)
+    }
+
+    private func fieldRow(label: String, text: Binding<String>) -> some View {
+        HStack(spacing: 10) {
+            Text(label)
+                .font(.roonBody(13))
+                .foregroundColor(.roonSecondary)
+                .frame(width: 44, alignment: .trailing)
+            TextField(label, text: text)
+                .font(.roonBody(14))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(Color.roonElevated)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .submitLabel(.search)
+                .onSubmit { Task { await search() } }
+        }
+    }
+
+    // MARK: - Results
+
+    @ViewBuilder
+    private var resultsSection: some View {
+        if isSearching {
+            Spacer()
+            ProgressView().tint(.roonAccent)
+            Spacer()
+        } else if candidates.isEmpty && hasSearched {
+            Spacer()
+            VStack(spacing: 10) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 32))
+                    .foregroundColor(.roonTertiary)
+                Text("No results found")
+                    .font(.roonBody(14))
+                    .foregroundColor(.roonTertiary)
+            }
+            Spacer()
+        } else if !candidates.isEmpty {
+            List(candidates) { c in
+                Button {
+                    Task { @MainActor in
+                        onPin(c)
+                        dismiss()
+                    }
+                } label: {
+                    candidateRow(c)
+                }
+                .buttonStyle(.plain)
+                .listRowBackground(Color.roonSurface)
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+        } else {
+            Spacer()
+        }
+    }
+
+    private func candidateRow(_ c: LyricsCandidate) -> some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(c.trackName)
+                    .font(.roonBody(14, weight: .medium))
+                    .foregroundColor(.roonPrimary)
+                    .lineLimit(2)
+                Text(c.artistName)
+                    .font(.roonBody(12))
+                    .foregroundColor(.roonSecondary)
+                    .lineLimit(1)
+                if let album = c.albumName, !album.isEmpty {
+                    Text(album)
+                        .font(.roonBody(11))
+                        .foregroundColor(.roonTertiary)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 4)
+            VStack(alignment: .trailing, spacing: 5) {
+                if c.hasSynced {
+                    Text("SYNCED")
+                        .font(.roonBody(9, weight: .semibold))
+                        .foregroundColor(.roonAccent)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.roonAccent.opacity(0.15))
+                        .clipShape(Capsule())
+                }
+                if let dur = c.duration, dur > 0 {
+                    Text(formatDuration(dur))
+                        .font(.roonBody(11))
+                        .foregroundColor(.roonTertiary)
+                }
+            }
+        }
+        .padding(.vertical, 6)
+        .contentShape(Rectangle())
+    }
+
+    // MARK: - Actions
+
+    private func search() async {
+        guard !artist.isEmpty, !title.isEmpty else { return }
+        isSearching = true
+        candidates  = await LyricsService.shared.searchCandidates(artist: artist, track: title)
+        isSearching = false
+        hasSearched = true
+    }
+
+    // MARK: - Formatting
+
+    private func formatDuration(_ s: TimeInterval) -> String {
+        let m = Int(s) / 60
+        let sec = Int(s) % 60
+        return String(format: "%d:%02d", m, sec)
+    }
 }

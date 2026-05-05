@@ -21,7 +21,19 @@ enum LyricsResult {
     case unavailable            // no lyrics after all attempts
 }
 
-// MARK: - Provider protocol
+/// A scored candidate returned by the manual search API.
+struct LyricsCandidate: Identifiable {
+    let id:         Int
+    let trackName:  String
+    let artistName: String
+    let albumName:  String?
+    let duration:   TimeInterval?
+    let hasSynced:  Bool
+    let score:      Double
+    let result:     LyricsResult
+}
+
+// MARK: - Provider protocols
 
 /// Abstraction over a lyrics data source.
 ///
@@ -37,6 +49,12 @@ protocol LyricsProvider: Sendable {
         albumName:  String?,
         duration:   TimeInterval?
     ) async -> LyricsResult
+}
+
+/// Optional capability for providers that support manual candidate search.
+/// Conform to this alongside `LyricsProvider` to enable the in-app search UI.
+protocol LyricsSearchableProvider: LyricsProvider {
+    func searchCandidates(artist: String, track: String) async -> [LyricsCandidate]
 }
 
 // MARK: - Service (coordinator + cache)
@@ -79,6 +97,27 @@ final class LyricsService {
         return result
     }
 
+    /// Search for ranked lyrics candidates — used by the manual search UI.
+    /// Returns an empty array if the active provider does not support candidate search.
+    func searchCandidates(artist: String, track: String) async -> [LyricsCandidate] {
+        guard let searchable = provider as? LyricsSearchableProvider else { return [] }
+        return await searchable.searchCandidates(artist: artist, track: track)
+    }
+
+    /// Pin a manually-chosen candidate to the cache under the original track's key.
+    /// Called after the user selects a result in ManualLyricsSearchView.
+    func pinResult(_ candidate: LyricsCandidate, artist: String, track: String, album: String) {
+        let key = cacheKey(artist: artist, track: track, album: album)
+        saveToCache(candidate.result, key: key)
+        lyricsLog("Pinned '\(candidate.trackName)' by '\(candidate.artistName)' for '\(track)'")
+    }
+
+    /// Wipe the entire on-disk lyrics cache (e.g. after a lookup-logic upgrade).
+    func clearCache() {
+        try? FileManager.default.removeItem(at: cacheDir)
+        lyricsLog("Cache cleared")
+    }
+
     // MARK: - Disk cache
 
     private var cacheDir: URL {
@@ -87,8 +126,9 @@ final class LyricsService {
     }
 
     // DJB2 — stable across sessions (unlike Swift's hashValue).
+    // "v2|" prefix busts old v1 negative-result entries that blocked the ladder.
     private func cacheKey(artist: String, track: String, album: String) -> String {
-        let raw = "\(artist.lowercased())|\(track.lowercased())|\(album.lowercased())"
+        let raw = "v2|\(artist.lowercased())|\(track.lowercased())|\(album.lowercased())"
         var hash: UInt64 = 5381
         for byte in raw.utf8 { hash = (hash &* 33) &+ UInt64(byte) }
         return String(format: "%016llx", hash)
@@ -159,9 +199,9 @@ func lyricsLog(_ message: String) {
 // MARK: - LRCLIB provider
 
 /// Free, public, community-maintained lyrics database (https://lrclib.net).
-/// No authentication required. Uses multi-step lookup with local ranking so
-/// remaster/edition suffixes don't prevent matches.
-final class LRCLIBProvider: LyricsProvider, @unchecked Sendable {
+/// No authentication required. Uses a multi-step lookup ladder with local
+/// candidate ranking so remaster/edition suffixes don't prevent matches.
+final class LRCLIBProvider: LyricsSearchableProvider, @unchecked Sendable {
 
     private let session: URLSession = {
         let cfg = URLSessionConfiguration.default
@@ -174,12 +214,12 @@ final class LRCLIBProvider: LyricsProvider, @unchecked Sendable {
 
     // MARK: - LyricsProvider
 
-    /// Multi-step strategy:
-    ///   1. Exact lookup — original title, album, duration
-    ///   2. Normalized title — strips remaster/edition/live suffixes
-    ///   3. No album — album mismatch in LRCLIB is common for classical
-    ///   4. No duration — tolerance fallback
-    ///   5. Search endpoint — ranked locally, threshold ≥ 0.40
+    /// Deterministic lookup ladder:
+    ///   1. Exact    — original title, album, duration
+    ///   2. Norm     — normalized title (strips remaster/edition/live suffixes)
+    ///   3. No album — normalized title, no album
+    ///   4. No dur   — normalized title, no album, no duration
+    ///   5. Search   — four parallel queries, local ranking, threshold ≥ 0.40
     ///
     /// `.unavailable` is returned only after all five steps fail.
     func fetch(
@@ -188,56 +228,91 @@ final class LRCLIBProvider: LyricsProvider, @unchecked Sendable {
         albumName:  String?,
         duration:   TimeInterval?
     ) async -> LyricsResult {
-        let norm       = LRCLIBProvider.normalizeTitle(trackName)
-        let hasDur     = (duration ?? 0) > 0
-        let hasAlbum   = !(albumName?.isEmpty ?? true)
-        let didNorm    = norm != trackName
+        let norm     = LRCLIBProvider.normalizeTitle(trackName)
+        let hasDur   = (duration ?? 0) > 0
+        let hasAlbum = !(albumName?.isEmpty ?? true)
+        let didNorm  = norm != trackName
 
-        lyricsLog("Lookup '\(trackName)'\(didNorm ? " → '\(norm)'" : "") artist='\(artistName)'")
+        lyricsLog("──────────────────────────────────────────")
+        lyricsLog("Lookup '\(trackName)'\(didNorm ? " → normalized '\(norm)'" : "")")
+        lyricsLog("  artist='\(artistName)' album='\(albumName ?? "–")' duration=\(duration.map { String(format: "%.0f", $0) } ?? "–")s")
 
-        // Step 1: exact original
+        // Step 1: exact original title
+        lyricsLog("Step 1: exact (original title)")
         if let r = await getExact(artist: artistName, track: trackName,
                                    album: albumName, duration: duration) {
-            lyricsLog("  ✓ Step 1 (exact)")
+            lyricsLog("✓ Step 1 → \(resultDescription(r))")
             return r
         }
 
-        // Step 2: normalized title
+        // Step 2: normalized title (skip if title is already clean)
         if didNorm {
+            lyricsLog("Step 2: normalized title '\(norm)'")
             if let r = await getExact(artist: artistName, track: norm,
                                        album: albumName, duration: duration) {
-                lyricsLog("  ✓ Step 2 (normalized title)")
+                lyricsLog("✓ Step 2 → \(resultDescription(r))")
                 return r
             }
         }
 
         // Step 3: no album
         if hasAlbum {
+            lyricsLog("Step 3: normalized, no album")
             if let r = await getExact(artist: artistName, track: norm,
                                        album: nil, duration: duration) {
-                lyricsLog("  ✓ Step 3 (no album)")
+                lyricsLog("✓ Step 3 → \(resultDescription(r))")
                 return r
             }
         }
 
         // Step 4: no duration
         if hasDur {
+            lyricsLog("Step 4: normalized, no album, no duration")
             if let r = await getExact(artist: artistName, track: norm,
                                        album: nil, duration: nil) {
-                lyricsLog("  ✓ Step 4 (no duration)")
+                lyricsLog("✓ Step 4 → \(resultDescription(r))")
                 return r
             }
         }
 
-        // Step 5: search + local ranking
-        lyricsLog("  → Step 5 (search fallback)")
-        return await search(artist: artistName, track: norm, duration: duration)
+        // Step 5: multi-query search with local ranking
+        lyricsLog("Step 5: multi-query search")
+        return await multiSearch(artist: artistName, track: norm, duration: duration)
+    }
+
+    // MARK: - LyricsSearchableProvider
+
+    func searchCandidates(artist: String, track: String) async -> [LyricsCandidate] {
+        async let r1 = fetchSearchPage(params: [
+            URLQueryItem(name: "artist_name", value: artist),
+            URLQueryItem(name: "track_name",  value: track)
+        ])
+        async let r2 = fetchSearchPage(params: [URLQueryItem(name: "q", value: "\(artist) \(track)")])
+        async let r3 = fetchSearchPage(params: [URLQueryItem(name: "q", value: track)])
+
+        let (c1, c2, c3) = await (r1, r2, r3)
+        let all = deduplicated(c1 + c2 + c3)
+
+        return all.compactMap { c -> LyricsCandidate? in
+            guard let id = c.id else { return nil }
+            let score = rankCandidate(c, targetArtist: artist, targetTrack: track, duration: nil)
+            return LyricsCandidate(
+                id:         id,
+                trackName:  c.trackName  ?? "",
+                artistName: c.artistName ?? "",
+                albumName:  c.albumName,
+                duration:   c.duration,
+                hasSynced:  c.syncedLyrics?.isEmpty == false,
+                score:      score,
+                result:     resultFrom(c)
+            )
+        }.sorted { $0.score > $1.score }
     }
 
     // MARK: - Exact lookup (/api/get)
 
-    /// Returns `nil` on network error (so the caller can try the next step).
-    /// Returns `.unavailable` on 404 (definitive miss for these params).
+    /// Returns `nil` on 404 (so the ladder continues) and on network errors.
+    /// Returns a concrete result only on HTTP 200 with usable lyrics content.
     private func getExact(
         artist: String, track: String, album: String?, duration: TimeInterval?
     ) async -> LyricsResult? {
@@ -252,57 +327,83 @@ final class LRCLIBProvider: LyricsProvider, @unchecked Sendable {
             items.append(URLQueryItem(name: "duration", value: String(Int(duration))))
         }
         guard let url = makeURL("\(base)/get", items) else { return nil }
+        lyricsLog("  GET \(url.absoluteString)")
 
         do {
             let (data, response) = try await session.data(for: makeRequest(url))
             guard let http = response as? HTTPURLResponse else { return nil }
-            // 404 = definitively not found for these params — don't retry same step
-            if http.statusCode == 404 { return .unavailable }
+            lyricsLog("  → HTTP \(http.statusCode)")
+            // 404 = definitively not in LRCLIB with these params — return nil so
+            // the lookup ladder continues to the next step (previously returned
+            // .unavailable which short-circuited the entire ladder).
+            if http.statusCode == 404 { return nil }
             guard http.statusCode == 200 else { return nil }
             let payload = try JSONDecoder().decode(LRCLIBResponse.self, from: data)
             let result  = resultFrom(payload)
-            // Treat an empty response (no lyrics content) as a miss so we try
-            // further steps instead of caching an empty result.
-            if case .unavailable = result { return nil }
+            // Empty payload (no lyrics content) → treat as miss so we try further steps
+            if case .unavailable = result {
+                lyricsLog("  → empty payload, continuing ladder")
+                return nil
+            }
+            lyricsLog("  → \(resultDescription(result))")
             return result
         } catch {
-            lyricsLog("  getExact network error: \(error.localizedDescription)")
+            lyricsLog("  getExact error: \(error.localizedDescription)")
             return nil
         }
     }
 
-    // MARK: - Search + ranking (/api/search)
+    // MARK: - Multi-query search
 
-    private func search(artist: String, track: String, duration: TimeInterval?) async -> LyricsResult {
-        guard let url = makeURL("\(base)/search", [
+    private func multiSearch(artist: String, track: String, duration: TimeInterval?) async -> LyricsResult {
+        // Run four queries in parallel; merge, deduplicate, then rank locally.
+        // Queries: structured artist+track, free-text "artist track",
+        //          free-text "track artist" (reversed), free-text title-only.
+        async let r1 = fetchSearchPage(params: [
             URLQueryItem(name: "artist_name", value: artist),
             URLQueryItem(name: "track_name",  value: track)
-        ]) else { return .unavailable }
+        ])
+        async let r2 = fetchSearchPage(params: [URLQueryItem(name: "q", value: "\(artist) \(track)")])
+        async let r3 = fetchSearchPage(params: [URLQueryItem(name: "q", value: "\(track) \(artist)")])
+        async let r4 = fetchSearchPage(params: [URLQueryItem(name: "q", value: track)])
 
+        let (c1, c2, c3, c4) = await (r1, r2, r3, r4)
+        let all = deduplicated(c1 + c2 + c3 + c4)
+        lyricsLog("  \(all.count) unique candidate(s) [q1:\(c1.count) q2:\(c2.count) q3:\(c3.count) q4:\(c4.count)]")
+
+        let scored: [(LRCLIBResponse, Double)] = all.compactMap { c in
+            let s = rankCandidate(c, targetArtist: artist, targetTrack: track, duration: duration)
+            lyricsLog("  Candidate '\(c.trackName ?? "?")' by '\(c.artistName ?? "?")'  score=\(String(format: "%.2f", s))  synced=\(c.syncedLyrics?.isEmpty == false)")
+            return s >= 0.40 ? (c, s) : nil
+        }.sorted { $0.1 > $1.1 }
+
+        guard let (best, bestScore) = scored.first else {
+            lyricsLog("✗ No candidate met threshold 0.40 → unavailable")
+            return .unavailable
+        }
+        let r = resultFrom(best)
+        lyricsLog("✓ Accepted '\(best.trackName ?? "")' by '\(best.artistName ?? "")'  score=\(String(format: "%.2f", bestScore)) → \(resultDescription(r))")
+        return r
+    }
+
+    private func fetchSearchPage(params: [URLQueryItem]) async -> [LRCLIBResponse] {
+        guard let url = makeURL("\(base)/search", params) else { return [] }
+        lyricsLog("  GET \(url.absoluteString)")
         do {
             let (data, response) = try await session.data(for: makeRequest(url))
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-                return .unavailable
-            }
-            let candidates = try JSONDecoder().decode([LRCLIBResponse].self, from: data)
-            lyricsLog("  Search returned \(candidates.count) candidate(s)")
-
-            let scored: [(LRCLIBResponse, Double)] = candidates.compactMap { c in
-                let s = rankCandidate(c, targetArtist: artist, targetTrack: track, duration: duration)
-                let cName = c.trackName ?? "?"
-                lyricsLog("    '\(cName)' score=\(String(format: "%.2f", s))")
-                return s >= 0.40 ? (c, s) : nil
-            }.sorted { $0.1 > $1.1 }
-
-            guard let (best, bestScore) = scored.first else {
-                lyricsLog("  No candidate met threshold 0.40")
-                return .unavailable
-            }
-            lyricsLog("  Best: '\(best.trackName ?? "")' score=\(String(format: "%.2f", bestScore))")
-            return resultFrom(best)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return [] }
+            return (try? JSONDecoder().decode([LRCLIBResponse].self, from: data)) ?? []
         } catch {
-            lyricsLog("  Search network error: \(error.localizedDescription)")
-            return .unavailable
+            lyricsLog("  fetchSearchPage error: \(error.localizedDescription)")
+            return []
+        }
+    }
+
+    private func deduplicated(_ items: [LRCLIBResponse]) -> [LRCLIBResponse] {
+        var seen = Set<Int>()
+        return items.filter { c in
+            guard let id = c.id else { return true }
+            return seen.insert(id).inserted
         }
     }
 
@@ -319,10 +420,9 @@ final class LRCLIBProvider: LyricsProvider, @unchecked Sendable {
         let tTrack  = targetTrack.lowercased()
         let tArtist = targetArtist.lowercased()
 
-        // Title similarity
-        let titleScore  = tTrack.similarity(cTrack)
+        let titleScore: Double = tTrack.similarity(cTrack)
 
-        // Artist similarity — partial credit for last-name or first-word match
+        // Partial credit for substring containment before falling back to full similarity.
         let artistScore: Double
         if tArtist == cArtist {
             artistScore = 1.0
@@ -332,44 +432,53 @@ final class LRCLIBProvider: LyricsProvider, @unchecked Sendable {
             artistScore = tArtist.similarity(cArtist)
         }
 
-        // Duration proximity — graded penalty: -0.25 per 30 s off, floored at 0
+        // Duration proximity — graded penalty: -0.25 per 30 s off, floored at 0.
+        // When duration is unknown on either side, we don't penalise.
         var durationScore = 1.0
         if let target = duration, target > 0, let cDur = c.duration, cDur > 0 {
             let diff = abs(target - cDur)
             durationScore = Swift.max(0, 1.0 - (diff / 30.0) * 0.25)
         }
 
-        // Small bonus for having synced lyrics (prefer quality)
         let syncedBonus = (c.syncedLyrics?.isEmpty == false) ? 0.05 : 0.0
 
-        // Weighted: title 45 %, artist 35 %, duration 15 %, synced bonus 5 %
+        // Weighted: title 45%, artist 35%, duration 15%, synced quality bonus 5%
         return titleScore * 0.45 + artistScore * 0.35 + durationScore * 0.15 + syncedBonus
     }
 
     // MARK: - Title normalization
 
-    /// Strips common suffixes that prevent LRCLIB from matching:
-    ///   "Money (2023 Remaster)"        → "Money"
-    ///   "Wish You Were Here - Remastered 2011" → "Wish You Were Here"
-    ///   "The Wall (Deluxe Edition)"    → "The Wall"
-    ///   "Comfortably Numb (Live)"      → "Comfortably Numb"
-    ///   "Something (feat. George Harrison)" → "Something"
+    /// Strips common suffixes that prevent LRCLIB from matching, supporting
+    /// both parentheses `(…)` and square brackets `[…]` variants:
+    ///
+    ///   "Money (2023 Remaster)"          → "Money"
+    ///   "Money (2011 Remastered Version)" → "Money"
+    ///   "Money [2023 Remaster]"           → "Money"
+    ///   "Money - 2023 Remaster"           → "Money"
+    ///   "Money (Remastered)"              → "Money"
+    ///   "The Wall (Deluxe Edition)"       → "The Wall"
+    ///   "Comfortably Numb (Live)"         → "Comfortably Numb"
     static func normalizeTitle(_ title: String) -> String {
         var s = title
 
-        // Patterns stripped from inside parentheses / brackets
+        // Bracket patterns: strips matching content inside (…) or […]
         let bracketPatterns: [String] = [
-            // Remaster with year: (2023 Remaster), (Remaster 2023), (Remastered 2023)
-            "\\(\\d{4}[- ]Remaster(?:ed)?\\)",
-            "\\(Remaster(?:ed)?[- ]\\d{4}\\)",
-            "\\(Remaster(?:ed)?\\)",
+            // Year + Remaster(ed) + optional Version: (2023 Remaster), (2011 Remastered Version)
+            "\\(\\d{4}[- ]Remaster(?:ed)?(?:\\s+Version)?\\)",
+            "\\[\\d{4}[- ]Remaster(?:ed)?(?:\\s+Version)?\\]",
+            // Remaster(ed) + optional year + optional Version: (Remastered), (Remastered 2023)
+            "\\(Remaster(?:ed)?(?:[- ]\\d{4})?(?:\\s+Version)?\\)",
+            "\\[Remaster(?:ed)?(?:[- ]\\d{4})?(?:\\s+Version)?\\]",
             // Edition info
             "\\((?:Deluxe|Special|Super Deluxe|Expanded|Anniversary|Ultimate|Collector's?)(?:[- ]Edition)?\\)",
+            "\\[(?:Deluxe|Special|Super Deluxe|Expanded|Anniversary|Ultimate|Collector's?)(?:[- ]Edition)?\\]",
             // Edit / version / mix variants
             "\\((?:Radio|Single|Album|Extended|Acoustic|Alternate|Alternative)[- ](?:Edit|Version|Mix)\\)",
+            "\\[(?:Radio|Single|Album|Extended|Acoustic|Alternate|Alternative)[- ](?:Edit|Version|Mix)\\]",
             "\\((?:Radio|Single|Album|Extended)\\)",
-            // Live (optional venue)
+            // Live
             "\\(Live(?:[- ](?:at|@|from)[^)]*)?\\)",
+            "\\[Live(?:[- ](?:at|@|from)[^\\]]*)?\\]",
             "\\(Live[^)]*\\)",
             // Featured artists
             "\\(feat(?:\\.?uring)?[.:]?\\s+[^)]+\\)",
@@ -379,12 +488,13 @@ final class LRCLIBProvider: LyricsProvider, @unchecked Sendable {
             "\\(Bonus[^)]*\\)",
             // Mono / stereo mix
             "\\((?:Mono|Stereo)(?:[- ](?:Mix|Version|Remaster(?:ed)?))?\\)",
+            "\\[(?:Mono|Stereo)(?:[- ](?:Mix|Version|Remaster(?:ed)?))?\\]",
         ]
 
-        // Patterns stripped as dash-separated suffixes at the end
+        // Dash patterns: strips matching suffixes at the end of the title
         let dashPatterns: [String] = [
-            "\\s+-\\s+\\d{4}[- ]Remaster(?:ed)?$",
-            "\\s+-\\s+Remaster(?:ed)?(?:[- ]\\d{4})?$",
+            "\\s+-\\s+\\d{4}[- ]Remaster(?:ed)?(?:\\s+Version)?$",
+            "\\s+-\\s+Remaster(?:ed)?(?:[- ]\\d{4})?(?:\\s+Version)?$",
             "\\s+-\\s+Live(?:\\s+(?:at|@|from)\\s+.+)?$",
             "\\s+-\\s+(?:Radio|Single|Album|Extended)[- ](?:Edit|Version|Mix)$",
             "\\s+-\\s+(?:Mono|Stereo)(?:[- ]Mix)?$",
@@ -457,11 +567,21 @@ final class LRCLIBProvider: LyricsProvider, @unchecked Sendable {
         if let plain = payload.plainLyrics, !plain.isEmpty { return .plain(plain) }
         return .unavailable
     }
+
+    private func resultDescription(_ r: LyricsResult) -> String {
+        switch r {
+        case .synced(let ls): return "synced(\(ls.count) lines)"
+        case .plain(let t):   return "plain(\(t.count) chars)"
+        case .instrumental:   return "instrumental"
+        case .unavailable:    return "unavailable"
+        }
+    }
 }
 
 // MARK: - LRCLIB wire types
 
 private struct LRCLIBResponse: Decodable {
+    let id:           Int?
     let trackName:    String?
     let artistName:   String?
     let albumName:    String?
