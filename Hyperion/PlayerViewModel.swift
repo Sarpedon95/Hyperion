@@ -99,6 +99,18 @@ final class PlayerViewModel: ObservableObject {
     private var pendingSeekWatchdogTask: Task<Void, Never>?
     private var playbackStartupWatchdogTask: Task<Void, Never>?
 
+    // MARK: - Orpheus engine
+
+    /// When true, new tracks route through OrpheusPlaybackEngine (PCM → DSP chain).
+    /// Persisted so the user's preference survives app restarts.
+    @Published var useOrpheusEngine: Bool = UserDefaults.standard.bool(forKey: "hyperion.orpheus.enabled") {
+        didSet { UserDefaults.standard.set(useOrpheusEngine, forKey: "hyperion.orpheus.enabled") }
+    }
+    /// True only when audio is confirmed to be flowing through the Orpheus DSP chain.
+    /// Never set this to true unless OrpheusPlaybackEngine has confirmed routing.
+    @Published private(set) var isPlaybackRoutedThroughOrpheus: Bool = false
+    private var orpheusEngine: OrpheusPlaybackEngine?
+
     /// Prefetched AVURLAsset for the next track. Built as soon as the current
     /// track starts playing so the asset headers are already loaded when the
     /// user skips forward. Discarded whenever the queue changes.
@@ -426,7 +438,7 @@ final class PlayerViewModel: ObservableObject {
         savePlaybackStateNow()
         beginBackgroundPlaybackTask(reason: "will-resign-active")
 
-        if activateAudioSession() {
+        if activateAudioSession() && !isPlaybackRoutedThroughOrpheus {
             startPlayer(preferImmediateStart: true)
         }
         refreshNowPlayingPlaybackState(force: true)
@@ -521,7 +533,9 @@ final class PlayerViewModel: ObservableObject {
                     self.endBackgroundPlaybackTask()
                     if self.isPlaying {
                         _ = self.activateAudioSession()
-                        self.startPlayer(preferImmediateStart: true)
+                        if !self.isPlaybackRoutedThroughOrpheus {
+                            self.startPlayer(preferImmediateStart: true)
+                        }
                     }
                 }
             }
@@ -607,7 +621,11 @@ final class PlayerViewModel: ObservableObject {
 
             // Pause playback. We'll only resume if the system grants permission.
             ServerLogStore.shared.info("Audio session: Real interruption, pausing playback")
-            audioManager.pause()
+            if isPlaybackRoutedThroughOrpheus {
+                orpheusEngine?.pause()
+            } else {
+                audioManager.pause()
+            }
             isPlaying = false
             isPaused  = true
             endBackgroundPlaybackTask()
@@ -907,6 +925,16 @@ final class PlayerViewModel: ObservableObject {
         }
     }
 
+    /// Inserts tracks immediately after the current position (Play Next).
+    func playNext(_ tracks: [Track]) {
+        guard !tracks.isEmpty else { return }
+        let insertAt = min(currentIndex + 1, queue.count)
+        queue.insert(contentsOf: tracks, at: insertAt)
+        if let original = originalQueueBeforeShuffle {
+            originalQueueBeforeShuffle = original + tracks
+        }
+    }
+
     func playTrack(at index: Int) {
         guard queue.indices.contains(index) else { return }
         // Sync the current index and then start playback of that track.
@@ -917,7 +945,11 @@ final class PlayerViewModel: ObservableObject {
 
     func pause() {
         ServerLogStore.shared.debug("Pause called")
-        audioManager.pause()
+        if isPlaybackRoutedThroughOrpheus {
+            orpheusEngine?.pause()
+        } else {
+            audioManager.pause()
+        }
         isPlaying = false
         isPaused  = true
         // End background task but keep audio session active for resumed playback
@@ -930,6 +962,17 @@ final class PlayerViewModel: ObservableObject {
     func resume() {
         guard currentTrack != nil || !queue.isEmpty else {
             ServerLogStore.shared.debug("Resume: No track or queue available")
+            return
+        }
+
+        // Orpheus fast path — engine already holds the loaded asset.
+        if isPlaybackRoutedThroughOrpheus, let engine = orpheusEngine {
+            guard activateAudioSession() else { return }
+            engine.play()
+            isPlaying = true
+            isPaused  = false
+            MPNowPlayingInfoCenter.default().playbackState = .playing
+            refreshNowPlayingPlaybackState(force: true)
             return
         }
 
@@ -994,10 +1037,19 @@ final class PlayerViewModel: ObservableObject {
     }
 
     func seek(to time: Double) {
+        let clamped = duration > 0 ? max(0, min(duration, time)) : max(0, time)
+
+        if isPlaybackRoutedThroughOrpheus {
+            orpheusEngine?.seek(to: clamped)
+            currentTime = clamped
+            progress    = duration > 0 ? clamped / duration : 0
+            refreshNowPlayingPlaybackState(force: true)
+            return
+        }
+
         // Clamp to [0, duration] when duration is known; when duration == 0 (not
         // yet loaded) just clamp to positive — the pending-seek path will apply it
         // once the item becomes readyToPlay.
-        let clamped = duration > 0 ? max(0, min(duration, time)) : max(0, time)
 
         if let item = playerItem, item.status == .readyToPlay {
             clearPendingSeekWatchdog()
@@ -1072,6 +1124,10 @@ final class PlayerViewModel: ObservableObject {
     // MARK: - Queue management
 
     func clearQueue() {
+        orpheusEngine?.stop()
+        orpheusEngine = nil
+        isPlaybackRoutedThroughOrpheus = false
+
         // Cancel all pending tasks and observers to prevent stale callbacks.
         pendingSeekWatchdogTask?.cancel()
         pendingSeekWatchdogTask = nil
@@ -1232,6 +1288,11 @@ final class PlayerViewModel: ObservableObject {
     private func playCurrentTrack(autoPlay: Bool = true) {
         guard queue.indices.contains(currentIndex) else { return }
 
+        if useOrpheusEngine {
+            playCurrentTrackOrpheus(autoPlay: autoPlay)
+            return
+        }
+
         let track      = queue[currentIndex]
         let candidates = LyrionAPI.shared.streamURLs(for: track)
         guard !candidates.isEmpty else {
@@ -1256,6 +1317,146 @@ final class PlayerViewModel: ObservableObject {
             autoPlay: autoPlay,
             playbackID: activePlaybackID
         )
+    }
+
+    // MARK: - Orpheus playback path
+
+    private func playCurrentTrackOrpheus(autoPlay: Bool = true) {
+        guard queue.indices.contains(currentIndex) else { return }
+
+        let track      = queue[currentIndex]
+        let candidates = LyrionAPI.shared.streamURLs(for: track)
+        guard !candidates.isEmpty else {
+            isLoading = false
+            error     = "Invalid track URL"
+            return
+        }
+
+        updateSourceFormat(from: track)
+        updateOutputFormat()
+
+        // Set activePlaybackID before any async branch so guards work in all paths.
+        activePlaybackID             = UUID()
+        let playbackID               = activePlaybackID
+        playbackURLCandidates        = candidates
+        playbackURLIndex             = 0
+        lastPlaybackErrorDescription = nil
+
+        // AirPlay cannot route through AVAudioEngine on all device/OS versions.
+        let routeOutputs = AVAudioSession.sharedInstance().currentRoute.outputs.map(\.portType)
+        if routeOutputs.contains(.airPlay) {
+            ServerLogStore.shared.debug("Orpheus: AirPlay output — using AVPlayer fallback")
+            isPlaybackRoutedThroughOrpheus = false
+            beginPlayback(track: track, url: candidates[0], autoPlay: autoPlay, playbackID: playbackID)
+            return
+        }
+
+        let startTime   = (currentTrack?.id == track.id ? pendingSeekTime : nil) ?? 0
+        pendingSeekTime = nil
+
+        currentTrack     = track
+        currentStreamURL = candidates[0]
+        duration         = track.duration ?? 0
+        currentTime      = startTime
+        progress         = duration > 0 ? min(1, startTime / duration) : 0
+        isLoading        = true
+        error            = nil
+        isPlaybackRoutedThroughOrpheus = false
+
+        clearPendingSeekWatchdog()
+        clearPlaybackStartupWatchdog()
+        prefetchTask?.cancel()
+        prefetchTask = nil
+        lmsAudioQualityTask?.cancel()
+        lmsAudioQualityTask = nil
+
+        syncCurrentWorkGroup()
+
+        guard activateAudioSession() else {
+            isLoading = false
+            isPlaying = false
+            isPaused  = false
+            return
+        }
+        if autoPlay, UIApplication.shared.applicationState != .active {
+            beginBackgroundPlaybackTask(reason: "orpheus-load-stream")
+        }
+
+        orpheusEngine?.stop()
+        let engine = OrpheusPlaybackEngine(manager: audioManager)
+        orpheusEngine = engine
+
+        engine.onDurationKnown = { [weak self] dur in
+            guard let self, playbackID == self.activePlaybackID else { return }
+            self.duration = dur
+            self.refreshNowPlayingPlaybackState(force: true)
+        }
+        engine.onBufferingChanged = { [weak self] buffering in
+            guard let self, playbackID == self.activePlaybackID else { return }
+            self.isLoading = buffering
+        }
+        engine.onTimeUpdate = { [weak self] time in
+            guard let self, playbackID == self.activePlaybackID else { return }
+            self.currentTime = time
+            self.progress    = self.duration > 0 ? min(1, time / self.duration) : 0
+            self.refreshNowPlayingPlaybackState()
+            self.schedulePlaybackStateSave()
+        }
+        engine.onPlaybackEnded = { [weak self] in
+            guard let self, playbackID == self.activePlaybackID else { return }
+            self.trackDidFinish()
+        }
+        engine.onError = { [weak self] msg in
+            guard let self, playbackID == self.activePlaybackID else { return }
+            ServerLogStore.shared.warn("Orpheus error: \(msg) — falling back to AVPlayer")
+            self.isPlaybackRoutedThroughOrpheus = false
+            self.orpheusEngine = nil
+            self.beginPlayback(track: track, url: candidates[0], autoPlay: autoPlay, playbackID: playbackID)
+        }
+        engine.onRoutingConfirmed = { [weak self] confirmed in
+            guard let self, playbackID == self.activePlaybackID else { return }
+            self.isPlaybackRoutedThroughOrpheus = confirmed
+            if confirmed {
+                ServerLogStore.shared.info("Orpheus: PCM routing confirmed through DSP chain")
+            }
+        }
+
+        let headers = LyrionAPI.shared.httpHeaders(
+            accept: "audio/flac,audio/mpeg,audio/mp4,audio/aac,audio/wav,audio/*,*/*"
+        )
+
+        Task { @MainActor [weak self] in
+            guard let self, self.orpheusEngine === engine, playbackID == self.activePlaybackID else { return }
+            do {
+                try await engine.load(url: candidates[0], headers: headers, startTime: startTime)
+                guard self.orpheusEngine === engine, playbackID == self.activePlaybackID else { return }
+                self.isLoading = false
+                if autoPlay {
+                    engine.play()
+                    self.isPlaying = true
+                    self.isPaused  = false
+                    self.endBackgroundPlaybackTask()
+                } else {
+                    self.isPlaying = false
+                    self.isPaused  = true
+                }
+                LibraryViewModel.shared.recordPlayback(track)
+                self.updateNowPlayingInfo(track: track)
+                self.refreshNowPlayingPlaybackState(force: true)
+                self.schedulePlaybackStateSave()
+                self.fetchLMSAudioQuality(for: track, playbackID: playbackID)
+            } catch {
+                guard self.orpheusEngine === engine, playbackID == self.activePlaybackID else { return }
+                ServerLogStore.shared.warn("Orpheus load failed: \(error.localizedDescription) — falling back to AVPlayer")
+                self.isPlaybackRoutedThroughOrpheus = false
+                self.orpheusEngine = nil
+                self.beginPlayback(track: track, url: candidates[0], autoPlay: autoPlay, playbackID: playbackID)
+            }
+        }
+
+        recomputeUpcoming()
+        updateNowPlayingInfo(track: track)
+        refreshNowPlayingPlaybackState(force: true)
     }
 
     private func updateSourceFormat(from track: Track) {
@@ -2012,21 +2213,34 @@ final class PlayerViewModel: ObservableObject {
             currentTime     = 0
             progress        = 0
             pendingSeekTime = nil
-            player.seek(
-                to: .zero,
-                toleranceBefore: .zero,
-                toleranceAfter:  .zero
-            ) { [weak self] finished in
-                Task { @MainActor [weak self] in
-                    guard let self, finished else { return }
-                    self.activateAudioSession()
-                    self.startPlayer(preferImmediateStart: UIApplication.shared.applicationState != .active)
-                    self.isPlaying = true
-                    self.isPaused  = false
-                    self.refreshNowPlayingPlaybackState(force: true)
+            if isPlaybackRoutedThroughOrpheus {
+                // Reload from the start for repeat-one; simpler than seeking a finished asset.
+                playCurrentTrackOrpheus(autoPlay: true)
+            } else {
+                player.seek(
+                    to: .zero,
+                    toleranceBefore: .zero,
+                    toleranceAfter:  .zero
+                ) { [weak self] finished in
+                    Task { @MainActor [weak self] in
+                        guard let self, finished else { return }
+                        self.activateAudioSession()
+                        self.startPlayer(preferImmediateStart: UIApplication.shared.applicationState != .active)
+                        self.isPlaying = true
+                        self.isPaused  = false
+                        self.refreshNowPlayingPlaybackState(force: true)
+                    }
                 }
             }
         default:
+            if SleepTimerManager.shared.consumeEndOfTrackTrigger() {
+                isPlaying = false
+                isPaused  = false
+                endBackgroundPlaybackTask()
+                refreshNowPlayingPlaybackState(force: true)
+                deactivateAudioSession()
+                return
+            }
             if currentIndex < queue.count - 1 || repeatMode == 2 {
                 nextTrack()
             } else {
