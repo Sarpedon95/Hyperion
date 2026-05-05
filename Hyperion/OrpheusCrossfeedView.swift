@@ -45,6 +45,7 @@ struct OrpheusCrossfeedView: View {
             }
         }
         .scrollContentBackground(.hidden)
+        .bottomOverlayAwareScroll()
         .background(Color.roonBase.ignoresSafeArea())
         .navigationTitle("Crossfeed")
         .navigationBarTitleDisplayMode(.inline)

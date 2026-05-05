@@ -23,11 +23,14 @@ final class PlayerViewModel: ObservableObject {
     @Published var isShuffle: Bool = false
     @Published var repeatMode: Int = 0   // 0 = off, 1 = repeat-one, 2 = repeat-all
     @Published var sourceFormat: String = ""
+    @Published var currentStreamURL: URL? = nil
     @Published var outputFormat: String = ""
-    /// Live audio quality data fetched from LMS after each track starts playing.
-    /// When non-nil this takes priority over the URL-extension heuristic in NowPlayingView.
+    /// Live LMS/Lyrion metadata fetched after each track starts playing.
+    /// Used for truthful signal-path diagnostics; it does not prove final output.
     @Published var lmsAudioQuality: LMSAudioQuality? = nil
-    @Published var isBitPerfect: Bool = true
+    /// Deprecated compatibility flag for older debug UI. Hyperion no longer infers
+    /// bit-perfect playback from extension/output-route heuristics.
+    @Published var isBitPerfect: Bool = false
 
     /// Volume binds directly from the NowPlayingView slider; the AVPlayer is
     /// kept in sync via didSet so audio level tracks the drag in real time.
@@ -861,6 +864,26 @@ final class PlayerViewModel: ObservableObject {
         playCurrentTrack()
     }
 
+    func playTracks(_ tracks: [Track], startingAt index: Int = 0, shuffle: Bool = false) {
+        guard !tracks.isEmpty else { return }
+        originalQueueBeforeShuffle = nil
+        isShuffle        = false
+        currentWorkGroup = nil
+        queue            = tracks
+        currentIndex     = max(0, min(index, tracks.count - 1))
+        if shuffle && tracks.count > 1 {
+            originalQueueBeforeShuffle = tracks
+            let current = queue[currentIndex]
+            var remaining = queue
+            remaining.remove(at: currentIndex)
+            remaining.shuffle()
+            queue = [current] + remaining
+            currentIndex = 0
+            isShuffle = true
+        }
+        playCurrentTrack()
+    }
+
     func addWorkToQueue(_ workGroup: WorkGroup) {
         addWorkGroupsToQueue([workGroup])
     }
@@ -870,6 +893,14 @@ final class PlayerViewModel: ObservableObject {
         guard !tracks.isEmpty else { return }
         // Append all tracks in a single mutation so recomputeWorkGroups() runs
         // once (via queue.didSet) rather than once per work group.
+        queue.append(contentsOf: tracks)
+        if let original = originalQueueBeforeShuffle {
+            originalQueueBeforeShuffle = original + tracks
+        }
+    }
+
+    func addTracksToQueue(_ tracks: [Track]) {
+        guard !tracks.isEmpty else { return }
         queue.append(contentsOf: tracks)
         if let original = originalQueueBeforeShuffle {
             originalQueueBeforeShuffle = original + tracks
@@ -1100,7 +1131,10 @@ final class PlayerViewModel: ObservableObject {
         isShuffle                  = false
         originalQueueBeforeShuffle = nil
         lmsAudioQuality            = nil
+        currentStreamURL           = nil
         sourceFormat               = ""
+        outputFormat               = ""
+        isBitPerfect               = false
     }
 
     func removeFromQueue(at index: Int) {
@@ -1229,7 +1263,7 @@ final class PlayerViewModel: ObservableObject {
             let ext = (url as NSString).pathExtension.uppercased()
             if !ext.isEmpty {
                 sourceFormat = ext
-                isBitPerfect = AudioFormats.isLossless(ext)
+                isBitPerfect = false
                 return
             }
         }
@@ -1275,13 +1309,13 @@ final class PlayerViewModel: ObservableObject {
         // Format: "Device (sample rate Hz, N channels)"
         outputFormat = "\(deviceName) (\(sampleRate) Hz, \(channelCount)ch)"
 
-        // Update bit-perfect status: only true if source is lossless AND output device
-        // supports lossless AND we can verify no resampling is happening.
-        let sourceIsLossless = !sourceFormat.isEmpty && AudioFormats.isLossless(sourceFormat)
+        // Do not mark bit-perfect from route/source heuristics. The signal-path
+        // model requires final stream/output and processing facts that AVAudioSession
+        // does not expose here.
+        _ = isLossless
+        isBitPerfect = false
 
-        isBitPerfect = sourceIsLossless && isLossless && !deviceName.contains("Bluetooth") && !deviceName.contains("AirPlay")
-
-        ServerLogStore.shared.debug("Audio output: \(outputFormat) (bit-perfect: \(isBitPerfect))")
+        ServerLogStore.shared.debug("Audio output: \(outputFormat) (bit-perfect not inferred from route)")
     }
 
     private func beginPlayback(
@@ -1295,6 +1329,7 @@ final class PlayerViewModel: ObservableObject {
         let restoredSeekTime = currentTrack?.id == track.id ? pendingSeekTime : nil
 
         currentTrack    = track
+        currentStreamURL = streamURL
         duration        = track.duration ?? 0
         currentTime     = restoredSeekTime ?? 0
         progress        = duration > 0 ? min(1, currentTime / duration) : 0
@@ -1566,75 +1601,229 @@ final class PlayerViewModel: ObservableObject {
         // crash between periodic saves still restores the correct track.
         schedulePlaybackStateSave()
 
-        // Fetch live audio quality from LMS in the background.
-        // Clear first so the quality pill reverts to URL-extension heuristic
-        // while the request is in flight, rather than showing stale data.
+        // Fetch live LMS metadata for the signal-path sheet. Clear first so
+        // stale source/status fields are not shown for the next track.
         lmsAudioQuality = nil
         fetchLMSAudioQuality(for: track, playbackID: playbackID)
     }
 
-    /// Fires a lightweight LMS `status` call to retrieve the sample rate, bit
-    /// depth, and codec for the currently playing track and populates
-    /// `lmsAudioQuality`.  The result is discarded if playback has moved on.
+    /// Fetches the raw LMS fields used by the signal-path model. `songinfo`
+    /// is the source of truth for library-file metadata; `status` is retained
+    /// as diagnostics because Hyperion's actual playback is AVPlayer direct
+    /// streaming, not a normal LMS player output chain.
     ///
-    /// LMS tag reference for `status` params:
-    ///   "u" → samplerate (may be Int or String depending on LMS version)
-    ///   "Y" → samplesize (bit depth, e.g. 16, 24)
-    ///   "o" → type (codec string, e.g. "flac", "mp3")
+    /// LMS tag reference:
+    ///   T → samplerate, I → samplesize, o → type, r → bitrate, Q → lossless
+    ///   u → url, x → remote, X → album_replay_gain, Y → replay_gain
     private func fetchLMSAudioQuality(for track: Track, playbackID: UUID) {
         lmsAudioQualityTask?.cancel()
         lmsAudioQualityTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            // Small delay: LMS populates samplerate/samplesize ~200–500 ms
-            // after the play command is acknowledged. 600 ms is conservative
-            // but avoids a blank quality result on fast local networks.
             try? await Task.sleep(nanoseconds: 600_000_000)
             guard !Task.isCancelled, playbackID == self.activePlaybackID else { return }
 
             do {
-                let result = try await LyrionAPI.shared.request(params: ["status", "-", 1, "tags:uYo"])
+                let tags = "uToIrQXYx"
+                let songInfoResult = try await LyrionAPI.shared.request(
+                    playerID: "",
+                    params: ["songinfo", 0, 100, "track_id:\(track.id)", "tags:\(tags)"]
+                )
                 guard !Task.isCancelled, playbackID == self.activePlaybackID else { return }
 
-                if let songInfo = (result["playlist_loop"] as? [[String: Any]])?.first {
-                    // samplerate is Int in recent LMS but String in older builds.
-                    let rate: Int
-                    if let intRate = songInfo["samplerate"] as? Int {
-                        rate = intRate
-                    } else if let strRate = songInfo["samplerate"] as? String, let parsed = Int(strRate) {
-                        rate = parsed
-                    } else {
-                        rate = 0
-                    }
+                let songInfo = Self.firstLoopEntry(in: songInfoResult, keys: ["songinfo_loop", "playlist_loop", "titles_loop"]) ?? songInfoResult
 
-                    let size: Int
-                    if let intSize = songInfo["samplesize"] as? Int {
-                        size = intSize
-                    } else if let strSize = songInfo["samplesize"] as? String, let parsed = Int(strSize) {
-                        size = parsed
-                    } else {
-                        size = 0
+                var statusResult: [String: Any] = [:]
+                var statusTrack: [String: Any] = [:]
+                var statusMatchedCurrentTrack: Bool? = nil
+                do {
+                    statusResult = try await LyrionAPI.shared.request(params: ["status", "-", 1, "tags:\(tags)"])
+                    statusTrack = Self.firstLoopEntry(in: statusResult, keys: ["playlist_loop"]) ?? [:]
+                    if let statusID = Self.intValue(statusTrack["id"] ?? statusTrack["track_id"]) {
+                        statusMatchedCurrentTrack = statusID == track.id
                     }
-
-                    let type = (songInfo["type"] as? String ?? "").lowercased()
-
-                    if rate > 0 {
-                        self.lmsAudioQuality = LMSAudioQuality(
-                            sampleRate: rate,
-                            sampleSize: size,
-                            type:       type
-                        )
-                        ServerLogStore.shared.debug(
-                            "LMS quality: \(type.uppercased()) \(rate) Hz / \(size > 0 ? "\(size)-bit" : "unknown depth")"
-                        )
-                    }
+                } catch {
+                    ServerLogStore.shared.debug("LMS status diagnostics unavailable for signal path: \(error.localizedDescription)")
                 }
+
+                let statusCanFill = statusMatchedCurrentTrack == true
+                let type = Self.firstString([songInfo["type"], statusCanFill ? statusTrack["type"] : nil, track.audioType])?.lowercased() ?? ""
+                let sampleRate = Self.firstInt([songInfo["samplerate"], statusCanFill ? statusTrack["samplerate"] : nil, track.sampleRate]) ?? 0
+                let sampleSize = Self.firstInt([songInfo["samplesize"], statusCanFill ? statusTrack["samplesize"] : nil, track.sampleSize]) ?? 0
+                let bitrate = Self.firstString([songInfo["bitrate"], statusCanFill ? statusTrack["bitrate"] : nil, track.bitrate])
+                let lossless = Self.firstBool([songInfo["lossless"], statusCanFill ? statusTrack["lossless"] : nil, track.lossless])
+                let url = Self.firstString([songInfo["url"], statusCanFill ? statusTrack["url"] : nil, track.url])
+                let remote = Self.firstBool([songInfo["remote"], statusCanFill ? statusTrack["remote"] : nil, track.isRemote])
+                let replayGain = Self.firstDouble([songInfo["replay_gain"], statusCanFill ? statusTrack["replay_gain"] : nil, track.replayGain])
+                let albumReplayGain = Self.firstDouble([songInfo["album_replay_gain"], statusCanFill ? statusTrack["album_replay_gain"] : nil, track.albumReplayGain])
+                let playerName = Self.stringValue(statusResult["player_name"] ?? statusResult["name"])
+                let playerMode = Self.stringValue(statusResult["mode"])
+                let lmsVolume = Self.intValue((statusResult["mixer volume"] ?? statusResult["volume"]))
+
+                let expectedFields = ["type", "samplerate", "samplesize", "bitrate", "lossless", "url", "replay_gain", "album_replay_gain"]
+                var fieldsUsed: [String] = []
+                if !type.isEmpty { fieldsUsed.append("type") }
+                if sampleRate > 0 { fieldsUsed.append("samplerate") }
+                if sampleSize > 0 { fieldsUsed.append("samplesize") }
+                if bitrate?.isEmpty == false { fieldsUsed.append("bitrate") }
+                if lossless != nil { fieldsUsed.append("lossless") }
+                if url?.isEmpty == false { fieldsUsed.append("url") }
+                if replayGain != nil { fieldsUsed.append("replay_gain") }
+                if albumReplayGain != nil { fieldsUsed.append("album_replay_gain") }
+                let missing = expectedFields.filter { !fieldsUsed.contains($0) }
+
+                var rawStatusFields = Self.rawFieldMap(statusResult)
+                for (key, value) in Self.rawFieldMap(statusTrack) {
+                    rawStatusFields["playlist_loop.\(key)"] = value
+                }
+
+                self.lmsAudioQuality = LMSAudioQuality(
+                    sampleRate: sampleRate,
+                    sampleSize: sampleSize,
+                    type: type,
+                    bitrate: bitrate,
+                    lossless: lossless,
+                    url: url,
+                    remote: remote,
+                    replayGain: replayGain,
+                    albumReplayGain: albumReplayGain,
+                    playerName: playerName,
+                    playerMode: playerMode,
+                    lmsVolume: lmsVolume,
+                    rawTrackFields: Self.rawFieldMap(songInfo),
+                    rawStatusFields: rawStatusFields,
+                    fieldsUsed: fieldsUsed,
+                    missingFields: missing,
+                    statusMatchedCurrentTrack: statusMatchedCurrentTrack
+                )
+
+                ServerLogStore.shared.debug(
+                    "Signal path LMS fields used: \(fieldsUsed.joined(separator: ", ")); missing: \(missing.joined(separator: ", "))"
+                )
             } catch is CancellationError {
                 // Track changed; no UI update needed.
             } catch {
-                // Non-fatal — quality pill falls back to URL-extension heuristic.
-                ServerLogStore.shared.debug("LMS quality fetch skipped: \(error.localizedDescription)")
+                ServerLogStore.shared.debug("LMS signal-path metadata fetch skipped: \(error.localizedDescription)")
+                self.lmsAudioQuality = LMSAudioQuality(
+                    sampleRate: track.sampleRate ?? 0,
+                    sampleSize: track.sampleSize ?? 0,
+                    type: track.audioType ?? "",
+                    bitrate: track.bitrate,
+                    lossless: track.lossless,
+                    url: track.url,
+                    remote: track.isRemote,
+                    replayGain: track.replayGain,
+                    albumReplayGain: track.albumReplayGain,
+                    playerName: nil,
+                    playerMode: nil,
+                    lmsVolume: nil,
+                    rawTrackFields: [:],
+                    rawStatusFields: [:],
+                    fieldsUsed: [],
+                    missingFields: ["songinfo", "status"],
+                    statusMatchedCurrentTrack: nil
+                )
             }
         }
+    }
+
+    private nonisolated static func firstLoopEntry(in result: [String: Any], keys: [String]) -> [String: Any]? {
+        for key in keys {
+            if let arr = result[key] as? [[String: Any]], let first = arr.first { return first }
+        }
+        return nil
+    }
+
+    private nonisolated static func firstString(_ values: [Any?]) -> String? {
+        for value in values {
+            if let string = stringValue(value)?.trimmingCharacters(in: .whitespacesAndNewlines), !string.isEmpty {
+                return string
+            }
+        }
+        return nil
+    }
+
+    private nonisolated static func firstInt(_ values: [Any?]) -> Int? {
+        for value in values {
+            if let int = intValue(value), int > 0 { return int }
+        }
+        return nil
+    }
+
+    private nonisolated static func firstDouble(_ values: [Any?]) -> Double? {
+        for value in values {
+            if let double = doubleValue(value) { return double }
+        }
+        return nil
+    }
+
+    private nonisolated static func firstBool(_ values: [Any?]) -> Bool? {
+        for value in values {
+            if let bool = boolValue(value) { return bool }
+        }
+        return nil
+    }
+
+    private nonisolated static func intValue(_ any: Any?) -> Int? {
+        switch any {
+        case let i as Int: return i
+        case let d as Double: return Int(d)
+        case let n as NSNumber: return n.intValue
+        case let s as String:
+            let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let i = Int(t) { return i }
+            if let d = Double(t) { return Int(d) }
+            return nil
+        default: return nil
+        }
+    }
+
+    private nonisolated static func doubleValue(_ any: Any?) -> Double? {
+        switch any {
+        case let d as Double: return d
+        case let i as Int: return Double(i)
+        case let n as NSNumber: return n.doubleValue
+        case let s as String: return Double(s.trimmingCharacters(in: .whitespacesAndNewlines))
+        default: return nil
+        }
+    }
+
+    private nonisolated static func boolValue(_ any: Any?) -> Bool? {
+        switch any {
+        case let b as Bool: return b
+        case let i as Int: return i != 0
+        case let d as Double: return d != 0
+        case let n as NSNumber: return n.boolValue
+        case let s as String:
+            let t = s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if ["1", "true", "yes", "lossless"].contains(t) { return true }
+            if ["0", "false", "no", "lossy"].contains(t) { return false }
+            return nil
+        default: return nil
+        }
+    }
+
+    private nonisolated static func stringValue(_ any: Any?) -> String? {
+        switch any {
+        case let s as String: return s
+        case let i as Int: return String(i)
+        case let d as Double: return String(d)
+        case let b as Bool: return String(b)
+        case let n as NSNumber: return n.stringValue
+        default: return nil
+        }
+    }
+
+    private nonisolated static func rawFieldMap(_ dict: [String: Any]) -> [String: String] {
+        var out: [String: String] = [:]
+        for (key, value) in dict {
+            let lower = key.lowercased()
+            if lower.contains("url"), let s = stringValue(value) {
+                out[key] = ServerLogStore.redactedURL(s)
+            } else if let s = stringValue(value) {
+                out[key] = s
+            }
+        }
+        return out
     }
 
     private func retryNextPlaybackURL(track: Track, autoPlay: Bool, playbackID: UUID) {

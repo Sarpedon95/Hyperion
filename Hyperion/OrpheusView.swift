@@ -38,6 +38,7 @@ struct OrpheusView: View {
                 }
             }
             .scrollContentBackground(.hidden)
+        .bottomOverlayAwareScroll()
             .background(Color.roonBase.ignoresSafeArea())
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(.hidden, for: .navigationBar)
@@ -260,6 +261,7 @@ struct OrpheusView: View {
                 }
             }
             .scrollContentBackground(.hidden)
+        .bottomOverlayAwareScroll()
             .background(Color.roonBase.ignoresSafeArea())
             .navigationTitle("Save Preset")
             .navigationBarTitleDisplayMode(.inline)

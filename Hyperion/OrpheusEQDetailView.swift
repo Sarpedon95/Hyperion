@@ -19,6 +19,19 @@ struct OrpheusEQDetailView: View {
             : Binding(get: { dsp.mainEQBypassed },      set: { dsp.mainEQBypassed = $0;      dsp.applyMainEQ()      })
     }
 
+    private var maxActiveBoost: Float {
+        bands.wrappedValue.filter(\.isActive).map(\.gain).max() ?? 0
+    }
+
+    private var availableHeadroomDB: Float {
+        if dsp.headroomBypassed { return 0 }
+        return dsp.headroomMode == .auto ? -3 : dsp.headroomManualDB
+    }
+
+    private var clippingRisk: Bool {
+        maxActiveBoost > 0.25 && (maxActiveBoost + availableHeadroomDB) > 0.25
+    }
+
     var body: some View {
         ScrollView {
             VStack(spacing: 0) {
@@ -49,6 +62,26 @@ struct OrpheusEQDetailView: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)
+                .background(Color.roonSurface)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        Image(systemName: clippingRisk ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                            .foregroundColor(clippingRisk ? .orange : .roonAccent)
+                        Text(clippingRisk ? "Clipping risk" : "Headroom OK")
+                            .font(.roonBody(13, weight: .semibold))
+                            .foregroundColor(.roonPrimary)
+                        Spacer()
+                        Text(String(format: "Boost %.1f dB / Headroom %.1f dB", maxActiveBoost, availableHeadroomDB))
+                            .font(.roonMono(11))
+                            .foregroundColor(.roonTertiary)
+                    }
+                    Text("Boosting EQ bands raises part of the signal and can clip unless headroom/preamp lowers the overall level. Cuts reduce a frequency range and do not need extra headroom.")
+                        .font(.roonBody(12))
+                        .foregroundColor(.roonSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(14)
                 .background(Color.roonSurface)
 
                 Divider().background(Color.roonBorder)
@@ -94,6 +127,7 @@ struct OrpheusEQDetailView: View {
             }
         }
         .scrollContentBackground(.hidden)
+        .bottomOverlayAwareScroll()
         .background(Color.roonBase.ignoresSafeArea())
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)

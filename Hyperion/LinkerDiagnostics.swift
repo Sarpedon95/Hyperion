@@ -130,6 +130,7 @@ struct LinkerDiagnosticsView: View {
                 }
             }
         }
+        .bottomOverlayAwareScroll()
         .navigationTitle("Linker Diagnostics")
         .confirmationDialog(
             "Force rebuild will re-fetch all albums from LMS and re-run the full matching pipeline. This may take several minutes.",

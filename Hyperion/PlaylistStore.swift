@@ -1,0 +1,123 @@
+import Foundation
+import SwiftUI
+
+struct LocalPlaylist: Identifiable, Codable, Hashable {
+    let id: UUID
+    var name: String
+    var tracks: [Track]
+    var createdAt: Date
+    var updatedAt: Date
+
+    var subtitle: String {
+        let count = tracks.count
+        return count == 1 ? "1 track" : "\(count) tracks"
+    }
+}
+
+@MainActor
+final class PlaylistStore: ObservableObject {
+    static let shared = PlaylistStore()
+
+    @Published private(set) var playlists: [LocalPlaylist] = []
+
+    private let defaultsKey = "hyperion.localPlaylists.v1"
+    private var saveTask: Task<Void, Never>?
+
+    private init() {
+        load()
+    }
+
+    @discardableResult
+    func create(name: String) -> LocalPlaylist {
+        let trimmed = sanitizedName(name, fallback: "New Playlist")
+        let playlist = LocalPlaylist(id: UUID(), name: uniqueName(trimmed), tracks: [], createdAt: Date(), updatedAt: Date())
+        playlists.insert(playlist, at: 0)
+        scheduleSave()
+        return playlist
+    }
+
+    func rename(_ playlist: LocalPlaylist, to name: String) {
+        guard let idx = playlists.firstIndex(where: { $0.id == playlist.id }) else { return }
+        playlists[idx].name = uniqueName(sanitizedName(name, fallback: playlist.name), excluding: playlist.id)
+        playlists[idx].updatedAt = Date()
+        scheduleSave()
+    }
+
+    func delete(_ playlist: LocalPlaylist) {
+        playlists.removeAll { $0.id == playlist.id }
+        scheduleSave()
+    }
+
+    func add(_ tracks: [Track], to playlist: LocalPlaylist) {
+        guard let idx = playlists.firstIndex(where: { $0.id == playlist.id }) else { return }
+        var existing = Set(playlists[idx].tracks.map(\.id))
+        let additions = tracks.filter { existing.insert($0.id).inserted }
+        guard !additions.isEmpty else { return }
+        playlists[idx].tracks.append(contentsOf: additions)
+        playlists[idx].updatedAt = Date()
+        scheduleSave()
+    }
+
+    func remove(at offsets: IndexSet, from playlist: LocalPlaylist) {
+        guard let idx = playlists.firstIndex(where: { $0.id == playlist.id }) else { return }
+        playlists[idx].tracks.remove(atOffsets: offsets)
+        playlists[idx].updatedAt = Date()
+        scheduleSave()
+    }
+
+    func move(from source: IndexSet, to destination: Int, in playlist: LocalPlaylist) {
+        guard let idx = playlists.firstIndex(where: { $0.id == playlist.id }) else { return }
+        playlists[idx].tracks.move(fromOffsets: source, toOffset: destination)
+        playlists[idx].updatedAt = Date()
+        scheduleSave()
+    }
+
+    func playlist(id: UUID) -> LocalPlaylist? {
+        playlists.first { $0.id == id }
+    }
+
+    @discardableResult
+    func saveQueueAsPlaylist(_ tracks: [Track], suggestedName: String = "Queue") -> LocalPlaylist? {
+        guard !tracks.isEmpty else { return nil }
+        var playlist = create(name: suggestedName)
+        add(tracks, to: playlist)
+        playlist = playlists.first(where: { $0.id == playlist.id }) ?? playlist
+        return playlist
+    }
+
+    private func load() {
+        guard let data = UserDefaults.standard.data(forKey: defaultsKey) else { return }
+        do {
+            playlists = try JSONDecoder().decode([LocalPlaylist].self, from: data)
+                .sorted { $0.updatedAt > $1.updatedAt }
+        } catch {
+            playlists = []
+        }
+    }
+
+    private func scheduleSave() {
+        saveTask?.cancel()
+        let snapshot = playlists
+        let key = defaultsKey
+        saveTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 180_000_000)
+            guard !Task.isCancelled else { return }
+            if let data = try? JSONEncoder().encode(snapshot) {
+                UserDefaults.standard.set(data, forKey: key)
+            }
+        }
+    }
+
+    private func sanitizedName(_ name: String, fallback: String) -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? fallback : trimmed
+    }
+
+    private func uniqueName(_ base: String, excluding id: UUID? = nil) -> String {
+        let existing = Set(playlists.filter { $0.id != id }.map { SearchTextNormalizer.folded($0.name) })
+        if !existing.contains(SearchTextNormalizer.folded(base)) { return base }
+        var n = 2
+        while existing.contains(SearchTextNormalizer.folded("\(base) \(n)")) { n += 1 }
+        return "\(base) \(n)"
+    }
+}

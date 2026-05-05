@@ -43,10 +43,7 @@ struct ContentView: View {
                 activeTabView
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .ignoresSafeArea(edges: .top)
-                    // Push scroll content clear of our custom bottom chrome.
-                    .safeAreaInset(edge: .bottom, spacing: 0) {
-                        Color.clear.frame(height: bottomChromeHeight(geo: geo))
-                    }
+                    .environment(\.hyperionBottomOverlayHeight, bottomChromeHeight(geo: geo))
 
                 // Custom bottom chrome — extends physically into the
                 // home-indicator zone via ignoresSafeArea(.bottom).
@@ -95,7 +92,7 @@ struct ContentView: View {
                         .cornerRadius(8)
                     }
                     .padding(.horizontal, 16)
-                    .padding(.bottom, 12)
+                    .padding(.bottom, bottomChromeHeight(geo: geo) + 12)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                 } else if let libError = library.error {
                     VStack(spacing: 10) {
@@ -119,7 +116,7 @@ struct ContentView: View {
                         .cornerRadius(8)
                     }
                     .padding(.horizontal, 16)
-                    .padding(.bottom, 12)
+                    .padding(.bottom, bottomChromeHeight(geo: geo) + 12)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
 
@@ -149,7 +146,10 @@ struct ContentView: View {
         // The outer GeometryReader must also ignore safe areas so it measures
         // the full screen and the ZStack fills edge-to-edge.
         .ignoresSafeArea()
-        .fullScreenCover(isPresented: $showingNowPlaying) { NowPlayingView() }
+        .fullScreenCover(isPresented: $showingNowPlaying) {
+            NowPlayingView()
+                .environment(\.hyperionBottomOverlayHeight, 0)
+        }
         .task {
             // Mark the tab bar interactive immediately — each tab shows its own
             // loading/empty state while data arrives. Waiting for all network

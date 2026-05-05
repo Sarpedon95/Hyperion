@@ -4,7 +4,10 @@ import UIKit
 struct QueueView: View {
 
     @ObservedObject private var player = PlayerViewModel.shared
+    @ObservedObject private var playlists = PlaylistStore.shared
     @State private var showingClearConfirm: Bool = false
+    @State private var showingSaveQueueAlert: Bool = false
+    @State private var queuePlaylistName: String = ""
 
     var body: some View {
         NavigationStack {
@@ -18,10 +21,17 @@ struct QueueView: View {
                 .toolbar {
                     if !player.queue.isEmpty {
                         ToolbarItem(placement: .navigationBarTrailing) {
-                            Button("Clear") {
-                                showingClearConfirm = true
+                            Menu {
+                                Button("Save Queue as Playlist", systemImage: "music.note.list") {
+                                    queuePlaylistName = "Queue"
+                                    showingSaveQueueAlert = true
+                                }
+                                Button("Clear Queue", systemImage: "trash", role: .destructive) {
+                                    showingClearConfirm = true
+                                }
+                            } label: {
+                                Image(systemName: "ellipsis.circle")
                             }
-                            .foregroundColor(.red)
                         }
                     }
                 }
@@ -31,6 +41,16 @@ struct QueueView: View {
                         player.clearQueue()
                     }
                     Button("Cancel", role: .cancel) {}
+                }
+                .alert("Save Queue as Playlist", isPresented: $showingSaveQueueAlert) {
+                    TextField("Name", text: $queuePlaylistName)
+                    Button("Save") {
+                        let name = queuePlaylistName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Queue" : queuePlaylistName
+                        _ = playlists.saveQueueAsPlaylist(player.queue, suggestedName: name)
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("Creates a local playlist from the current queue order.")
                 }
         }
     }
@@ -89,6 +109,7 @@ struct QueueView: View {
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
+        .bottomOverlayAwareScroll()
                 .onAppear {
                     withAnimation { proxy.scrollTo(player.currentIndex, anchor: .center) }
                 }
@@ -207,6 +228,7 @@ struct QueueTrackRow: View {
     let queueIndex: Int
     let isUpcoming: Bool
     @ObservedObject private var player = PlayerViewModel.shared
+    @State private var showingAddToPlaylist = false
 
     var body: some View {
         HStack(spacing: 14) {
@@ -261,6 +283,15 @@ struct QueueTrackRow: View {
             } label: {
                 Label("Remove from Queue", systemImage: "trash")
             }
+            Button {
+                showingAddToPlaylist = true
+            } label: {
+                Label("Add to Playlist", systemImage: "music.note.list")
+            }
+        }
+        .sheet(isPresented: $showingAddToPlaylist) {
+            AddToPlaylistSheet(tracks: [track])
+                .environment(\.hyperionBottomOverlayHeight, 0)
         }
         .accessibilityAction(named: "Remove from queue") {
             player.removeFromQueue(at: queueIndex)

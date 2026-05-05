@@ -22,6 +22,7 @@ struct ComposerDetailView: View {
             }
         }
         .scrollContentBackground(.hidden)
+        .bottomOverlayAwareScroll()
         .background(Color.roonBase.ignoresSafeArea())
         .navigationTitle(composer.name)
         .navigationBarTitleDisplayMode(.inline)

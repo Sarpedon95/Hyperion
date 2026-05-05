@@ -5,7 +5,9 @@ import Foundation
 /// Single long-lived owner for Hyperion's audio playback and DSP infrastructure.
 ///
 /// AVPlayer handles HTTP streaming from LMS (seeking, KVO, buffering).
-/// AVAudioEngine owns the DSP signal chain for node-based processing.
+/// AVAudioEngine owns Orpheus DSP configuration nodes. Current playback is not
+/// fed into those nodes, so the signal-path UI must not present Orpheus as
+/// verified audio processing unless this routing flag changes.
 /// Both are process-wide singletons; SwiftUI views must never own either directly.
 @MainActor
 final class AudioPlayerManager: ObservableObject {
@@ -17,8 +19,12 @@ final class AudioPlayerManager: ObservableObject {
     let player: AVPlayer
 
     // MARK: - DSP signal chain (AVAudioEngine)
-    /// Chain: playerNode → mainEQNode → headphoneEQNode → crossfeedMixer
+    /// Configured chain: playerNode → mainEQNode → headphoneEQNode → crossfeedMixer
     ///        → levelingMixer → balanceMixer → mainMixerNode → outputNode
+    /// Important: AVPlayer output is not connected to `playerNode`; this graph is
+    /// currently a configurable Orpheus engine, not the verified playback route.
+    let isDSPChainFedByPlayback = false
+
     let engine          = AVAudioEngine()
     let playerNode      = AVAudioPlayerNode()
     let mainEQNode      = AVAudioUnitEQ(numberOfBands: 10)
@@ -37,7 +43,7 @@ final class AudioPlayerManager: ObservableObject {
         try? session.setCategory(.playback, mode: .default, options: [])
 
         buildDSPChain()
-        ServerLogStore.shared.info("AudioPlayerManager initialized (AVPlayer + AVAudioEngine DSP chain)")
+        ServerLogStore.shared.info("AudioPlayerManager initialized (AVPlayer direct stream; Orpheus AVAudioEngine configured separately)")
     }
 
     deinit {

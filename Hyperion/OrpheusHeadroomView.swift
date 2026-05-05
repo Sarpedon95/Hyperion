@@ -61,6 +61,7 @@ struct OrpheusHeadroomView: View {
             }
         }
         .scrollContentBackground(.hidden)
+        .bottomOverlayAwareScroll()
         .background(Color.roonBase.ignoresSafeArea())
         .navigationTitle("Headroom Management")
         .navigationBarTitleDisplayMode(.inline)

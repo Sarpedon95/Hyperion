@@ -57,6 +57,7 @@ struct OrpheusBalanceView: View {
             }
         }
         .scrollContentBackground(.hidden)
+        .bottomOverlayAwareScroll()
         .background(Color.roonBase.ignoresSafeArea())
         .navigationTitle("Balance")
         .navigationBarTitleDisplayMode(.inline)

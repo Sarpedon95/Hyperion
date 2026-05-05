@@ -55,6 +55,7 @@ struct OrpheusVolumeLevelingView: View {
             }
         }
         .scrollContentBackground(.hidden)
+        .bottomOverlayAwareScroll()
         .background(Color.roonBase.ignoresSafeArea())
         .navigationTitle("Volume Leveling")
         .navigationBarTitleDisplayMode(.inline)

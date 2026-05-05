@@ -226,6 +226,92 @@ final class OrpheusDSPEngine: NSObject, ObservableObject {
         scheduleSettingsSave()
     }
 
+    // MARK: - Signal-path reporting
+
+    func signalPathState(isPlaybackRoutedThroughOrpheus: Bool) -> OrpheusSignalPathState {
+        var items: [OrpheusSignalPathItem] = []
+        let presetName = activePresetID.flatMap { id in presets.first(where: { $0.id == id })?.name }
+
+        let activeMainBands = mainEQBands.filter { $0.isActive && abs($0.gain) > 0.05 }
+        if !mainEQBypassed && !activeMainBands.isEmpty {
+            items.append(OrpheusSignalPathItem(
+                title: "EQ",
+                technicalValue: "\(activeMainBands.count) active band(s)",
+                explanation: "Parametric EQ changes frequency balance according to the configured Orpheus bands."
+            ))
+        }
+
+        let activeHeadphoneBands = headphoneEQBands.filter { $0.isActive && abs($0.gain) > 0.05 }
+        if !headphoneEQBypassed && !activeHeadphoneBands.isEmpty {
+            items.append(OrpheusSignalPathItem(
+                title: "Headphone EQ",
+                technicalValue: "\(activeHeadphoneBands.count) active band(s)",
+                explanation: "Headphone EQ applies a device/preset-specific frequency correction."
+            ))
+        }
+
+        if !crossfeedBypassed && crossfeedLevel > 0.05 {
+            items.append(OrpheusSignalPathItem(
+                title: "Crossfeed",
+                technicalValue: String(format: "%.0f Hz · %.1f dB", crossfeedFrequency, crossfeedLevel),
+                explanation: "Crossfeed blends a small amount of left/right information to reduce hard stereo separation on headphones."
+            ))
+        }
+
+        if !volumeLevelingBypassed {
+            items.append(OrpheusSignalPathItem(
+                title: "Volume leveling",
+                technicalValue: "\(volumeLevelingMode.rawValue) · target \(String(format: "%.0f", volumeLevelingTargetLUFS)) LUFS",
+                explanation: "Volume leveling is configured to make perceived loudness more consistent between tracks."
+            ))
+        }
+
+        if !headroomBypassed {
+            let db = headroomMode == .auto ? -3.0 : max(-3.0, min(0.0, headroomManualDB))
+            if db < -0.05 {
+                items.append(OrpheusSignalPathItem(
+                    title: "Headroom",
+                    technicalValue: String(format: "%.1f dB", db),
+                    explanation: "Headroom lowers level before processing to reduce clipping risk when boosts or leveling are used."
+                ))
+            }
+        }
+
+        if !balanceBypassed && (abs(balanceLeft) > 0.05 || abs(balanceRight) > 0.05 || balanceMono) {
+            let mode = balanceMono ? "mono" : String(format: "L %.1f dB / R %.1f dB", balanceLeft, balanceRight)
+            items.append(OrpheusSignalPathItem(
+                title: "Balance",
+                technicalValue: mode,
+                explanation: "Balance/mono changes channel presentation according to Orpheus settings."
+            ))
+        }
+
+        if srcMode != .never {
+            items.append(OrpheusSignalPathItem(
+                title: "Sample-rate conversion preference",
+                technicalValue: srcMode.rawValue,
+                explanation: "An SRC preference is configured. Hyperion does not verify actual sample-rate conversion unless playback is routed through a reporting processor."
+            ))
+        }
+
+        let inactive = [
+            mainEQBypassed || activeMainBands.isEmpty ? "EQ" : nil,
+            headphoneEQBypassed || activeHeadphoneBands.isEmpty ? "Headphone EQ" : nil,
+            crossfeedBypassed || crossfeedLevel <= 0.05 ? "Crossfeed" : nil,
+            volumeLevelingBypassed ? "Volume leveling" : nil,
+            headroomBypassed ? "Headroom" : nil,
+            balanceBypassed || (abs(balanceLeft) <= 0.05 && abs(balanceRight) <= 0.05 && !balanceMono) ? "Balance" : nil
+        ].compactMap { $0 }
+
+        return OrpheusSignalPathState(
+            isPlaybackRoutedThroughOrpheus: isPlaybackRoutedThroughOrpheus,
+            activePresetName: presetName,
+            activeItems: isPlaybackRoutedThroughOrpheus ? items : [],
+            configuredOnlyItems: isPlaybackRoutedThroughOrpheus ? [] : items,
+            inactiveItems: inactive
+        )
+    }
+
     // MARK: - Presets
 
     func saveCurrentAsPreset(name: String, deviceName: String? = nil) {

@@ -274,6 +274,7 @@ struct SearchSuggestionsView: View {
         }
         .background(Color.roonBase)
         .scrollContentBackground(.hidden)
+        .bottomOverlayAwareScroll()
         .onAppear {
             rebuildCaches(library.composers)
         }
@@ -556,6 +557,7 @@ struct SearchResultsView: View {
         }
         .background(Color.roonBase)
         .scrollContentBackground(.hidden)
+        .bottomOverlayAwareScroll()
     }
 }
 
@@ -734,6 +736,7 @@ struct SettingsView: View {
             }
             .listStyle(.insetGrouped)
             .scrollContentBackground(.hidden)
+        .bottomOverlayAwareScroll()
             .background(Color.roonBase)
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.large)

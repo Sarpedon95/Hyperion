@@ -24,6 +24,20 @@ struct LibraryView: View {
 
                         Color.roonBorder.frame(height: 0.5).padding(.leading, 66)
 
+                        NavigationLink(destination: LikedTracksView()) {
+                            LibraryMenuRow(icon: "heart.fill",               label: "Liked Tracks")
+                        }
+                        .buttonStyle(.plain)
+
+                        Color.roonBorder.frame(height: 0.5).padding(.leading, 66)
+
+                        NavigationLink(destination: PlaylistListView()) {
+                            LibraryMenuRow(icon: "music.note.list",          label: "Playlists")
+                        }
+                        .buttonStyle(.plain)
+
+                        Color.roonBorder.frame(height: 0.5).padding(.leading, 66)
+
                         NavigationLink(destination: AlbumListView()) {
                             LibraryMenuRow(icon: "square.stack.fill",        label: "Albums")
                         }
@@ -33,6 +47,13 @@ struct LibraryView: View {
 
                         NavigationLink(destination: ArtistListView()) {
                             LibraryMenuRow(icon: "person.crop.circle.fill",  label: "Artists")
+                        }
+                        .buttonStyle(.plain)
+
+                        Color.roonBorder.frame(height: 0.5).padding(.leading, 66)
+
+                        NavigationLink(destination: GenreListView()) {
+                            LibraryMenuRow(icon: "guitars.fill",             label: "Genres")
                         }
                         .buttonStyle(.plain)
 
@@ -65,6 +86,7 @@ struct LibraryView: View {
                 }
             }
             .scrollContentBackground(.hidden)
+        .bottomOverlayAwareScroll()
             .background(Color.roonBase.ignoresSafeArea())
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(.hidden, for: .navigationBar)
@@ -135,6 +157,7 @@ struct ComposerListView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
+        .bottomOverlayAwareScroll()
         .background(Color.roonBase)
         .searchable(text: $searchText, prompt: "Search composers")
         .onChange(of: searchText) { _, new in searchNeedle = .init(new) }
@@ -210,6 +233,7 @@ struct WorkListView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
+        .bottomOverlayAwareScroll()
         .background(Color.roonBase)
         .searchable(text: $searchText, prompt: "Search works")
         .onChange(of: searchText) { _, new in searchNeedle = .init(new) }
@@ -325,6 +349,7 @@ struct WorkDetailView: View {
             }
         }
         .scrollContentBackground(.hidden)
+        .bottomOverlayAwareScroll()
         .background(Color.roonBase.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(Color.roonBase, for: .navigationBar)
@@ -513,6 +538,8 @@ struct MovementRowView: View {
     let isActive: Bool
     var showPerformer: Bool = false
     let onTap: () -> Void
+    @ObservedObject private var likedTracks = LikedTracksStore.shared
+    @State private var showingAddToPlaylist = false
 
     var body: some View {
         Button(action: onTap) {
@@ -565,6 +592,21 @@ struct MovementRowView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            Button(likedTracks.isLiked(track) ? "Unlike" : "Like", systemImage: likedTracks.isLiked(track) ? "heart.slash" : "heart") {
+                likedTracks.toggle(track)
+            }
+            Button("Add to Playlist", systemImage: "music.note.list") {
+                showingAddToPlaylist = true
+            }
+            Button("Add to Queue", systemImage: "text.badge.plus") {
+                PlayerViewModel.shared.addTracksToQueue([track])
+            }
+        }
+        .sheet(isPresented: $showingAddToPlaylist) {
+            AddToPlaylistSheet(tracks: [track])
+                .environment(\.hyperionBottomOverlayHeight, 0)
+        }
     }
 }
 
@@ -693,6 +735,7 @@ struct AlbumListView: View {
             }
         }
         .scrollContentBackground(.hidden)
+        .bottomOverlayAwareScroll()
         .background(Color.roonBase)
         .onGeometryChange(for: CGFloat.self) { proxy in
             proxy.size.width
@@ -838,6 +881,7 @@ struct AlbumDetailView: View {
             }
         }
         .scrollContentBackground(.hidden)
+        .bottomOverlayAwareScroll()
         .background(Color.roonBase.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(Color.roonBase, for: .navigationBar)
@@ -875,8 +919,12 @@ struct AlbumDetailView: View {
                 .padding(32)
                 .frame(maxWidth: .infinity)
         } else {
-            ForEach(workGroups) { group in
-                WorkGroupSectionView(group: group, showPerformer: true)
+            if workGroups.count == 1, let group = workGroups.first, group.isFlatFallbackGroup {
+                WorkTrackList(tracks: group.tracks, workGroup: group)
+            } else {
+                ForEach(workGroups) { group in
+                    WorkGroupSectionView(group: group, showPerformer: true)
+                }
             }
             Spacer(minLength: 80)
         }
@@ -1153,6 +1201,15 @@ struct WorkGroupSectionView: View {
     let group: WorkGroup
     var showPerformer: Bool = false
     @ObservedObject private var player = PlayerViewModel.shared
+    @State private var isCollapsed: Bool = false
+    @State private var showingAddToPlaylist: Bool = false
+
+    private var sourceLabel: String {
+        if group.tracks.contains(where: { ($0.work ?? "").isEmpty == false }) {
+            return "Local work tag"
+        }
+        return "Inferred grouping"
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -1177,31 +1234,69 @@ struct WorkGroupSectionView: View {
                         .font(.roonMono(11))
                         .foregroundColor(.roonTertiary)
                         .padding(.top, 2)
+
+                    Text(sourceLabel)
+                        .font(.roonBody(10, weight: .semibold))
+                        .foregroundColor(.roonTertiary)
+                        .kerning(0.8)
+                        .padding(.top, 2)
                 }
                 .padding(.vertical, 14)
 
                 Spacer()
+
+                Button {
+                    Haptics.light()
+                    withAnimation(.easeInOut(duration: 0.18)) { isCollapsed.toggle() }
+                } label: {
+                    Image(systemName: isCollapsed ? "chevron.down" : "chevron.up")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.roonTertiary)
+                        .frame(width: 36, height: 36)
+                }
+                .buttonStyle(.plain)
+                .padding(.trailing, 10)
+                .padding(.top, 14)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                Haptics.light()
+                player.playWork(group)
+            }
+            .contextMenu {
+                Button("Play Work", systemImage: "play.fill") { player.playWork(group) }
+                Button("Add to Queue", systemImage: "text.badge.plus") { player.addWorkToQueue(group) }
+                Button("Add to Playlist", systemImage: "music.note.list") { showingAddToPlaylist = true }
+                Button(isCollapsed ? "Expand" : "Collapse", systemImage: isCollapsed ? "chevron.down" : "chevron.up") {
+                    isCollapsed.toggle()
+                }
             }
 
             Color.roonBorder.frame(height: 0.5).padding(.leading, 16)
 
             // Tracks
-            ForEach(Array(group.tracks.enumerated()), id: \.element.id) { index, track in
-                MovementRowView(
-                    track:        track,
-                    index:        index,
-                    isActive:     player.currentTrack?.id == track.id,
-                    showPerformer: showPerformer
-                ) {
-                    Haptics.light()
-                    player.playWork(group, startingAt: index)
-                }
-                if index < group.tracks.count - 1 {
-                    Color.roonBorder.frame(height: 0.5).padding(.leading, 54)
+            if !isCollapsed {
+                ForEach(Array(group.tracks.enumerated()), id: \.element.id) { index, track in
+                    MovementRowView(
+                        track:        track,
+                        index:        index,
+                        isActive:     player.currentTrack?.id == track.id,
+                        showPerformer: showPerformer
+                    ) {
+                        Haptics.light()
+                        player.playWork(group, startingAt: index)
+                    }
+                    if index < group.tracks.count - 1 {
+                        Color.roonBorder.frame(height: 0.5).padding(.leading, 54)
+                    }
                 }
             }
 
             Color.roonDivider.frame(height: 0.5)
+        }
+        .sheet(isPresented: $showingAddToPlaylist) {
+            AddToPlaylistSheet(tracks: group.tracks)
+                .environment(\.hyperionBottomOverlayHeight, 0)
         }
     }
 }
@@ -1241,6 +1336,7 @@ struct SongListView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
+        .bottomOverlayAwareScroll()
         .background(Color.roonBase)
         .searchable(text: $searchText, prompt: "Search songs")
         .onChange(of: searchText) { _, new in searchNeedle = .init(new) }
@@ -1272,6 +1368,8 @@ struct SongListView: View {
 struct SongRowView: View {
     let track: Track
     let isActive: Bool
+    @ObservedObject private var likedTracks = LikedTracksStore.shared
+    @State private var showingAddToPlaylist = false
 
     var body: some View {
         HStack(spacing: 14) {
@@ -1299,6 +1397,83 @@ struct SongRowView: View {
         }
         .padding(.vertical, 6)
         .contentShape(Rectangle())
+        .contextMenu {
+            Button(likedTracks.isLiked(track) ? "Unlike" : "Like", systemImage: likedTracks.isLiked(track) ? "heart.slash" : "heart") {
+                likedTracks.toggle(track)
+            }
+            Button("Add to Playlist", systemImage: "music.note.list") {
+                showingAddToPlaylist = true
+            }
+            Button("Add to Queue", systemImage: "text.badge.plus") {
+                PlayerViewModel.shared.addTracksToQueue([track])
+            }
+        }
+        .sheet(isPresented: $showingAddToPlaylist) {
+            AddToPlaylistSheet(tracks: [track])
+                .environment(\.hyperionBottomOverlayHeight, 0)
+        }
+    }
+}
+
+// MARK: - Liked tracks
+
+struct LikedTracksView: View {
+    @ObservedObject private var likedTracks = LikedTracksStore.shared
+    @ObservedObject private var player = PlayerViewModel.shared
+
+    var body: some View {
+        List {
+            if likedTracks.likedTracks.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "heart")
+                        .font(.system(size: 40))
+                        .foregroundColor(.roonTertiary)
+                    Text("No liked tracks yet")
+                        .font(.roonTitle(18))
+                        .foregroundColor(.roonPrimary)
+                    Text("Tap the heart in Now Playing or use track context menus to build your favorites.")
+                        .font(.roonBody(13))
+                        .foregroundColor(.roonSecondary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 60)
+                .listRowBackground(Color.clear)
+            } else {
+                ForEach(Array(likedTracks.likedTracks.enumerated()), id: \.element.id) { index, track in
+                    Button {
+                        player.playTracks(likedTracks.likedTracks, startingAt: index)
+                    } label: {
+                        SongRowView(track: track, isActive: player.currentTrack?.id == track.id)
+                    }
+                    .buttonStyle(.plain)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparatorTint(Color.roonBorder)
+                }
+                .onDelete { offsets in
+                    for index in offsets {
+                        guard likedTracks.likedTracks.indices.contains(index) else { continue }
+                        likedTracks.unlike(likedTracks.likedTracks[index])
+                    }
+                }
+            }
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .bottomOverlayAwareScroll()
+        .background(Color.roonBase)
+        .navigationTitle("Liked Tracks")
+        .navigationBarTitleDisplayMode(.large)
+        .toolbarBackground(Color.roonBase, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
+        .toolbarColorScheme(.dark, for: .navigationBar)
+        .toolbar {
+            if !likedTracks.likedTracks.isEmpty {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Play") { player.playTracks(likedTracks.likedTracks) }
+                }
+            }
+        }
     }
 }
 
@@ -1329,6 +1504,7 @@ struct ArtistListView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
+        .bottomOverlayAwareScroll()
         .background(Color.roonBase)
         .searchable(text: $searchText, prompt: "Search artists")
         .onChange(of: searchText) { _, new in searchNeedle = .init(new) }
@@ -1383,16 +1559,241 @@ struct ArtistRowView: View {
 struct ArtistDetailView: View {
 
     let artist: Artist
+    @ObservedObject private var library = LibraryViewModel.shared
+    @ObservedObject private var player = PlayerViewModel.shared
+    @ObservedObject private var likedTracks = LikedTracksStore.shared
+
     @State private var albums: [Album] = []
+    @State private var localTracks: [Track] = []
     @State private var isLoading: Bool = true
+
+    private var tracksByArtist: [Track] {
+        let folded = SearchTextNormalizer.folded(artist.name)
+        return localTracks.filter {
+            SearchTextNormalizer.folded($0.trackartist ?? $0.albumartist ?? "") == folded ||
+            SearchTextNormalizer.folded($0.composer ?? "") == folded
+        }
+    }
+
+    private var likedByArtist: [Track] {
+        let folded = SearchTextNormalizer.folded(artist.name)
+        return likedTracks.likedTracks.filter {
+            SearchTextNormalizer.folded($0.trackartist ?? $0.albumartist ?? "") == folded ||
+            SearchTextNormalizer.folded($0.composer ?? "") == folded
+        }
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                artistHeader
+
+                HStack(spacing: 12) {
+                    Button {
+                        player.playTracks(tracksByArtist)
+                    } label: {
+                        Label("Play", systemImage: "play.fill")
+                            .font(.roonBody(15, weight: .semibold))
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 46)
+                            .background(Color.roonAccent)
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(tracksByArtist.isEmpty)
+
+                    Button {
+                        player.playTracks(tracksByArtist, shuffle: true)
+                    } label: {
+                        Label("Shuffle", systemImage: "shuffle")
+                            .font(.roonBody(15, weight: .semibold))
+                            .foregroundColor(.roonPrimary)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 46)
+                            .background(Color.roonSurface)
+                            .overlay(Capsule().strokeBorder(Color.roonBorder, lineWidth: 1))
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(tracksByArtist.isEmpty)
+                }
+                .padding(.horizontal, 20)
+
+                if isLoading {
+                    ProgressView().tint(.roonAccent)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 50)
+                } else {
+                    if !albums.isEmpty {
+                        artistSectionTitle("Albums")
+                        LazyVStack(spacing: 0) {
+                            ForEach(albums) { album in
+                                NavigationLink {
+                                    AlbumDetailView(album: album)
+                                } label: {
+                                    AlbumListRow(album: album)
+                                        .padding(.horizontal, 16)
+                                        .padding(.vertical, 10)
+                                }
+                                .buttonStyle(.plain)
+                                Color.roonBorder.frame(height: 0.5).padding(.leading, 82)
+                            }
+                        }
+                        .background(Color.roonSurface)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                        .padding(.horizontal, 16)
+                    }
+
+                    if !tracksByArtist.isEmpty {
+                        artistSectionTitle("Top Tracks")
+                        LazyVStack(spacing: 0) {
+                            ForEach(Array(tracksByArtist.prefix(12).enumerated()), id: \.element.id) { index, track in
+                                Button {
+                                    player.playTracks(tracksByArtist, startingAt: index)
+                                } label: {
+                                    SongRowView(track: track, isActive: player.currentTrack?.id == track.id)
+                                        .padding(.horizontal, 16)
+                                        .padding(.vertical, 6)
+                                }
+                                .buttonStyle(.plain)
+                                if index < min(tracksByArtist.count, 12) - 1 {
+                                    Color.roonBorder.frame(height: 0.5).padding(.leading, 76)
+                                }
+                            }
+                        }
+                        .background(Color.roonSurface)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                        .padding(.horizontal, 16)
+                    }
+
+                    if !likedByArtist.isEmpty {
+                        artistSectionTitle("Liked Songs")
+                        LazyVStack(spacing: 0) {
+                            ForEach(Array(likedByArtist.prefix(8).enumerated()), id: \.element.id) { index, track in
+                                Button {
+                                    player.playTracks(likedByArtist, startingAt: index)
+                                } label: {
+                                    SongRowView(track: track, isActive: player.currentTrack?.id == track.id)
+                                        .padding(.horizontal, 16)
+                                        .padding(.vertical, 6)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .background(Color.roonSurface)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                        .padding(.horizontal, 16)
+                    }
+
+                    if albums.isEmpty && tracksByArtist.isEmpty {
+                        VStack(spacing: 12) {
+                            Image(systemName: "person.crop.circle")
+                                .font(.system(size: 44))
+                                .foregroundColor(.roonTertiary)
+                            Text("No local matches found")
+                                .font(.roonTitle(18))
+                                .foregroundColor(.roonPrimary)
+                            Text("Hyperion could not find albums or locally indexed tracks for this artist yet.")
+                                .font(.roonBody(13))
+                                .foregroundColor(.roonSecondary)
+                                .multilineTextAlignment(.center)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 50)
+                        .padding(.horizontal, 32)
+                    }
+                }
+
+                Spacer(minLength: 24)
+            }
+        }
+        .scrollContentBackground(.hidden)
+        .bottomOverlayAwareScroll()
+        .background(Color.roonBase.ignoresSafeArea())
+        .navigationTitle(artist.name)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(Color.roonBase, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
+        .toolbarColorScheme(.dark, for: .navigationBar)
+        .task(id: artist.id) {
+            isLoading = true
+            defer { isLoading = false }
+            async let albumsTask = LyrionAPI.shared.getAlbumsForArtist(artistID: artist.id)
+            await library.loadSongs()
+            var loadedAlbums = (try? await albumsTask) ?? []
+            loadedAlbums.sort { $0.album.localizedCaseInsensitiveCompare($1.album) == .orderedAscending }
+            albums = loadedAlbums
+            localTracks = library.songs
+        }
+    }
+
+    private var artistHeader: some View {
+        VStack(spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(Color.roonElevated)
+                    .frame(width: 110, height: 110)
+                Text(NameFormatting.initials(artist.name))
+                    .font(.roonTitle(34))
+                    .foregroundColor(.roonAccent)
+            }
+            Text(artist.name)
+                .font(.roonTitle(30))
+                .foregroundColor(.roonPrimary)
+                .multilineTextAlignment(.center)
+                .lineLimit(3)
+            Text("\(albums.count) albums • \(tracksByArtist.count) local tracks")
+                .font(.roonBody(13))
+                .foregroundColor(.roonSecondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 24)
+        .padding(.horizontal, 20)
+    }
+
+    private func artistSectionTitle(_ title: String) -> some View {
+        Text(title)
+            .font(.roonTitle(20))
+            .foregroundColor(.roonPrimary)
+            .padding(.horizontal, 20)
+    }
+}
+
+// MARK: - Genre list
+
+struct GenreListView: View {
+
+    @ObservedObject private var library = LibraryViewModel.shared
+    @State private var searchText: String = ""
+    @State private var searchNeedle: SearchTextNormalizer.Needle = .empty
+
+    private var filtered: [Genre] {
+        guard !searchNeedle.isEmpty else { return library.genres }
+        return library.genres.filter { searchNeedle.matches($0.name) }
+    }
 
     var body: some View {
         List {
-            ForEach(albums) { album in
+            ForEach(filtered) { genre in
                 NavigationLink {
-                    AlbumDetailView(album: album)
+                    GenreAlbumListView(genre: genre)
                 } label: {
-                    AlbumListRow(album: album)
+                    HStack(spacing: 14) {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(Color.roonElevated)
+                                .frame(width: 44, height: 44)
+                            Image(systemName: "guitars")
+                                .font(.system(size: 17, weight: .medium))
+                                .foregroundColor(.roonAccent)
+                        }
+                        Text(genre.name)
+                            .font(.roonBody(16, weight: .medium))
+                            .foregroundColor(.roonPrimary)
+                        Spacer()
+                    }
+                    .padding(.vertical, 5)
                 }
                 .listRowBackground(Color.clear)
                 .listRowSeparatorTint(Color.roonBorder)
@@ -1400,31 +1801,31 @@ struct ArtistDetailView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
+        .bottomOverlayAwareScroll()
         .background(Color.roonBase)
-        .navigationTitle(artist.name)
+        .searchable(text: $searchText, prompt: "Search genres")
+        .onChange(of: searchText) { _, new in searchNeedle = .init(new) }
+        .navigationTitle("Genres")
         .navigationBarTitleDisplayMode(.large)
         .toolbarBackground(Color.roonBase, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
         .toolbarColorScheme(.dark, for: .navigationBar)
         .overlay {
-            if isLoading {
+            if library.isLoadingGenres && library.genres.isEmpty {
                 ProgressView().tint(.roonAccent)
-            } else if albums.isEmpty {
+            } else if !library.isLoadingGenres && library.genres.isEmpty {
                 VStack(spacing: 12) {
-                    Image(systemName: "square.stack")
+                    Image(systemName: "guitars")
                         .font(.system(size: 40))
                         .foregroundColor(.roonTertiary)
-                    Text("No albums found")
+                    Text("No genres found")
                         .font(.roonTitle(18))
                         .foregroundColor(.roonPrimary)
                 }
             }
         }
-        .task(id: artist.id) {
-            isLoading = true
-            defer { isLoading = false }
-            albums = (try? await LyrionAPI.shared.getAlbumsForArtist(artistID: artist.id)) ?? []
-            albums.sort { $0.album.localizedCaseInsensitiveCompare($1.album) == .orderedAscending }
+        .task {
+            if library.genres.isEmpty { await library.loadGenres() }
         }
     }
 }
@@ -1451,6 +1852,7 @@ struct GenreAlbumListView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
+        .bottomOverlayAwareScroll()
         .background(Color.roonBase)
         .navigationTitle(genre.name)
         .navigationBarTitleDisplayMode(.large)

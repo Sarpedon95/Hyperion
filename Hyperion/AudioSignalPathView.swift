@@ -9,13 +9,12 @@ struct AudioQualityBadge: View {
     var body: some View {
         Button(action: onTap) {
             HStack(spacing: 6) {
-                // Status indicator circle with pulsing animation for lossless
                 ZStack {
                     Circle()
                         .fill(path.worstStatus.tintColor)
                         .frame(width: 10, height: 10)
 
-                    if path.worstStatus == .lossless {
+                    if path.isVerifiedBitPerfect {
                         PulsingRingView(color: path.worstStatus.tintColor)
                     }
                 }
@@ -42,9 +41,6 @@ struct AudioQualityBadge: View {
 
 // MARK: - Pulsing ring animation helper
 
-/// Separate view so the @State is stable across parent re-renders.
-/// The old code used `value: UUID()` which created a new UUID on every
-/// SwiftUI layout pass, causing the animation to restart constantly.
 private struct PulsingRingView: View {
     let color: Color
     @State private var isPulsing = false
@@ -70,50 +66,32 @@ struct AudioSignalPathView: View {
         NavigationStack {
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 0) {
-                    // Header with quality summary
-                    VStack(alignment: .leading, spacing: 12) {
-                        HStack(spacing: 10) {
-                            Circle()
-                                .fill(path.worstStatus.tintColor)
-                                .frame(width: 14, height: 14)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(path.badgeLabel)
-                                    .font(.roonTitle(24, weight: .bold))
-                                    .foregroundColor(.roonPrimary)
-                                Text("Audio Signal Path")
-                                    .font(.roonBody(12))
-                                    .foregroundColor(.roonTertiary)
-                            }
-                        }
-                    }
-                    .padding(20)
-                    .background(Color.roonSurface)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    header
 
-                    Divider()
-                        .background(Color.roonBorder)
+                    Divider().background(Color.roonBorder)
 
-                    // Signal path steps
                     VStack(spacing: 0) {
                         ForEach(Array(path.steps.enumerated()), id: \.element.id) { index, step in
                             AudioPathStepRow(step: step, isLast: index == path.steps.count - 1)
                         }
                     }
-                    .padding(.vertical, 20)
+                    .padding(.vertical, 18)
 
-                    // Footer info
-                    VStack(alignment: .leading, spacing: 8) {
-                        Divider()
-                            .background(Color.roonBorder)
-
-                        Text("Real-time data from playback engine")
-                            .font(.roonBody(11))
-                            .foregroundColor(.roonTertiary)
-                            .padding(12)
+                    if !path.whyNotBitPerfect.isEmpty {
+                        whyNotBitPerfectSection
                     }
+
+                    footer
+
+                    #if DEBUG
+                    if path.diagnostics.hasContent {
+                        diagnosticsSection
+                    }
+                    #endif
                 }
             }
             .scrollContentBackground(.hidden)
+            .bottomOverlayAwareScroll()
             .background(Color.roonBase.ignoresSafeArea())
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(.hidden, for: .navigationBar)
@@ -130,6 +108,92 @@ struct AudioSignalPathView: View {
             }
         }
     }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 10) {
+                Circle()
+                    .fill(path.worstStatus.tintColor)
+                    .frame(width: 14, height: 14)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(path.badgeLabel)
+                        .font(.roonTitle(24, weight: .bold))
+                        .foregroundColor(.roonPrimary)
+                    Text(path.bitPerfectExplanation)
+                        .font(.roonBody(12, weight: .medium))
+                        .foregroundColor(.roonSecondary)
+                }
+            }
+
+            Text("Hyperion shows only steps backed by LMS/player/track/Orpheus data. Unknown means the app could not verify that part of the chain.")
+                .font(.roonBody(12))
+                .foregroundColor(.roonTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(20)
+        .background(Color.roonSurface)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var whyNotBitPerfectSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Why bit-perfect is not claimed")
+                .font(.roonBody(14, weight: .semibold))
+                .foregroundColor(.roonPrimary)
+
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(path.whyNotBitPerfect, id: \.self) { reason in
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "questionmark.circle")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(.roonTertiary)
+                            .padding(.top, 2)
+                        Text(reason)
+                            .font(.roonBody(12))
+                            .foregroundColor(.roonSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .background(Color.roonSurface.opacity(0.72))
+        .cornerRadius(12)
+        .padding(.horizontal, 20)
+        .padding(.bottom, 16)
+    }
+
+    private var footer: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Divider().background(Color.roonBorder)
+            Text("No “bit-perfect,” “lossless output,” “hi-res,” or “transcoded” claim is made unless the path has the data to support it. Missing LMS fields are shown as unknown instead of guessed.")
+                .font(.roonBody(11))
+                .foregroundColor(.roonTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(12)
+        }
+    }
+
+    #if DEBUG
+    private var diagnosticsSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Signal-path diagnostics")
+                .font(.roonBody(14, weight: .semibold))
+                .foregroundColor(.roonPrimary)
+
+            DiagnosticsList(title: "Fields used", values: path.diagnostics.usedFields)
+            DiagnosticsList(title: "Missing / unverified fields", values: path.diagnostics.missingFields)
+            DiagnosticsDictionary(title: "Raw LMS/track fields", values: path.diagnostics.rawTrackFields)
+            DiagnosticsDictionary(title: "Raw player/status fields", values: path.diagnostics.rawStatusFields)
+            DiagnosticsList(title: "Notes", values: path.diagnostics.notes)
+        }
+        .padding(16)
+        .background(Color.roonSurface.opacity(0.55))
+        .cornerRadius(12)
+        .padding(.horizontal, 20)
+        .padding(.bottom, 24)
+    }
+    #endif
 }
 
 // MARK: - Step Row
@@ -140,9 +204,7 @@ struct AudioPathStepRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Row content
-            HStack(alignment: .center, spacing: 14) {
-                // Circle icon with status color
+            HStack(alignment: .top, spacing: 14) {
                 ZStack {
                     Circle()
                         .fill(step.status.tintColor.opacity(0.15))
@@ -153,38 +215,58 @@ struct AudioPathStepRow: View {
                         .foregroundColor(step.status.tintColor)
                 }
 
-                // Content - left side
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(step.title)
-                        .font(.roonBody(14, weight: .semibold))
-                        .foregroundColor(.roonPrimary)
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(step.title)
+                            .font(.roonBody(14, weight: .semibold))
+                            .foregroundColor(.roonPrimary)
+
+                        Text(step.confidence.label)
+                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                            .foregroundColor(.roonTertiary)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.roonTertiary.opacity(0.12))
+                            .cornerRadius(4)
+                    }
 
                     Text(step.subtitle)
                         .font(.roonBody(12, weight: .regular))
                         .foregroundColor(.roonSecondary)
-                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    if let technicalValue = step.technicalValue, !technicalValue.isEmpty, technicalValue != step.subtitle {
+                        Text(technicalValue)
+                            .font(.system(size: 11, weight: .regular, design: .monospaced))
+                            .foregroundColor(.roonTertiary)
+                            .lineLimit(2)
+                    }
+
+                    if !step.explanation.isEmpty {
+                        Text(step.explanation)
+                            .font(.roonBody(11))
+                            .foregroundColor(.roonTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    Text("Source: \(step.sourceOfTruth)")
+                        .font(.roonBody(10, weight: .medium))
+                        .foregroundColor(.roonTertiary.opacity(0.9))
                 }
 
-                Spacer()
+                Spacer(minLength: 8)
 
-                // Status badge - right side
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text(step.status.displayLabel)
-                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                        .foregroundColor(step.status.tintColor)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(step.status.tintColor.opacity(0.15))
-                        .cornerRadius(4)
-                }
+                Text(step.statusLabel)
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .foregroundColor(step.status.tintColor)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(step.status.tintColor.opacity(0.15))
+                    .cornerRadius(4)
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 14)
 
-            // Vertical line connector to the next step. Rendered only between
-            // steps (not after the last one). Each step provides its OWN
-            // connector below it — do NOT also render an "above" connector on
-            // the next step, or you get a doubled line between every pair.
             if !isLast {
                 Rectangle()
                     .fill(Color.roonBorder)
@@ -194,9 +276,63 @@ struct AudioPathStepRow: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(step.title): \(step.subtitle)")
-        .accessibilityValue(step.status.displayLabel)
+        .accessibilityValue(step.statusLabel)
     }
 }
+
+#if DEBUG
+private struct DiagnosticsList: View {
+    let title: String
+    let values: [String]
+
+    var body: some View {
+        if !values.isEmpty {
+            DisclosureGroup {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(values, id: \.self) { value in
+                        Text("• \(value)")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(.roonSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(.top, 6)
+            } label: {
+                Text(title)
+                    .font(.roonBody(12, weight: .semibold))
+                    .foregroundColor(.roonPrimary)
+            }
+            .tint(.roonSecondary)
+        }
+    }
+}
+
+private struct DiagnosticsDictionary: View {
+    let title: String
+    let values: [String: String]
+
+    var body: some View {
+        if !values.isEmpty {
+            DisclosureGroup {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(values.keys.sorted(), id: \.self) { key in
+                        Text("\(key): \(values[key] ?? "")")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(.roonSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(.top, 6)
+            } label: {
+                Text(title)
+                    .font(.roonBody(12, weight: .semibold))
+                    .foregroundColor(.roonPrimary)
+            }
+            .tint(.roonSecondary)
+        }
+    }
+}
+#endif
 
 // MARK: - Preview
 

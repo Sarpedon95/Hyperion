@@ -48,6 +48,7 @@ struct OOWorkDetailView: View {
             }
         }
         .scrollContentBackground(.hidden)
+        .bottomOverlayAwareScroll()
         .background(Color.roonBase.ignoresSafeArea())
         .navigationTitle(work.title)
         .navigationBarTitleDisplayMode(.inline)

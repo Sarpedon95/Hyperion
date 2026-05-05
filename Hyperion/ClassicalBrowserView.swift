@@ -178,6 +178,7 @@ private struct ComposersTab: View {
                 .padding(.bottom, 24)
             }
             .scrollContentBackground(.hidden)
+        .bottomOverlayAwareScroll()
         }
     }
 }
@@ -223,6 +224,7 @@ private struct PerformersTab: View {
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
+        .bottomOverlayAwareScroll()
             }
         }
         .background(Color.roonBase.ignoresSafeArea())
@@ -422,6 +424,7 @@ private struct ClassicalSearchTab: View {
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
+        .bottomOverlayAwareScroll()
         }
     }
 

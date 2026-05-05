@@ -9,7 +9,7 @@ struct AudioDebugView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
                 Image(systemName: "waveform.circle.fill")
-                    .foregroundColor(player.isBitPerfect ? .green : .yellow)
+                    .foregroundColor(.yellow)
                     .font(.system(size: 14, weight: .semibold))
 
                 VStack(alignment: .leading, spacing: 2) {
@@ -18,20 +18,26 @@ struct AudioDebugView: View {
                             .font(.system(size: 12, weight: .semibold, design: .monospaced))
                             .foregroundColor(.roonPrimary)
 
-                        Text(player.isBitPerfect ? "Bit-Perfect" : "Converted")
+                        Text("Path Unverified")
                             .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                            .foregroundColor(player.isBitPerfect ? .green : .yellow)
+                            .foregroundColor(.yellow)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
-                            .background(
-                                player.isBitPerfect
-                                    ? Color.green.opacity(0.15)
-                                    : Color.yellow.opacity(0.15)
-                            )
+                            .background(Color.yellow.opacity(0.15))
                             .cornerRadius(3)
                     }
 
                     HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Stream")
+                                .font(.system(size: 9, weight: .regular, design: .monospaced))
+                                .foregroundColor(.roonTertiary)
+                            Text(player.currentStreamURL?.lastPathComponent ?? "—")
+                                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                .foregroundColor(.roonSecondary)
+                                .lineLimit(1)
+                        }
+
                         VStack(alignment: .leading, spacing: 1) {
                             Text("Source")
                                 .font(.system(size: 9, weight: .regular, design: .monospaced))

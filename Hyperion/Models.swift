@@ -19,6 +19,69 @@ struct Track: Identifiable, Hashable, Codable {
     let genres: String?
     let isClassical: Int?
 
+    // Audio metadata reported by LMS/Lyrion when requested with songinfo/status tags.
+    // These are optional on purpose: absence means “not reported,” not a fallback claim.
+    let audioType: String?
+    let sampleRate: Int?
+    let sampleSize: Int?
+    let bitrate: String?
+    let lossless: Bool?
+    let replayGain: Double?
+    let albumReplayGain: Double?
+    let isRemote: Bool?
+
+    init(
+        id: Int,
+        title: String,
+        album: String?,
+        albumID: Int?,
+        albumartist: String?,
+        composer: String?,
+        trackartist: String?,
+        work: String?,
+        duration: Double?,
+        tracknum: Int?,
+        discnum: Int?,
+        year: Int?,
+        coverid: String?,
+        url: String?,
+        genres: String?,
+        isClassical: Int?,
+        audioType: String? = nil,
+        sampleRate: Int? = nil,
+        sampleSize: Int? = nil,
+        bitrate: String? = nil,
+        lossless: Bool? = nil,
+        replayGain: Double? = nil,
+        albumReplayGain: Double? = nil,
+        isRemote: Bool? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.album = album
+        self.albumID = albumID
+        self.albumartist = albumartist
+        self.composer = composer
+        self.trackartist = trackartist
+        self.work = work
+        self.duration = duration
+        self.tracknum = tracknum
+        self.discnum = discnum
+        self.year = year
+        self.coverid = coverid
+        self.url = url
+        self.genres = genres
+        self.isClassical = isClassical
+        self.audioType = audioType
+        self.sampleRate = sampleRate
+        self.sampleSize = sampleSize
+        self.bitrate = bitrate
+        self.lossless = lossless
+        self.replayGain = replayGain
+        self.albumReplayGain = albumReplayGain
+        self.isRemote = isRemote
+    }
+
     // Equality on id so mid-session tag changes don't break queue lookups.
     static func == (lhs: Track, rhs: Track) -> Bool { lhs.id == rhs.id }
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
@@ -45,7 +108,15 @@ struct Track: Identifiable, Hashable, Codable {
             coverid:     coverid,
             url:         url,
             genres:      genres,
-            isClassical: isClassical
+            isClassical: isClassical,
+            audioType: audioType,
+            sampleRate: sampleRate,
+            sampleSize: sampleSize,
+            bitrate: bitrate,
+            lossless: lossless,
+            replayGain: replayGain,
+            albumReplayGain: albumReplayGain,
+            isRemote: isRemote
         )
     }
 }
@@ -108,6 +179,17 @@ struct WorkGroup: Identifiable, Hashable, Codable {
     var totalDurationFormatted: String {
         TimeFormatting.formatDuration(totalDuration)
     }
+
+    /// True when grouping fell back to “this album/playlist as one bucket”.
+    /// UI renders these as normal track lists so non-classical releases do not
+    /// get fake work headers.
+    var isFlatFallbackGroup: Bool {
+        let noNativeWorkTags = tracks.allSatisfy { ($0.work ?? "").isEmpty }
+        guard noNativeWorkTags else { return false }
+        if SearchTextNormalizer.folded(workTitle) == "tracks" { return true }
+        guard let firstAlbum = tracks.first?.album, !firstAlbum.isEmpty else { return false }
+        return SearchTextNormalizer.folded(workTitle) == SearchTextNormalizer.folded(firstAlbum)
+    }
 }
 
 
@@ -143,8 +225,19 @@ enum AudioFormats {
     /// (which LMS returns in lowercase, e.g. "flac", "alac", "wav").
     static let losslessLowercase: Set<String> = ["flac", "wav", "alac", "aiff", "aif", "ape", "wv"]
 
+    /// Lowercase codecs/containers where the source is known to be perceptually coded.
+    static let lossyLowercase: Set<String> = ["mp3", "aac", "m4a", "m4b", "ogg", "opus", "wma", "wmap", "mp4"]
+
     static func isLossless(_ ext: String) -> Bool {
         lossless.contains(ext.uppercased())
+    }
+
+    static func isLosslessCodec(_ codec: String) -> Bool {
+        losslessLowercase.contains(codec.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+    }
+
+    static func isLossyCodec(_ codec: String) -> Bool {
+        lossyLowercase.contains(codec.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
     }
 }
 
@@ -244,9 +337,9 @@ enum QualityStatus: Equatable, Hashable {
 
     var displayLabel: String {
         switch self {
-        case .lossless:   return "Lossless"
-        case .enhanced:   return "Enhanced"
-        case .converted:  return "Converted"
+        case .lossless:   return "Direct"
+        case .enhanced:   return "Processed"
+        case .converted:  return "Changed"
         case .limited:    return "Limited"
         case .unknown:    return "Unknown"
         }
@@ -254,9 +347,9 @@ enum QualityStatus: Equatable, Hashable {
 
     var tintColor: Color {
         switch self {
-        case .lossless:   return Color(red: 0.2, green: 0.85, blue: 0.4)  // green
-        case .enhanced:   return Color(hex: "#7b6cf6")                     // purple
-        case .converted:  return Color(red: 0.95, green: 0.75, blue: 0.2) // amber
+        case .lossless:   return Color(red: 0.2, green: 0.85, blue: 0.4)
+        case .enhanced:   return Color(hex: "#7b6cf6")
+        case .converted:  return Color(red: 0.95, green: 0.75, blue: 0.2)
         case .limited:    return Color.red
         case .unknown:    return Color.roonTertiary
         }
@@ -267,10 +360,66 @@ enum QualityStatus: Equatable, Hashable {
         switch self {
         case .lossless:   return 0
         case .enhanced:   return 1
-        case .converted:  return 2
-        case .limited:    return 3
-        case .unknown:    return 4
+        case .unknown:    return 2
+        case .converted:  return 3
+        case .limited:    return 4
         }
+    }
+}
+
+enum SignalPathConfidence: String, Hashable {
+    case verified
+    case reported
+    case configured
+    case unverified
+    case unknown
+
+    var label: String {
+        switch self {
+        case .verified:   return "Verified"
+        case .reported:   return "Reported"
+        case .configured: return "Configured"
+        case .unverified: return "Unverified"
+        case .unknown:    return "Unknown"
+        }
+    }
+}
+
+struct SignalPathDiagnostics: Hashable {
+    var rawTrackFields: [String: String] = [:]
+    var rawStatusFields: [String: String] = [:]
+    var usedFields: [String] = []
+    var missingFields: [String] = []
+    var notes: [String] = []
+
+    var hasContent: Bool {
+        !rawTrackFields.isEmpty || !rawStatusFields.isEmpty || !usedFields.isEmpty || !missingFields.isEmpty || !notes.isEmpty
+    }
+}
+
+struct OrpheusSignalPathItem: Identifiable, Hashable {
+    let id: String
+    let title: String
+    let technicalValue: String
+    let explanation: String
+
+    init(title: String, technicalValue: String, explanation: String) {
+        self.title = title
+        self.technicalValue = technicalValue
+        self.explanation = explanation
+        self.id = "\(title)|\(technicalValue)"
+    }
+}
+
+struct OrpheusSignalPathState: Hashable {
+    let isPlaybackRoutedThroughOrpheus: Bool
+    let activePresetName: String?
+    let activeItems: [OrpheusSignalPathItem]
+    let configuredOnlyItems: [OrpheusSignalPathItem]
+    let inactiveItems: [String]
+
+    var hasAnyConfiguredProcessing: Bool {
+        !activeItems.isEmpty || !configuredOnlyItems.isEmpty
     }
 }
 
@@ -280,331 +429,510 @@ struct AudioPathStep: Identifiable, Hashable {
     let title: String
     let subtitle: String
     let status: QualityStatus
+    let statusLabel: String
+    let confidence: SignalPathConfidence
+    let technicalValue: String?
+    let explanation: String
+    let sourceOfTruth: String
+    let usedFields: [String]
+    let missingFields: [String]
 
-    init(icon: String, title: String, subtitle: String, status: QualityStatus) {
+    init(
+        id: String? = nil,
+        icon: String,
+        title: String,
+        subtitle: String,
+        status: QualityStatus,
+        statusLabel: String? = nil,
+        confidence: SignalPathConfidence = .unknown,
+        technicalValue: String? = nil,
+        explanation: String = "",
+        sourceOfTruth: String = "Not reported",
+        usedFields: [String] = [],
+        missingFields: [String] = []
+    ) {
         self.icon = icon
         self.title = title
         self.subtitle = subtitle
         self.status = status
-        self.id = "\(icon)|\(title)|\(subtitle)|\(status.displayLabel)"
-    }
-
-    func hash(into hasher: inout Hasher) {
-        hasher.combine(id)
-    }
-
-    static func == (lhs: AudioPathStep, rhs: AudioPathStep) -> Bool {
-        lhs.id == rhs.id
+        self.statusLabel = statusLabel ?? status.displayLabel
+        self.confidence = confidence
+        self.technicalValue = technicalValue
+        self.explanation = explanation
+        self.sourceOfTruth = sourceOfTruth
+        self.usedFields = usedFields
+        self.missingFields = missingFields
+        self.id = id ?? "\(icon)|\(title)|\(subtitle)|\(self.statusLabel)|\(confidence.rawValue)"
     }
 }
 
 struct AudioSignalPath: Identifiable, Hashable {
     let id: UUID = UUID()
     let steps: [AudioPathStep]
+    let badgeStatus: QualityStatus
+    let badgeLabelOverride: String
+    let diagnostics: SignalPathDiagnostics
+    let whyNotBitPerfect: [String]
 
-    var worstStatus: QualityStatus {
-        steps.max(by: { $0.status.severity < $1.status.severity })?.status ?? .unknown
+    var worstStatus: QualityStatus { badgeStatus }
+    var badgeLabel: String { badgeLabelOverride }
+    var isVerifiedBitPerfect: Bool { badgeLabelOverride == "Bit-perfect" && whyNotBitPerfect.isEmpty }
+
+    var bitPerfectExplanation: String {
+        if isVerifiedBitPerfect { return "Bit-perfect is verified by the available source, processing, volume, and output data." }
+        return "Bit-perfect: cannot verify"
     }
 
-    var badgeLabel: String {
-        worstStatus.displayLabel
+    /// Generate a signal path from stored track metadata only. This intentionally
+    /// shows unknown processing/output instead of decorating absent facts.
+    static func from(track: Track, isBitPerfect: Bool = false) -> AudioSignalPath {
+        fromPlaybackState(
+            track: track,
+            sourceFormat: track.audioType?.uppercased() ?? audioFormatFromURL(track.url ?? ""),
+            selectedStreamURL: nil,
+            outputFormat: "",
+            localVolume: 1.0,
+            lmsQuality: nil,
+            orpheusState: nil
+        )
     }
 
-    /// Generate a signal path from track metadata (fallback/mock).
-    static func from(track: Track, isBitPerfect: Bool = true) -> AudioSignalPath {
-        var steps: [AudioPathStep] = []
-
-        // Source
-        if let url = track.url, !url.isEmpty {
-            let format = audioFormatFromURL(url)
-            let isLosslessFormat = AudioFormats.isLossless(format)
-            steps.append(AudioPathStep(
-                icon: "opticaldisc",
-                title: "Source",
-                subtitle: format,
-                status: isLosslessFormat ? .lossless : .converted
-            ))
-        }
-
-        // Streaming
-        steps.append(AudioPathStep(
-            icon: "network",
-            title: "Streaming",
-            subtitle: "Lyrion Music Server (HTTP)",
-            status: .lossless
-        ))
-
-        // Decoder
-        if let url = track.url {
-            let format = audioFormatFromURL(url)
-            let isBitPerfectFormat = AudioFormats.isLossless(format)
-            steps.append(AudioPathStep(
-                icon: "arrowtriangle.right.fill",
-                title: "Decoding",
-                subtitle: isBitPerfectFormat ? "\(format) → PCM (no conversion)" : "\(format) → PCM",
-                status: isBitPerfectFormat ? .lossless : .converted
-            ))
-        }
-
-        // Bit Depth
-        steps.append(AudioPathStep(
-            icon: "waveform.circle",
-            title: "Bit Depth",
-            subtitle: "16-bit (from source metadata)",
-            status: .lossless
-        ))
-
-        // Sample Rate
-        steps.append(AudioPathStep(
-            icon: "waveform.circle",
-            title: "Sample Rate",
-            subtitle: "44.1 kHz (no resampling)",
-            status: .lossless
-        ))
-
-        // Processing / DSP
-        steps.append(AudioPathStep(
-            icon: "slider.horizontal.3",
-            title: "Processing",
-            subtitle: "None (bit-perfect mode)",
-            status: isBitPerfect ? .lossless : .limited
-        ))
-
-        // Headroom
-        steps.append(AudioPathStep(
-            icon: "speaker.wave.2",
-            title: "Headroom",
-            subtitle: "0 dB (full scale)",
-            status: isBitPerfect ? .enhanced : .limited
-        ))
-
-        // Output
-        let isWiredOutput = true
-        steps.append(AudioPathStep(
-            icon: "headphones",
-            title: "Output",
-            subtitle: isWiredOutput ? "Headphones (Stereo)" : "Bluetooth (Stereo)",
-            status: isWiredOutput ? .lossless : .converted
-        ))
-
-        return AudioSignalPath(steps: steps)
-    }
-
-    /// Generate a real-time signal path from actual playback state.
-    /// This uses live AVAudioSession data, not track metadata.
+    /// Build the real-time signal path from actual app/LMS/track/Orpheus state.
+    /// The model is conservative by design: it can explain “direct-looking” paths,
+    /// but it does not upgrade them to bit-perfect/lossless unless every required
+    /// processing and output fact is known.
     static func fromPlaybackState(
         track: Track,
         sourceFormat: String,
+        selectedStreamURL: URL?,
         outputFormat: String,
-        isBitPerfect: Bool,
-        volume: Float = 1.0,
-        lmsQuality: LMSAudioQuality? = nil
+        localVolume: Float,
+        lmsQuality: LMSAudioQuality? = nil,
+        orpheusState: OrpheusSignalPathState? = nil
     ) -> AudioSignalPath {
         var steps: [AudioPathStep] = []
+        var usedFields: [String] = []
+        var missingFields = Set<String>()
+        var notes: [String] = []
+        var whyNotBitPerfect: [String] = []
 
-        // 1. Source file format
-        let sourceParts = sourceFormat.split(separator: " ")
-        let sourceExt = String(sourceParts.first ?? "Unknown")
-        let isSourceLossless = AudioFormats.isLossless(sourceExt)
+        let codec = firstNonEmpty(lmsQuality?.type, track.audioType, sourceFormat, audioFormatFromURL(track.url ?? ""))
+        let normalizedCodec = codec.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let codecKnown = !normalizedCodec.isEmpty && normalizedCodec != "unknown"
+        if codecKnown { usedFields.append("type/sourceFormat") } else { missingFields.insert("type") }
 
+        let sampleRate = positive(lmsQuality?.sampleRate) ?? positive(track.sampleRate)
+        let sampleSize = positive(lmsQuality?.sampleSize) ?? positive(track.sampleSize)
+        let bitrate = firstNonEmpty(lmsQuality?.bitrate, track.bitrate)
+        let reportedLossless = lmsQuality?.lossless ?? track.lossless
+        let replayGain = lmsQuality?.replayGain ?? track.replayGain
+        let albumReplayGain = lmsQuality?.albumReplayGain ?? track.albumReplayGain
+        if sampleRate != nil { usedFields.append("samplerate") } else { missingFields.insert("samplerate") }
+        if sampleSize != nil { usedFields.append("samplesize") } else { missingFields.insert("samplesize") }
+        if !bitrate.isEmpty { usedFields.append("bitrate") } else { missingFields.insert("bitrate") }
+        if reportedLossless != nil { usedFields.append("lossless") } else { missingFields.insert("lossless") }
+        if replayGain != nil || albumReplayGain != nil { usedFields.append("replay_gain/album_replay_gain") } else { missingFields.insert("replay_gain") }
+
+        let sourceIsLossless: Bool? = {
+            if let reportedLossless { return reportedLossless }
+            guard codecKnown else { return nil }
+            if AudioFormats.isLosslessCodec(normalizedCodec) { return true }
+            if AudioFormats.isLossyCodec(normalizedCodec) { return false }
+            return nil
+        }()
+
+        let sourceTechnical = sourceTechnicalValue(codec: codecKnown ? normalizedCodec.uppercased() : nil,
+                                                   sampleRate: sampleRate,
+                                                   sampleSize: sampleSize,
+                                                   bitrate: bitrate,
+                                                   lossless: sourceIsLossless)
         steps.append(AudioPathStep(
+            id: "source",
             icon: "opticaldisc",
             title: "Source",
-            subtitle: sourceExt,
-            status: isSourceLossless ? .lossless : .converted
+            subtitle: sourceTechnical.isEmpty ? "Source format not reported by LMS" : sourceTechnical,
+            status: sourceIsLossless == true ? .lossless : (sourceIsLossless == false ? .converted : .unknown),
+            statusLabel: sourceIsLossless == true ? "Lossless source" : (sourceIsLossless == false ? "Lossy source" : "Unknown"),
+            confidence: (lmsQuality != nil || track.audioType != nil || track.sampleRate != nil) ? .reported : .unknown,
+            technicalValue: sourceTechnical.isEmpty ? nil : sourceTechnical,
+            explanation: sourceIsLossless == true
+                ? "LMS/track metadata reports a lossless source container. This does not prove the whole playback path is lossless."
+                : (sourceIsLossless == false
+                   ? "The source codec or LMS lossless flag indicates a lossy source, so bit-perfect/lossless output is not claimed."
+                   : "Hyperion did not receive enough LMS/track metadata to classify the source as lossless or lossy."),
+            sourceOfTruth: lmsQuality != nil ? "LMS songinfo/status + Track metadata" : "Track metadata / URL extension fallback",
+            usedFields: ["type", "samplerate", "samplesize", "bitrate", "lossless"].filter { !missingFields.contains($0) },
+            missingFields: ["type", "samplerate", "samplesize", "bitrate", "lossless"].filter { missingFields.contains($0) }
         ))
+        if sourceIsLossless == false { whyNotBitPerfect.append("Source is lossy or reported as not lossless.") }
+        if sourceIsLossless == nil { whyNotBitPerfect.append("Source lossless/lossy state is not fully reported by LMS.") }
 
-        // 2. Streaming path
+        let streamDescription = selectedStreamURL.map { streamSummary($0) } ?? "Selected stream URL not recorded"
+        let streamExt = selectedStreamURL?.pathExtension.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        let sourceExt = codecKnown ? normalizedCodec : ""
+        let appearsTranscoded = codecKnown && !streamExt.isEmpty && sourceExt != streamExt && streamExt != "download"
         steps.append(AudioPathStep(
-            icon: "network",
-            title: "Streaming",
-            subtitle: "Lyrion Music Server",
-            status: .lossless
-        ))
-
-        // 3. Decoding
-        let decoderStatus: QualityStatus = isSourceLossless ? .lossless : .converted
-        let decoderSubtitle = isSourceLossless ? "Lossless decode" : "Lossy decode"
-        steps.append(AudioPathStep(
+            id: "decode",
             icon: "arrowtriangle.right.fill",
             title: "Decode",
-            subtitle: decoderSubtitle,
-            status: decoderStatus
+            subtitle: "iOS AVPlayer decodes Hyperion’s selected stream",
+            status: .unknown,
+            statusLabel: "Not reported",
+            confidence: .verified,
+            technicalValue: streamDescription,
+            explanation: "Hyperion creates an AVURLAsset/AVPlayerItem from this LMS stream URL. AVPlayer performs decoding locally; LMS decode/transcode state for this direct stream is not explicitly reported here.",
+            sourceOfTruth: "Hyperion playback code + selected stream URL",
+            usedFields: selectedStreamURL == nil ? [] : ["selectedStreamURL"],
+            missingFields: selectedStreamURL == nil ? ["selectedStreamURL"] : []
         ))
 
-        // 4. Bit depth — use live LMS data when available; otherwise omit
-        //    (we cannot infer it reliably from the container format alone).
-        if let lmsQ = lmsQuality, lmsQ.sampleSize > 0 {
-            steps.append(AudioPathStep(
-                icon: "waveform.circle",
-                title: "Bit Depth",
-                subtitle: "\(lmsQ.sampleSize)-bit",
-                status: .lossless
-            ))
-        }
+        steps.append(AudioPathStep(
+            id: "lms-processing",
+            icon: "network",
+            title: "LMS processing",
+            subtitle: appearsTranscoded ? "Selected stream extension differs from source codec" : "Transcoding/final output format not reported by LMS",
+            status: appearsTranscoded ? .converted : .unknown,
+            statusLabel: appearsTranscoded ? "Transcoded?" : "Unknown",
+            confidence: appearsTranscoded ? .unverified : .unknown,
+            technicalValue: selectedStreamURL == nil ? nil : streamDescription,
+            explanation: appearsTranscoded
+                ? "The chosen stream URL looks different from the reported source format. That suggests a conversion candidate, but Hyperion still needs LMS convert/status output to prove the exact final format."
+                : "LMS status/songinfo describes the library track, but does not report the exact decoded/transcoded stream format that AVPlayer receives.",
+            sourceOfTruth: "LMS stream URL + LMS metadata",
+            usedFields: selectedStreamURL == nil ? [] : ["selectedStreamURL", "type"],
+            missingFields: ["final_output_format", "transcode_pipeline"]
+        ))
+        whyNotBitPerfect.append("LMS final stream/output format and transcode pipeline are not reported for this Hyperion direct stream.")
+        missingFields.insert("final_output_format")
+        missingFields.insert("transcode_pipeline")
 
-        // 5. Sample Rate — prefer LMS-reported rate; fall back to AVAudioSession.
-        let sampleRateStr: String
-        let needsResampling: Bool
-        if let lmsQ = lmsQuality, lmsQ.sampleRate > 0 {
-            let khz = Double(lmsQ.sampleRate) / 1000
-            sampleRateStr = String(format: khz.truncatingRemainder(dividingBy: 1) == 0 ? "%.0f kHz" : "%.1f kHz", khz)
-            // Resampling occurs when AVAudioSession output rate differs from source.
-            // extractSampleRate returns strings like "44.1 kHz" or "48.0 kHz".
-            let sessionRateStr = extractSampleRate(from: outputFormat)
-            needsResampling = sessionRateStr != sampleRateStr
+        let replayText: String
+        let replayTech: String?
+        if let rg = replayGain {
+            replayTech = String(format: "Track %.2f dB", rg)
+            replayText = "ReplayGain value reported; application to Hyperion stream is not verified"
+        } else if let albumRG = albumReplayGain {
+            replayTech = String(format: "Album %.2f dB", albumRG)
+            replayText = "Album ReplayGain value reported; application to Hyperion stream is not verified"
         } else {
-            sampleRateStr = extractSampleRate(from: outputFormat)
-            needsResampling = sourceNeedsResampling(sourceExt, targetRate: sampleRateStr)
+            replayTech = nil
+            replayText = "ReplayGain / volume normalization not reported by LMS"
+        }
+        steps.append(AudioPathStep(
+            id: "replaygain",
+            icon: "dial.low",
+            title: "ReplayGain / volume normalization",
+            subtitle: replayText,
+            status: (replayGain != nil || albumReplayGain != nil) ? .unknown : .unknown,
+            statusLabel: (replayGain != nil || albumReplayGain != nil) ? "Reported tag" : "Unknown",
+            confidence: (replayGain != nil || albumReplayGain != nil) ? .reported : .unknown,
+            technicalValue: replayTech,
+            explanation: "LMS can report ReplayGain metadata. Hyperion does not treat that as proof that LMS applied volume normalization unless an applied status field is present.",
+            sourceOfTruth: "LMS songinfo/status replay_gain fields",
+            usedFields: (replayGain != nil || albumReplayGain != nil) ? ["replay_gain", "album_replay_gain"] : [],
+            missingFields: (replayGain != nil || albumReplayGain != nil) ? [] : ["replay_gain_applied"]
+        ))
+        whyNotBitPerfect.append("ReplayGain/volume-normalization application is not verified by LMS status.")
+
+        let orpheusSteps = buildOrpheusSteps(orpheusState)
+        steps.append(contentsOf: orpheusSteps.steps)
+        notes.append(contentsOf: orpheusSteps.notes)
+        if orpheusSteps.processingAffectsPath {
+            whyNotBitPerfect.append("Orpheus DSP is active in the verified playback path.")
         }
 
+        let volumePercent = Int((max(0, min(1, localVolume)) * 100).rounded())
+        let hasLocalAttenuation = volumePercent < 100
         steps.append(AudioPathStep(
-            icon: "waveform.circle",
-            title: "Sample Rate",
-            subtitle: sampleRateStr,
-            status: needsResampling ? .converted : .enhanced
-        ))
-
-        // 6. Volume Processing
-        let volumePercent = Int(volume * 100)
-        let volumeLabel = volumePercent == 100 ? "Full scale" : "\(volumePercent)%"
-        steps.append(AudioPathStep(
+            id: "volume",
             icon: "speaker.wave.2",
-            title: "Volume",
-            subtitle: volumeLabel,
-            status: volumePercent >= 90 ? .enhanced : (volumePercent >= 50 ? .lossless : .converted)
+            title: "Digital volume",
+            subtitle: hasLocalAttenuation ? "\(volumePercent)% — AVPlayer digital attenuation" : "100% — no local attenuation reported by Hyperion",
+            status: hasLocalAttenuation ? .enhanced : .lossless,
+            statusLabel: hasLocalAttenuation ? "Attenuated" : "Full scale",
+            confidence: .verified,
+            technicalValue: "\(volumePercent)%",
+            explanation: hasLocalAttenuation
+                ? "Hyperion sets AVPlayer volume below full scale, so digital volume attenuation is happening before output."
+                : "Hyperion’s local AVPlayer volume is at full scale. This does not verify LMS/player hardware volume or OS output processing.",
+            sourceOfTruth: "Hyperion PlayerViewModel.volume / AVPlayer.volume",
+            usedFields: ["localVolume"],
+            missingFields: ["lms_player_volume", "hardware_volume"]
         ))
+        if hasLocalAttenuation { whyNotBitPerfect.append("Hyperion local digital volume is below 100%.") }
+        missingFields.insert("hardware_volume")
 
-        // 7. Output device (from outputFormat)
-        let (deviceName, deviceIsLossless) = extractDeviceInfo(from: outputFormat)
-        let outputStatus: QualityStatus = deviceIsLossless ? .lossless : .converted
-
-        steps.append(AudioPathStep(
-            icon: "headphones",
-            title: "Output",
-            subtitle: deviceName,
-            status: outputStatus
-        ))
-
-        // 8. Overall quality verification
-        if isBitPerfect && isSourceLossless && deviceIsLossless && !needsResampling {
+        if let lmsQuality {
+            let statusMatchText: String
+            switch lmsQuality.statusMatchedCurrentTrack {
+            case true:  statusMatchText = "LMS status matched current Hyperion track"
+            case false: statusMatchText = "LMS status did not match current Hyperion track"
+            case nil:   statusMatchText = "LMS status match not reported"
+            }
+            var playerParts: [String] = []
+            if let playerName = lmsQuality.playerName, !playerName.isEmpty { playerParts.append(playerName) }
+            if let playerMode = lmsQuality.playerMode, !playerMode.isEmpty { playerParts.append("mode: \(playerMode)") }
+            if let lmsVolume = lmsQuality.lmsVolume { playerParts.append("LMS volume: \(lmsVolume)") }
+            let technical = playerParts.isEmpty ? nil : playerParts.joined(separator: " · ")
             steps.append(AudioPathStep(
-                icon: "checkmark.circle.fill",
-                title: "Verification",
-                subtitle: "Bit-perfect end-to-end",
-                status: .lossless
+                id: "lms-player-status",
+                icon: "hifispeaker.2",
+                title: "LMS player/status",
+                subtitle: statusMatchText,
+                status: lmsQuality.statusMatchedCurrentTrack == true ? .unknown : .unknown,
+                statusLabel: lmsQuality.statusMatchedCurrentTrack == true ? "Reported" : "Diagnostic",
+                confidence: lmsQuality.statusMatchedCurrentTrack == true ? .reported : .unverified,
+                technicalValue: technical,
+                explanation: "This is LMS player status for diagnostics. Hyperion’s audible playback path is the selected AVPlayer stream, so an LMS player status row is not treated as proof of final output processing.",
+                sourceOfTruth: "LMS status response",
+                usedFields: ["player_name", "mode", "mixer volume"],
+                missingFields: technical == nil ? ["player_name", "mode", "mixer volume"] : []
             ))
-        }
-
-        return AudioSignalPath(steps: steps)
-    }
-
-    private static func bitDepthFromFormat(_ format: String) -> Int? {
-        // For lossy formats, bit depth is not meaningful (the original PCM
-        // depth is discarded during encoding). For lossless containers we
-        // cannot infer depth from format alone (FLAC can be 16 or 24-bit),
-        // so we return nil and let the signal-path skip this step rather than
-        // show a wrong value. Callers that have live LMS samplesize data should
-        // build the step themselves.
-        return nil
-    }
-
-    private static func sourceNeedsResampling(_ format: String, targetRate: String) -> Bool {
-        // Without live LMS samplerate data we can only make a rough guess.
-        // Most lossless libraries are 44.1 kHz (CD) or 48 kHz (studio).
-        // If the AVAudioSession output rate is neither, flag as a possible
-        // resample — conservative (may show false positives for 96 kHz output
-        // with a 44.1 kHz source) but better than always claiming no resampling.
-        let isCommonRate = targetRate.contains("44.1") || targetRate.contains("48")
-        return !isCommonRate && AudioFormats.isLossless(format)
-    }
-
-    private static func extractSampleRate(from outputFormat: String) -> String {
-        // outputFormat looks like "Headphones (48000 Hz, 2ch)"
-        // Match " Hz" (with leading space) to avoid accidentally matching an
-        // "H" in a device name like "HiFi BT" or "Honor earbuds".
-        if let start = outputFormat.firstIndex(of: "("),
-           let hzRange = outputFormat.range(of: " Hz"),
-           hzRange.lowerBound > start {
-            let range = outputFormat.index(after: start)..<hzRange.lowerBound
-            let rate = String(outputFormat[range]).trimmingCharacters(in: .whitespaces)
-            if let hz = Int(rate) {
-                if hz == 48000 {
-                    return "48.0 kHz"
-                } else if hz == 44100 {
-                    return "44.1 kHz"
-                } else if hz == 96000 {
-                    return "96.0 kHz"
-                } else {
-                    return "\(Double(hz) / 1000) kHz"
-                }
+            if lmsQuality.statusMatchedCurrentTrack == false {
+                notes.append("LMS status response did not match the current Hyperion track; status-only fields were kept diagnostic.")
             }
         }
-        return "Unknown"
+
+        let outputKnown = !outputFormat.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        steps.append(AudioPathStep(
+            id: "output",
+            icon: "headphones",
+            title: "Output",
+            subtitle: outputKnown ? outputFormat : "Output device/format not reported",
+            status: outputKnown ? .unknown : .unknown,
+            statusLabel: outputKnown ? "Route known" : "Unknown",
+            confidence: outputKnown ? .reported : .unknown,
+            technicalValue: outputKnown ? outputFormat : nil,
+            explanation: "This is the iOS audio route/sample-rate snapshot available to Hyperion. It is not an LMS final output format and does not expose final bit depth or all OS/device processing.",
+            sourceOfTruth: outputKnown ? "AVAudioSession.currentRoute / sampleRate" : "Not reported",
+            usedFields: outputKnown ? ["AVAudioSession.currentRoute", "AVAudioSession.sampleRate"] : [],
+            missingFields: ["final_output_bit_depth", "device_internal_processing"]
+        ))
+        whyNotBitPerfect.append("Final output bit depth and device/OS processing are not reported.")
+        missingFields.insert("final_output_bit_depth")
+        missingFields.insert("device_internal_processing")
+
+        let badge = badge(forSourceLossless: sourceIsLossless,
+                          appearsTranscoded: appearsTranscoded,
+                          hasLocalAttenuation: hasLocalAttenuation,
+                          orpheusProcessingAffectsPath: orpheusSteps.processingAffectsPath)
+        steps.append(AudioPathStep(
+            id: "verification",
+            icon: badge.label == "Bit-perfect" ? "checkmark.circle.fill" : "questionmark.circle",
+            title: "Verification",
+            subtitle: badge.label == "Bit-perfect" ? "Full path verified" : "Bit-perfect: cannot verify",
+            status: badge.status,
+            statusLabel: badge.label == "Bit-perfect" ? "Verified" : "Not claimed",
+            confidence: badge.label == "Bit-perfect" ? .verified : .unknown,
+            technicalValue: badge.label,
+            explanation: whyNotBitPerfect.isEmpty
+                ? "Every required source, processing, volume, transcode, and output field supports a direct path."
+                : whyNotBitPerfect.joined(separator: " "),
+            sourceOfTruth: "Derived from all available signal-path fields",
+            usedFields: usedFields,
+            missingFields: Array(missingFields).sorted()
+        ))
+
+        var diagnostics = SignalPathDiagnostics(
+            rawTrackFields: lmsQuality?.rawTrackFields ?? rawTrackFields(from: track),
+            rawStatusFields: lmsQuality?.rawStatusFields ?? [:],
+            usedFields: Array(Set((lmsQuality?.fieldsUsed ?? []) + usedFields)).sorted(),
+            missingFields: Array(Set((lmsQuality?.missingFields ?? []) + Array(missingFields))).sorted(),
+            notes: notes
+        )
+        if diagnostics.notes.isEmpty {
+            diagnostics.notes.append("Signal path is intentionally conservative: unknown/unreported fields stay unknown.")
+        }
+
+        return AudioSignalPath(steps: steps,
+                               badgeStatus: badge.status,
+                               badgeLabelOverride: badge.label,
+                               diagnostics: diagnostics,
+                               whyNotBitPerfect: Array(NSOrderedSet(array: whyNotBitPerfect).compactMap { $0 as? String }))
     }
 
-    private static func extractDeviceInfo(from outputFormat: String) -> (name: String, isLossless: Bool) {
-        // outputFormat looks like "Headphones (48000 Hz, 2ch)"
-        if let closeIdx = outputFormat.firstIndex(of: "(") {
-            let device = String(outputFormat[..<closeIdx]).trimmingCharacters(in: .whitespaces)
-            let isLossless = !device.lowercased().contains("bluetooth") &&
-                            !device.lowercased().contains("airplay")
-            return (device, isLossless)
+    private static func buildOrpheusSteps(_ state: OrpheusSignalPathState?) -> (steps: [AudioPathStep], processingAffectsPath: Bool, notes: [String]) {
+        guard let state else {
+            return ([AudioPathStep(
+                id: "orpheus",
+                icon: "slider.horizontal.3",
+                title: "Orpheus processing",
+                subtitle: "Orpheus state not available",
+                status: .unknown,
+                statusLabel: "Unknown",
+                confidence: .unknown,
+                explanation: "Hyperion could not read Orpheus DSP/EQ settings for this signal-path snapshot.",
+                sourceOfTruth: "Not reported",
+                missingFields: ["orpheus_state"]
+            )], false, [])
         }
-        return ("Unknown", false)
+
+        let presetSuffix = state.activePresetName.map { " — preset ‘\($0)’" } ?? ""
+        var notes: [String] = []
+        if !state.isPlaybackRoutedThroughOrpheus, state.hasAnyConfiguredProcessing {
+            notes.append("Orpheus has configured processing, but the current AVPlayer stream is not verified to pass through the Orpheus AVAudioEngine chain.")
+        }
+
+        if !state.hasAnyConfiguredProcessing {
+            return ([AudioPathStep(
+                id: "orpheus",
+                icon: "slider.horizontal.3",
+                title: "Orpheus processing",
+                subtitle: "No active Orpheus EQ/DSP settings reported\(presetSuffix)",
+                status: .lossless,
+                statusLabel: "Bypassed",
+                confidence: .configured,
+                explanation: "Orpheus settings do not report active EQ, crossfeed, headroom, leveling, balance, or SRC preferences. This only covers Hyperion’s Orpheus settings, not LMS or OS processing.",
+                sourceOfTruth: "OrpheusDSPEngine settings",
+                usedFields: ["orpheusSettings"]
+            )], false, notes)
+        }
+
+        let configuredItems = state.isPlaybackRoutedThroughOrpheus ? state.activeItems : state.configuredOnlyItems
+        let subtitle = state.isPlaybackRoutedThroughOrpheus
+            ? "\(configuredItems.count) active item(s) in verified Orpheus path\(presetSuffix)"
+            : "\(configuredItems.count) configured item(s), not verified in playback path\(presetSuffix)"
+        var steps = [AudioPathStep(
+            id: "orpheus-summary",
+            icon: "slider.horizontal.3",
+            title: "Orpheus processing",
+            subtitle: subtitle,
+            status: state.isPlaybackRoutedThroughOrpheus ? .enhanced : .unknown,
+            statusLabel: state.isPlaybackRoutedThroughOrpheus ? "Active" : "Configured only",
+            confidence: state.isPlaybackRoutedThroughOrpheus ? .verified : .configured,
+            explanation: state.isPlaybackRoutedThroughOrpheus
+                ? "These Orpheus DSP/EQ stages are active in the playback path."
+                : "These Orpheus settings are enabled/configured, but Hyperion’s current playback uses AVPlayer direct streaming and is not verified to pass through this AVAudioEngine chain.",
+            sourceOfTruth: "OrpheusDSPEngine settings + AudioPlayerManager routing flag",
+            usedFields: ["orpheusSettings", "isPlaybackRoutedThroughOrpheus"]
+        )]
+
+        for item in configuredItems {
+            steps.append(AudioPathStep(
+                id: "orpheus-\(item.id)",
+                icon: iconForOrpheusItem(item.title),
+                title: item.title,
+                subtitle: item.technicalValue,
+                status: state.isPlaybackRoutedThroughOrpheus ? .enhanced : .unknown,
+                statusLabel: state.isPlaybackRoutedThroughOrpheus ? "Active" : "Configured",
+                confidence: state.isPlaybackRoutedThroughOrpheus ? .verified : .configured,
+                technicalValue: item.technicalValue,
+                explanation: item.explanation,
+                sourceOfTruth: "OrpheusDSPEngine settings"
+            ))
+        }
+        return (steps, state.isPlaybackRoutedThroughOrpheus && !configuredItems.isEmpty, notes)
+    }
+
+    private static func badge(
+        forSourceLossless sourceIsLossless: Bool?,
+        appearsTranscoded: Bool,
+        hasLocalAttenuation: Bool,
+        orpheusProcessingAffectsPath: Bool
+    ) -> (label: String, status: QualityStatus) {
+        if sourceIsLossless == false { return ("Lossy source", .converted) }
+        if appearsTranscoded { return ("Transcoded?", .converted) }
+        if hasLocalAttenuation || orpheusProcessingAffectsPath { return ("Processed", .enhanced) }
+        if sourceIsLossless == true { return ("Direct?", .unknown) }
+        return ("Unknown", .unknown)
+    }
+
+    private static func firstNonEmpty(_ values: String?...) -> String {
+        for value in values {
+            let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !trimmed.isEmpty { return trimmed }
+        }
+        return ""
+    }
+
+    private static func positive(_ value: Int?) -> Int? {
+        guard let value, value > 0 else { return nil }
+        return value
+    }
+
+    private static func sourceTechnicalValue(codec: String?, sampleRate: Int?, sampleSize: Int?, bitrate: String, lossless: Bool?) -> String {
+        var parts: [String] = []
+        if let codec, !codec.isEmpty { parts.append(codec) }
+        if let sampleRate { parts.append(formatSampleRate(sampleRate)) }
+        if let sampleSize { parts.append("\(sampleSize)-bit") }
+        if !bitrate.isEmpty { parts.append(bitrate) }
+        if let lossless { parts.append(lossless ? "lossless source" : "lossy source") }
+        return parts.joined(separator: " / ")
+    }
+
+    static func formatSampleRate(_ hz: Int) -> String {
+        let khz = Double(hz) / 1000.0
+        if khz.truncatingRemainder(dividingBy: 1) == 0 {
+            return String(format: "%.0f kHz", khz)
+        }
+        return String(format: "%.1f kHz", khz)
+    }
+
+    private static func streamSummary(_ url: URL) -> String {
+        var path = url.path
+        if path.count > 72 { path = "…" + path.suffix(72) }
+        if url.query?.isEmpty == false { return "\(path)?…" }
+        return path
+    }
+
+    private static func iconForOrpheusItem(_ title: String) -> String {
+        let lower = title.lowercased()
+        if lower.contains("eq") { return "slider.horizontal.below.rectangle" }
+        if lower.contains("headroom") { return "gauge.with.dots.needle.67percent" }
+        if lower.contains("crossfeed") { return "ear" }
+        if lower.contains("level") { return "waveform" }
+        if lower.contains("balance") { return "speaker.wave.2" }
+        if lower.contains("sample") || lower.contains("src") { return "arrow.triangle.2.circlepath" }
+        return "slider.horizontal.3"
+    }
+
+    private static func rawTrackFields(from track: Track) -> [String: String] {
+        var out: [String: String] = [:]
+        if let audioType = track.audioType { out["type"] = audioType }
+        if let sampleRate = track.sampleRate { out["samplerate"] = String(sampleRate) }
+        if let sampleSize = track.sampleSize { out["samplesize"] = String(sampleSize) }
+        if let bitrate = track.bitrate { out["bitrate"] = bitrate }
+        if let lossless = track.lossless { out["lossless"] = String(lossless) }
+        if let replayGain = track.replayGain { out["replay_gain"] = String(replayGain) }
+        if let albumReplayGain = track.albumReplayGain { out["album_replay_gain"] = String(albumReplayGain) }
+        if let url = track.url { out["url"] = ServerLogStore.redactedURL(url) }
+        return out
     }
 
     private static func audioFormatFromURL(_ url: String) -> String {
         if let u = URL(string: url), !u.pathExtension.isEmpty {
             return u.pathExtension.uppercased()
         }
-        return "Unknown"
+        let ext = (url as NSString).pathExtension
+        return ext.isEmpty ? "Unknown" : ext.uppercased()
     }
 
     static let mockPath = AudioSignalPath(
         steps: [
             AudioPathStep(
-                icon: "network",
+                id: "mock-source",
+                icon: "opticaldisc",
                 title: "Source",
-                subtitle: "Lyrion Music Server",
-                status: .lossless
+                subtitle: "FLAC 44.1 kHz / 16-bit",
+                status: .lossless,
+                statusLabel: "Reported",
+                confidence: .reported,
+                explanation: "Example source metadata reported by LMS."
             ),
             AudioPathStep(
-                icon: "arrowtriangle.right.fill",
-                title: "Streaming",
-                subtitle: "Direct stream (flac)",
-                status: .lossless
-            ),
-            AudioPathStep(
-                icon: "waveform.circle",
-                title: "Bit Depth",
-                subtitle: "24-bit (no conversion)",
-                status: .lossless
-            ),
-            AudioPathStep(
-                icon: "waveform.circle",
-                title: "Sample Rate",
-                subtitle: "44.1 kHz (no conversion)",
-                status: .lossless
-            ),
-            AudioPathStep(
-                icon: "speaker.wave.2",
-                title: "Headroom",
-                subtitle: "6 dB available",
-                status: .enhanced
-            ),
-            AudioPathStep(
-                icon: "slider.horizontal.3",
-                title: "Volume",
-                subtitle: "No normalization",
-                status: .lossless
-            ),
-            AudioPathStep(
+                id: "mock-output",
                 icon: "headphones",
                 title: "Output",
-                subtitle: "Headphones (stereo)",
-                status: .lossless
+                subtitle: "Output format not reported by LMS",
+                status: .unknown,
+                statusLabel: "Unknown",
+                confidence: .unknown,
+                explanation: "Example intentionally leaves final output unknown."
             )
-        ]
+        ],
+        badgeStatus: .unknown,
+        badgeLabelOverride: "Direct?",
+        diagnostics: SignalPathDiagnostics(notes: ["Preview data; real playback uses LMS/track/player fields."]),
+        whyNotBitPerfect: ["Final output format is not reported in this preview."]
     )
 }

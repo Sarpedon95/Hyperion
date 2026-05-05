@@ -66,6 +66,7 @@ struct OrpheusSRCView: View {
             }
         }
         .scrollContentBackground(.hidden)
+        .bottomOverlayAwareScroll()
         .background(Color.roonBase.ignoresSafeArea())
         .navigationTitle("Sample Rate Conversion")
         .navigationBarTitleDisplayMode(.inline)

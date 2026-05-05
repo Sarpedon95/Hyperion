@@ -418,6 +418,7 @@ struct ManualLyricsSearchView: View {
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
+        .bottomOverlayAwareScroll()
         } else {
             Spacer()
         }

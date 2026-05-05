@@ -2,61 +2,45 @@ import SwiftUI
 import UIKit
 import AVKit
 
-// MARK: - LMS Audio Quality Info
+// MARK: - LMS / Lyrion Audio Metadata
 //
-// Populated by PlayerViewModel from the LMS `status` JSON fields:
-//   `samplerate`  – e.g. 44100, 48000, 96000, 192000
-//   `samplesize`  – e.g. 16, 24, 32
-//   `type`        – e.g. "flac", "alac", "mp3", "aac"
+// Populated by PlayerViewModel from LMS `songinfo` and, when useful for
+// diagnostics, `status`. The fields match documented LMS tag names:
+//   T=samplerate, I=samplesize, o=type, r=bitrate, Q=lossless,
+//   u=url, x=remote, X=album_replay_gain, Y=replay_gain.
 //
-// This struct drives the quality pill label and dot color, replacing the
-// old file-extension heuristic that missed remote/proxied streams.
+// These values describe what LMS reports about the track/status. They do not
+// by themselves prove the final output format, OS/device processing, or a
+// bit-perfect path.
 
 struct LMSAudioQuality {
-    let sampleRate: Int    // Hz
-    let sampleSize: Int    // bits
-    let type: String       // codec string from LMS
-
-    /// Maps LMS fields → quality tier following Roon's convention:
-    ///   Hi-Res   = lossless codec AND sample rate > 44100 Hz
-    ///   Lossless = lossless codec AND sample rate == 44100 Hz
-    ///   High Quality = anything else (lossy, or rate unknown)
-    var tier: Tier {
-        let isLossless = AudioFormats.losslessLowercase.contains(type.lowercased())
-        if isLossless && sampleRate > 44100 { return .hiRes }
-        if isLossless { return .lossless }
-        return .highQuality
-    }
-
-    enum Tier {
-        case hiRes, lossless, highQuality
-
-        var label: String {
-            switch self {
-            case .hiRes:       return "Hi-Res"
-            case .lossless:    return "Lossless"
-            case .highQuality: return "High Quality"
-            }
-        }
-
-        var dotColor: Color {
-            switch self {
-            case .hiRes:       return Color(hex: "#7b6cf6")
-            case .lossless:    return Color(red: 0.20, green: 0.85, blue: 0.40)
-            case .highQuality: return Color(red: 0.95, green: 0.75, blue: 0.20)
-            }
-        }
-    }
+    let sampleRate: Int        // Hz, 0 when not reported
+    let sampleSize: Int        // bits, 0 when not reported
+    let type: String           // codec/container string from LMS
+    let bitrate: String?
+    let lossless: Bool?
+    let url: String?
+    let remote: Bool?
+    let replayGain: Double?
+    let albumReplayGain: Double?
+    let playerName: String?
+    let playerMode: String?
+    let lmsVolume: Int?
+    let rawTrackFields: [String: String]
+    let rawStatusFields: [String: String]
+    let fieldsUsed: [String]
+    let missingFields: [String]
+    let statusMatchedCurrentTrack: Bool?
 
     var detailSubtitle: String {
-        let khz = sampleRate >= 1000
-            ? String(format: "%.1f kHz", Double(sampleRate) / 1000)
-            : "\(sampleRate) Hz"
-        let codec = type.uppercased()
-        if sampleSize > 0 {
-            return "\(codec) \(khz) / \(sampleSize)-bit"
-        }
-        return "\(codec) \(khz)"
+        var parts: [String] = []
+        let codec = type.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if !codec.isEmpty { parts.append(codec) }
+        if sampleRate > 0 { parts.append(AudioSignalPath.formatSampleRate(sampleRate)) }
+        if sampleSize > 0 { parts.append("\(sampleSize)-bit") }
+        if let bitrate, !bitrate.isEmpty { parts.append(bitrate) }
+        if let lossless { parts.append(lossless ? "lossless source" : "lossy source") }
+        return parts.isEmpty ? "LMS metadata not reported" : parts.joined(separator: " / ")
     }
 }
 
@@ -98,6 +82,8 @@ struct AudioFormat {
 
 struct NowPlayingView: View {
     @ObservedObject private var player = PlayerViewModel.shared
+    @ObservedObject private var likedTracks = LikedTracksStore.shared
+    @ObservedObject private var orpheus = OrpheusDSPEngine.shared
     @Environment(\.dismiss) private var dismiss
 
     @State private var isDraggingProgress: Bool = false
@@ -106,11 +92,11 @@ struct NowPlayingView: View {
     @State private var showSignalPath: Bool = false
     @State private var showQueuePanel: Bool = false
     @State private var showMoreActions: Bool = false
+    @State private var showAddToPlaylist: Bool = false
 
     @State private var dragOffset: CGFloat = 0
     @State private var isDraggingDown: Bool = false
 
-    @State private var isLiked: Bool = false
     @State private var isPillPulsing: Bool = false
 
     @State private var artworkDragOffset: CGFloat = 0
@@ -121,40 +107,23 @@ struct NowPlayingView: View {
     @State private var ooWorkDetail: OOWorkDetailResponse? = nil
     @State private var showLyrics: Bool = false
 
-    private var qualityPillInfo: (label: String, dotColor: Color, isLosslessOrBetter: Bool) {
-        if let lmsQ = player.lmsAudioQuality {
-            let tier = lmsQ.tier
-            return (tier.label, tier.dotColor, tier != .highQuality)
-        }
-
-        let srcFmt = player.sourceFormat.uppercased()
-        if !srcFmt.isEmpty && srcFmt != "UNKNOWN" {
-            let isLossless = AudioFormats.isLossless(srcFmt)
-            let color: Color = isLossless
-                ? Color(red: 0.20, green: 0.85, blue: 0.40)
-                : Color(red: 0.95, green: 0.75, blue: 0.20)
-            return (isLossless ? "Lossless" : "High Quality", color, isLossless)
-        }
-
-        if let fmt = player.currentTrack.flatMap({ AudioFormat.from(track: $0) }) {
-            let color = fmt.isLossless
-                ? Color(red: 0.20, green: 0.85, blue: 0.40)
-                : Color(red: 0.95, green: 0.75, blue: 0.20)
-            return (fmt.isLossless ? "Lossless" : "High Quality", color, fmt.isLossless)
-        }
-
-        return ("Signal", Color.roonTertiary, false)
+    private var qualityPillInfo: (label: String, dotColor: Color, shouldPulse: Bool) {
+        let path = signalPath
+        return (path.badgeLabel, path.worstStatus.tintColor, path.isVerifiedBitPerfect)
     }
 
     private var signalPath: AudioSignalPath {
         guard let track = player.currentTrack else { return .mockPath }
         return AudioSignalPath.fromPlaybackState(
-            track:        track,
-            sourceFormat: player.sourceFormat,
-            outputFormat: player.outputFormat,
-            isBitPerfect: player.isBitPerfect,
-            volume:       player.volume,
-            lmsQuality:   player.lmsAudioQuality
+            track:             track,
+            sourceFormat:      player.sourceFormat,
+            selectedStreamURL: player.currentStreamURL,
+            outputFormat:      player.outputFormat,
+            localVolume:       player.volume,
+            lmsQuality:        player.lmsAudioQuality,
+            orpheusState:      orpheus.signalPathState(
+                isPlaybackRoutedThroughOrpheus: AudioPlayerManager.shared.isDSPChainFedByPlayback
+            )
         )
     }
 
@@ -269,6 +238,15 @@ struct NowPlayingView: View {
                 Haptics.light()
                 showSignalPath = true
             }
+            if player.currentTrack != nil {
+                Button("Add to Playlist") {
+                    Haptics.light()
+                    showAddToPlaylist = true
+                }
+                Button(likedTracks.isLiked(player.currentTrack) ? "Unlike" : "Like") {
+                    if let track = player.currentTrack { likedTracks.toggle(track) }
+                }
+            }
             Button(player.isPlaying ? "Pause" : "Play") {
                 Haptics.medium()
                 player.togglePlayPause()
@@ -284,7 +262,6 @@ struct NowPlayingView: View {
             dragProgress = 0
             artworkDragOffset = 0
             artworkOpacity = 1.0
-            isLiked = false
             artworkSwipeTask?.cancel()
             artworkSwipeTask = nil
             artworkTransitioning = false
@@ -295,6 +272,12 @@ struct NowPlayingView: View {
         }
         .task(id: player.currentTrack?.id) {
             await fetchOOWorkDetail()
+        }
+        .sheet(isPresented: $showAddToPlaylist) {
+            if let track = player.currentTrack {
+                AddToPlaylistSheet(tracks: [track])
+                    .environment(\.hyperionBottomOverlayHeight, 0)
+            }
         }
     }
 
@@ -363,7 +346,7 @@ struct NowPlayingView: View {
                 QualityPillView(
                     label: qualityPillInfo.label,
                     dotColor: qualityPillInfo.dotColor,
-                    isAnimating: qualityPillInfo.isLosslessOrBetter,
+                    isAnimating: qualityPillInfo.shouldPulse,
                     isPillPulsing: isPillPulsing
                 )
             }
@@ -610,13 +593,15 @@ struct NowPlayingView: View {
             Spacer(minLength: 0)
 
             BottomToolbarButton(
-                systemName: isLiked ? "heart.fill" : "heart",
-                tint: isLiked ? .red : .white.opacity(0.36),
-                accessibilityLabel: isLiked ? "Unlike" : "Like"
+                systemName: likedTracks.isLiked(player.currentTrack) ? "heart.fill" : "heart",
+                tint: likedTracks.isLiked(player.currentTrack) ? .red : .white.opacity(0.36),
+                accessibilityLabel: likedTracks.isLiked(player.currentTrack) ? "Unlike" : "Like"
             ) {
                 Haptics.light()
-                withAnimation(.spring(response: 0.28, dampingFraction: 0.58)) {
-                    isLiked.toggle()
+                if let track = player.currentTrack {
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.58)) {
+                        likedTracks.toggle(track)
+                    }
                 }
             }
 

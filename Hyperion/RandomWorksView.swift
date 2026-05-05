@@ -112,6 +112,7 @@ struct RandomWorksView: View {
                 .padding(.bottom, 24)
             }
             .scrollContentBackground(.hidden)
+        .bottomOverlayAwareScroll()
         }
     }
 }

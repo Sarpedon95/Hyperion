@@ -127,6 +127,7 @@ struct HomeView: View {
                 }
             }
             .scrollContentBackground(.hidden)
+        .bottomOverlayAwareScroll()
             .background(Color.roonBase.ignoresSafeArea())
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(.hidden, for: .navigationBar)

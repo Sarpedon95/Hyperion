@@ -25,11 +25,13 @@ final class LyrionAPI {
         return URLSession(configuration: config)
     }()
 
-    // Tags for titles_loop:
-    //   A=trackartist C=composer G=genres S=albumartist X=replaygain
+    // Tags for titles_loop / songinfo:
+    //   A=trackartist C=composer G=genres S=albumartist
+    //   X=album_replay_gain Y=replay_gain
     //   c=compilation d=duration e=album_id i=disc l=album t=tracknum
-    //   u=url w=work y=year o=type
-    private let trackTags = "ACGSXcdeiltuwyo"
+    //   u=url w=work y=year o=type I=samplesize T=samplerate
+    //   r=bitrate Q=lossless x=remote
+    private let trackTags = "ACGSXYcdeiltuwyoITrQx"
 
     private var nextRPCID: Int = 0
 
@@ -707,44 +709,140 @@ final class LyrionAPI {
     func groupTracksByWork(_ tracks: [Track]) -> [WorkGroup] {
         guard !tracks.isEmpty else { return [] }
 
-        var groups: [WorkGroup]      = []
-        var currentKey: String?      = nil
-        var currentTitle: String?    = nil
-        var currentComposer: String? = nil
-        var currentTracks: [Track]   = []
+        let albumIDs = Set(tracks.compactMap(\.albumID))
+        let albumNames = Set(tracks.compactMap { $0.album?.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
+        let looksLikeSingleAlbum = albumIDs.count <= 1 && albumNames.count <= 1
 
-        func keyFor(_ track: Track) -> (key: String, title: String) {
-            if let work = track.work, !work.isEmpty {
-                return ("w:\(work)|c:\(track.composer ?? "")", work)
-            }
-            return ("a:\(track.album ?? "")", track.album ?? "Unknown")
+        // Album details should respect disc/track order. Playlists should keep
+        // user order unless a classical work group needs movement ordering.
+        let ordered = looksLikeSingleAlbum ? tracks.sorted { lhs, rhs in
+            let ld = lhs.discnum ?? 0, rd = rhs.discnum ?? 0
+            if ld != rd { return ld < rd }
+            return (lhs.tracknum ?? lhs.id) < (rhs.tracknum ?? rhs.id)
+        } : tracks
+
+        let hasNativeWorkTags = ordered.contains { ($0.work ?? "").isEmpty == false }
+        let classicalHint = ordered.contains { track in
+            track.isClassical == 1 ||
+            Self.looksLikeClassicalTitle(track.title) ||
+            Self.containsCatalogueNumber(track.title) ||
+            Self.containsCatalogueNumber(track.album ?? "")
         }
 
-        func flush() {
-            guard !currentTracks.isEmpty else { return }
-            let first = currentTracks[0]
-            groups.append(WorkGroup(
-                id:        first.id,
-                workTitle: currentTitle ?? first.album ?? "Unknown Work",
-                composer:  currentComposer,
-                tracks:    currentTracks,
+        // Non-classical fallback: one synthetic group lets playback/queue APIs
+        // continue to operate, while album/playlist UI renders it as a normal
+        // flat list without a fake work header.
+        if !hasNativeWorkTags && !classicalHint {
+            let first = ordered[0]
+            return [WorkGroup(
+                id:        first.albumID ?? first.id,
+                workTitle: looksLikeSingleAlbum ? (first.album ?? "Tracks") : "Tracks",
+                composer:  nil,
+                tracks:    ordered,
                 coverid:   first.coverid
-            ))
-            currentTracks = []
+            )]
         }
 
-        for track in tracks {
-            let (key, title) = keyFor(track)
-            if key != currentKey {
-                flush()
-                currentKey      = key
-                currentTitle    = title
-                currentComposer = track.composer
-            }
-            currentTracks.append(track)
+        struct PendingGroup {
+            let key: String
+            let title: String
+            let composer: String?
+            var tracks: [Track]
         }
-        flush()
+
+        func keyFor(_ track: Track) -> (key: String, title: String, composer: String?) {
+            if let work = track.work?.trimmingCharacters(in: .whitespacesAndNewlines), !work.isEmpty {
+                return ("native:\(SearchTextNormalizer.folded(work))|\(SearchTextNormalizer.folded(track.composer ?? ""))", work, track.composer)
+            }
+
+            if let inferred = Self.inferredWorkTitle(from: track, wholeAlbumLooksClassical: classicalHint) {
+                return ("inferred:\(SearchTextNormalizer.folded(inferred))|\(SearchTextNormalizer.folded(track.composer ?? ""))", inferred, track.composer)
+            }
+
+            return ("flat:\(track.albumID ?? 0)|\(track.album ?? "Tracks")", track.album ?? "Tracks", track.composer)
+        }
+
+        var groupOrder: [String] = []
+        var pending: [String: PendingGroup] = [:]
+
+        for track in ordered {
+            let grouped = keyFor(track)
+            if pending[grouped.key] == nil {
+                groupOrder.append(grouped.key)
+                pending[grouped.key] = PendingGroup(
+                    key: grouped.key,
+                    title: grouped.title,
+                    composer: grouped.composer,
+                    tracks: []
+                )
+            }
+            pending[grouped.key]?.tracks.append(track)
+        }
+
+        let groups = groupOrder.compactMap { key -> WorkGroup? in
+            guard let group = pending[key], let first = group.tracks.first else { return nil }
+            let shouldSortMovements = key.hasPrefix("native:") || key.hasPrefix("inferred:")
+            let groupTracks = shouldSortMovements ? group.tracks.sorted { lhs, rhs in
+                let ld = lhs.discnum ?? 0, rd = rhs.discnum ?? 0
+                if ld != rd { return ld < rd }
+                return (lhs.tracknum ?? lhs.id) < (rhs.tracknum ?? rhs.id)
+            } : group.tracks
+            return WorkGroup(
+                id:        first.id,
+                workTitle: group.title,
+                composer:  group.composer,
+                tracks:    groupTracks,
+                coverid:   first.coverid
+            )
+        }
+
+        // If inference only produced one whole-album bucket, keep it as a flat
+        // fallback rather than presenting a false work structure.
+        if !hasNativeWorkTags,
+           groups.count == 1,
+           SearchTextNormalizer.folded(groups[0].workTitle) == SearchTextNormalizer.folded(ordered[0].album ?? "") {
+            return groups
+        }
+
         return groups
+    }
+
+    nonisolated private static func inferredWorkTitle(from track: Track, wholeAlbumLooksClassical: Bool) -> String? {
+        guard wholeAlbumLooksClassical else { return nil }
+        let title = track.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { return nil }
+
+        for separator in [": ", " – ", " — ", " - "] {
+            if let range = title.range(of: separator) {
+                let prefix = String(title[..<range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+                let suffix = String(title[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+                if prefix.count >= 6,
+                   (containsCatalogueNumber(prefix) || looksLikeClassicalTitle(prefix) || looksLikeMovementTitle(suffix)) {
+                    return prefix
+                }
+            }
+        }
+
+        guard containsCatalogueNumber(title), looksLikeClassicalTitle(title) else { return nil }
+        return title
+    }
+
+    nonisolated private static func containsCatalogueNumber(_ value: String) -> Bool {
+        let folded = SearchTextNormalizer.folded(value)
+        let markers = ["bwv", "kv", "k.", "op.", "d.", "hob", "rv", "wab", "hwv"]
+        return markers.contains { folded.contains($0) }
+    }
+
+    nonisolated private static func looksLikeClassicalTitle(_ value: String) -> Bool {
+        let folded = SearchTextNormalizer.folded(value)
+        let terms = ["concerto", "symphony", "sonata", "suite", "quartet", "quintet", "trio", "mass", "requiem", "cantata", "prelude", "fugue", "partita", "nocturne", "etude", "overture"]
+        return terms.contains { folded.contains($0) }
+    }
+
+    nonisolated private static func looksLikeMovementTitle(_ value: String) -> Bool {
+        let folded = SearchTextNormalizer.folded(value)
+        let movementWords = ["i.", "ii.", "iii.", "iv.", "v.", "allegro", "adagio", "andante", "presto", "largo", "courante", "allemande", "sarabande", "gigue", "menuet", "finale"]
+        return movementWords.contains { folded.contains($0) }
     }
 
     // MARK: - Private parsing
@@ -819,7 +917,15 @@ final class LyrionAPI {
                 coverid:     JSON.string(dict["coverid"] ?? dict["artwork_track_id"]),
                 url:         dict["url"]          as? String,
                 genres:      dict["genres"]       as? String,
-                isClassical: JSON.int(dict["isClassical"])
+                isClassical: JSON.int(dict["isClassical"]),
+                audioType: Self.normalizeString(JSON.string(dict["type"])),
+                sampleRate: JSON.int(dict["samplerate"]),
+                sampleSize: JSON.int(dict["samplesize"]),
+                bitrate: Self.normalizeString(JSON.string(dict["bitrate"])),
+                lossless: JSON.bool(dict["lossless"]),
+                replayGain: JSON.double(dict["replay_gain"]),
+                albumReplayGain: JSON.double(dict["album_replay_gain"]),
+                isRemote: JSON.bool(dict["remote"])
             )
         }
     }
@@ -896,6 +1002,26 @@ private enum JSON {
         case let d as Double:   return String(Int(d))
         case let n as NSNumber: return n.stringValue
         default: return nil
+        }
+    }
+
+    static func bool(_ any: Any?) -> Bool? {
+        switch any {
+        case let b as Bool:
+            return b
+        case let i as Int:
+            return i != 0
+        case let d as Double:
+            return d != 0
+        case let n as NSNumber:
+            return n.boolValue
+        case let s as String:
+            let t = s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if ["1", "true", "yes", "lossless"].contains(t) { return true }
+            if ["0", "false", "no", "lossy"].contains(t) { return false }
+            return nil
+        default:
+            return nil
         }
     }
 }
