@@ -156,7 +156,7 @@ extension String {
                 if a[i-1] == b[j-1] {
                     curr = dp[j-1]
                 } else {
-                    curr = 1 + min(dp[j-1], dp[j], prev)
+                    curr = 1 + Swift.min(dp[j-1], dp[j], prev)
                 }
                 dp[j-1] = prev
                 prev = curr
@@ -168,7 +168,7 @@ extension String {
 
     /// Normalised similarity 0…1 (1 = identical).
     func similarity(_ other: String) -> Double {
-        let maxLen = max(self.count, other.count)
+        let maxLen = Swift.max(self.count, other.count)
         guard maxLen > 0 else { return 1 }
         return 1.0 - Double(levenshtein(other)) / Double(maxLen)
     }

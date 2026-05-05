@@ -171,8 +171,8 @@ struct EQFrequencyResponseView: View {
             .overlay(
                 ZStack {
                     ForEach(bands) { band in
-                        let x = freqToX(band.frequency, width: w)
-                        let y = gainToY(band.gain, height: h)
+                        let x = freqToX(band.frequency, width: Float(w))
+                        let y = gainToY(band.gain, height: Float(h))
                         Circle()
                             .fill(selectedBandID == band.id ? Color.roonAccent : Color.white)
                             .frame(width: 14, height: 14)
