@@ -8,6 +8,8 @@ struct HomeView: View {
     @State private var showingSettings: Bool = false
     @State private var recommendedComposers: [OOComposer] = []
     @State private var isLoadingClassical: Bool = false
+    @State private var popularWorks: [OORandomWork] = []
+    @State private var isLoadingHighlights: Bool = false
 
     var body: some View {
         NavigationStack {
@@ -93,7 +95,10 @@ struct HomeView: View {
                         .padding(.bottom, 32)
                     }
 
-                    // MARK: Classical
+                    // MARK: Classical Highlights
+                    classicalHighlightsSection
+
+                    // MARK: Classical Composers
                     classicalSection
 
                     // MARK: Artists
@@ -140,8 +145,39 @@ struct HomeView: View {
                 async let recentAdded: Void  = library.loadRecentAlbums()
                 async let recentPlayed: Void = library.loadRecentlyPlayed()
                 async let artistsLoad: Void  = library.loadArtists()
-                async let classicalLoad: Void = loadClassicalComposers()
-                _ = await (totals, recentAdded, recentPlayed, artistsLoad, classicalLoad)
+                async let classicalLoad: Void    = loadClassicalComposers()
+                async let highlightsLoad: Void   = loadClassicalHighlights()
+                _ = await (totals, recentAdded, recentPlayed, artistsLoad, classicalLoad, highlightsLoad)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var classicalHighlightsSection: some View {
+        if !popularWorks.isEmpty || isLoadingHighlights {
+            HomeSectionHeader(label: "CLASSICAL MUSIC", title: "Popular Works")
+                .padding(.horizontal, 16)
+                .padding(.bottom, 14)
+
+            if isLoadingHighlights && popularWorks.isEmpty {
+                ProgressView()
+                    .tint(.roonAccent)
+                    .padding(.bottom, 32)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(spacing: 14) {
+                        ForEach(popularWorks.prefix(10)) { item in
+                            NavigationLink {
+                                OOWorkDetailView(work: item.work, composer: item.composer)
+                            } label: {
+                                PopularWorkCard(item: item)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                }
+                .padding(.bottom, 32)
             }
         }
     }
@@ -149,7 +185,7 @@ struct HomeView: View {
     @ViewBuilder
     private var classicalSection: some View {
         if !recommendedComposers.isEmpty || isLoadingClassical {
-            HomeSectionHeader(label: "CLASSICAL MUSIC", title: "Featured Composers")
+            HomeSectionHeader(label: "CLASSICAL MUSIC", title: "Essential Composers")
                 .padding(.horizontal, 16)
                 .padding(.bottom, 14)
 
@@ -197,8 +233,18 @@ struct HomeView: View {
     private func loadClassicalComposers() async {
         guard recommendedComposers.isEmpty else { return }
         isLoadingClassical = true
-        recommendedComposers = (try? await OpenOpusService.shared.recommendedComposers()) ?? []
+        recommendedComposers = (try? await OpenOpusService.shared.essentialComposers()) ?? []
+        if recommendedComposers.isEmpty {
+            recommendedComposers = (try? await OpenOpusService.shared.recommendedComposers()) ?? []
+        }
         isLoadingClassical = false
+    }
+
+    private func loadClassicalHighlights() async {
+        guard popularWorks.isEmpty else { return }
+        isLoadingHighlights = true
+        popularWorks = (try? await OpenOpusService.shared.randomWorks(popularWork: true)) ?? []
+        isLoadingHighlights = false
     }
 
     @ViewBuilder
@@ -229,6 +275,62 @@ struct HomeView: View {
         }
     }
 
+}
+
+struct PopularWorkCard: View {
+    let item: OORandomWork
+    private let cardWidth: CGFloat = 160
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ZStack {
+                Color.roonElevated
+                AsyncImage(url: composerPortraitURL) { phase in
+                    if case .success(let img) = phase {
+                        img.resizable().aspectRatio(contentMode: .fill)
+                    }
+                }
+                .frame(width: cardWidth, height: cardWidth)
+                .clipped()
+
+                // Genre badge overlay
+                if let genre = item.work.genre, !genre.isEmpty {
+                    Text(genre)
+                        .font(.roonBody(10, weight: .semibold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.black.opacity(0.55))
+                        .clipShape(Capsule())
+                        .padding(8)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                }
+            }
+            .frame(width: cardWidth, height: cardWidth)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .shadow(color: .black.opacity(0.4), radius: 6, y: 3)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.work.title)
+                    .font(.roonBody(13, weight: .semibold))
+                    .foregroundColor(.roonPrimary)
+                    .lineLimit(2)
+                    .frame(width: cardWidth, alignment: .leading)
+                Text(item.composer.name)
+                    .font(.roonBody(12))
+                    .foregroundColor(.roonSecondary)
+                    .lineLimit(1)
+                    .frame(width: cardWidth, alignment: .leading)
+            }
+            .padding(.top, 8)
+        }
+        .contentShape(Rectangle())
+    }
+
+    private var composerPortraitURL: URL? {
+        guard let p = item.composer.portrait, !p.isEmpty else { return nil }
+        return URL(string: p)
+    }
 }
 
 struct RecentlyPlayedEmptyCard: View {

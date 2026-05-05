@@ -49,6 +49,13 @@ struct LibraryView: View {
                             LibraryMenuRow(icon: "music.quarternote.3",      label: "Works")
                         }
                         .buttonStyle(.plain)
+
+                        Color.roonBorder.frame(height: 0.5).padding(.leading, 66)
+
+                        NavigationLink(destination: ClassicalBrowserView()) {
+                            LibraryMenuRow(icon: "music.note.tv",             label: "Classical")
+                        }
+                        .buttonStyle(.plain)
                     }
                     .background(Color.roonSurface)
                     .clipShape(RoundedRectangle(cornerRadius: 14))

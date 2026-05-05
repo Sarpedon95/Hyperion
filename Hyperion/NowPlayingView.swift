@@ -118,6 +118,8 @@ struct NowPlayingView: View {
     @State private var artworkTransitioning: Bool = false
     @State private var artworkSwipeTask: Task<Void, Never>? = nil
 
+    @State private var ooWorkDetail: OOWorkDetailResponse? = nil
+
     private var qualityPillInfo: (label: String, dotColor: Color, isLosslessOrBetter: Bool) {
         if let lmsQ = player.lmsAudioQuality {
             let tier = lmsQ.tier
@@ -206,6 +208,14 @@ struct NowPlayingView: View {
                                 .padding(.top, 16)
                                 .padding(.bottom, 16)
 
+                            if let detail = ooWorkDetail {
+                                openOpusInfoBlock(detail: detail)
+                                    .padding(.horizontal, 8)
+                                    .padding(.bottom, 12)
+                                    .transition(.opacity.combined(with: .move(edge: .top)))
+                                    .animation(.easeInOut(duration: 0.25), value: ooWorkDetail != nil)
+                            }
+
                             progressSection
                                 .padding(.bottom, 20)
 
@@ -269,9 +279,13 @@ struct NowPlayingView: View {
             artworkSwipeTask?.cancel()
             artworkSwipeTask = nil
             artworkTransitioning = false
+            ooWorkDetail = nil
         }
         .onDisappear {
             artworkSwipeTask?.cancel()
+        }
+        .task(id: player.currentTrack?.id) {
+            await fetchOOWorkDetail()
         }
     }
 
@@ -710,6 +724,68 @@ struct NowPlayingView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         }
         .ignoresSafeArea()
+    }
+
+    // MARK: - OpenOpus work info
+
+    @ViewBuilder
+    private func openOpusInfoBlock(detail: OOWorkDetailResponse) -> some View {
+        if let work = detail.work {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 5) {
+                    Image(systemName: "music.quarternote.3")
+                        .font(.system(size: 10))
+                        .foregroundColor(.white.opacity(0.36))
+                    Text("OPEN OPUS")
+                        .font(.roonBody(10, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.36))
+                        .kerning(1.2)
+                }
+
+                Text(work.title)
+                    .font(.roonBody(13))
+                    .foregroundColor(.white.opacity(0.64))
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                HStack(spacing: 6) {
+                    if let genre = work.genre, !genre.isEmpty {
+                        Text(genre)
+                            .font(.roonBody(10, weight: .medium))
+                            .foregroundColor(.roonAccent)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(Color.roonAccent.opacity(0.14))
+                            .clipShape(Capsule())
+                    }
+                    if let performers = detail.performers, !performers.isEmpty {
+                        let names = performers.prefix(2).map(\.name).joined(separator: " · ")
+                        Text(names)
+                            .font(.roonBody(10))
+                            .foregroundColor(.white.opacity(0.44))
+                            .lineLimit(1)
+                    }
+                }
+            }
+            .padding(12)
+            .background(Color.white.opacity(0.06))
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+    }
+
+    private func fetchOOWorkDetail() async {
+        ooWorkDetail = nil
+        guard let track = player.currentTrack else { return }
+        let title: String
+        if let w = track.work, !w.isEmpty { title = w }
+        else if let a = track.album, !a.isEmpty { title = a }
+        else { title = track.title }
+        let composer = track.composer ?? track.albumartist ?? ""
+        guard !composer.isEmpty else { return }
+        guard let result = await LMSLibraryLinker.shared.guessWork(title: title,
+                                                                    composerName: composer),
+              let workID = result.work?.id else { return }
+        ooWorkDetail = try? await OpenOpusService.shared.workDetail(workID)
     }
 
     // MARK: - Helpers
