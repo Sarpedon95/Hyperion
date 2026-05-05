@@ -53,12 +53,20 @@ final class LikedTracksStore: ObservableObject {
         }
     }
 
+    func saveNow() {
+        saveTask?.cancel()
+        saveTask = nil
+        if let data = try? JSONEncoder().encode(likedTracks) {
+            UserDefaults.standard.set(data, forKey: defaultsKey)
+        }
+    }
+
     private func scheduleSave() {
         saveTask?.cancel()
         let snapshot = likedTracks
         let key = defaultsKey
         saveTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 180_000_000)
+            try? await Task.sleep(nanoseconds: 500_000_000)
             guard !Task.isCancelled else { return }
             if let data = try? JSONEncoder().encode(snapshot) {
                 UserDefaults.standard.set(data, forKey: key)

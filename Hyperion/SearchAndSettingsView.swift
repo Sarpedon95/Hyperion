@@ -62,9 +62,9 @@ final class SearchViewModel: ObservableObject {
         searchTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 150_000_000)
             guard !Task.isCancelled, let self, self.searchSequence == sequence else { return }
-            RecentSearchStore.shared.add(trimmed)
             let r = await library.search(query: trimmed)
             guard !Task.isCancelled, self.searchSequence == sequence else { return }
+            RecentSearchStore.shared.add(trimmed)
             self.results = r
             self.isSearching = false
         }

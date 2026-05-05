@@ -28,7 +28,10 @@ struct HyperionApp: App {
                     switch newPhase {
                     case .active: phaseName = "active"
                     case .inactive: phaseName = "inactive"
-                    case .background: phaseName = "background"
+                    case .background:
+                        phaseName = "background"
+                        PlaylistStore.shared.saveNow()
+                        LikedTracksStore.shared.saveNow()
                     @unknown default: phaseName = "unknown"
                     }
                     player.handleScenePhaseChange(phaseName)

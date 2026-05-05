@@ -282,6 +282,7 @@ private struct PerformersTab: View {
             guard !Task.isCancelled else { return }
             isSearching = true
             let all = (try? await OpenOpusService.shared.omnisearch(text)) ?? []
+            guard !Task.isCancelled else { isSearching = false; return }
             results = all.filter { $0.type == "performer" }
             isSearching = false
         }
@@ -439,6 +440,7 @@ private struct ClassicalSearchTab: View {
             guard !Task.isCancelled else { return }
             isSearching = true
             let newResults = (try? await OpenOpusService.shared.omnisearch(text, offset: offset)) ?? []
+            guard !Task.isCancelled else { isSearching = false; return }
             if offset == 0 {
                 results = newResults
             } else {

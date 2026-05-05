@@ -179,14 +179,10 @@ struct PlaylistDetailView: View {
     @State private var showRenameAlert = false
     @State private var showDeleteConfirm = false
     @State private var renameText = ""
+    @State private var grouped: [WorkGroup] = []
     @Environment(\.editMode) private var editMode
 
     private var playlist: LocalPlaylist? { store.playlist(id: playlistID) }
-
-    private var grouped: [WorkGroup] {
-        guard let playlist else { return [] }
-        return LyrionAPI.shared.groupTracksByWork(playlist.tracks)
-    }
 
     var body: some View {
         Group {
@@ -309,6 +305,9 @@ struct PlaylistDetailView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(Color.roonBase)
             }
+        }
+        .task(id: playlist?.updatedAt) {
+            grouped = playlist.map { LyrionAPI.shared.groupTracksByWork($0.tracks) } ?? []
         }
     }
 
