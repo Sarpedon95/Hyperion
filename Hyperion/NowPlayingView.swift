@@ -181,7 +181,6 @@ struct NowPlayingView: View {
             GeometryReader { geo in
                 let safeTop = geo.safeAreaInsets.top
                 let safeBottom = geo.safeAreaInsets.bottom
-                let contentWidth = max(geo.size.width - 32, 280)
                 let usableHeight = max(geo.size.height - safeTop - safeBottom, 480)
                 let artworkSide = geo.size.width  // ARC: full-width artwork
 

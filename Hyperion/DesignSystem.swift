@@ -61,9 +61,9 @@ extension Font {
         .system(size: size, weight: weight, design: .default)
     }
 
-    /// Monospaced font — time displays and track numbers.
-    static func roonMono(_ size: CGFloat) -> Font {
-        .system(size: size, weight: .regular, design: .monospaced)
+    /// Monospaced font — time displays, track numbers, and compact controls.
+    static func roonMono(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        .system(size: size, weight: weight, design: .monospaced)
     }
 }
 
