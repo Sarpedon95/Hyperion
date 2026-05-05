@@ -1,6 +1,42 @@
 import SwiftUI
 import UIKit
 
+// MARK: - Recent search persistence
+
+@MainActor
+final class RecentSearchStore: ObservableObject {
+    static let shared = RecentSearchStore()
+
+    private let key      = "recentSearches_v1"
+    private let maxCount = 10
+
+    @Published private(set) var searches: [String] = []
+
+    private init() {
+        searches = UserDefaults.standard.stringArray(forKey: key) ?? []
+    }
+
+    func add(_ query: String) {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        var updated = searches.filter { $0 != trimmed }
+        updated.insert(trimmed, at: 0)
+        if updated.count > maxCount { updated = Array(updated.prefix(maxCount)) }
+        searches = updated
+        UserDefaults.standard.set(updated, forKey: key)
+    }
+
+    func remove(_ query: String) {
+        searches.removeAll { $0 == query }
+        UserDefaults.standard.set(searches, forKey: key)
+    }
+
+    func clear() {
+        searches = []
+        UserDefaults.standard.removeObject(forKey: key)
+    }
+}
+
 // MARK: - Search view model (persists across navigation pushes)
 
 @MainActor
@@ -26,6 +62,7 @@ final class SearchViewModel: ObservableObject {
         searchTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 150_000_000)
             guard !Task.isCancelled, let self, self.searchSequence == sequence else { return }
+            RecentSearchStore.shared.add(trimmed)
             let r = await library.search(query: trimmed)
             guard !Task.isCancelled, self.searchSequence == sequence else { return }
             self.results = r
@@ -63,7 +100,7 @@ struct SearchView: View {
 
                 Group {
                     if vm.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        SearchSuggestionsView()
+                        SearchSuggestionsView(searchText: $vm.searchText)
                     } else if vm.isSearching {
                         ProgressView()
                             .tint(.roonAccent)
@@ -139,7 +176,9 @@ private func composerLastName(_ name: String) -> String { NameFormatting.lastNam
 
 struct SearchSuggestionsView: View {
 
-    @ObservedObject private var library = LibraryViewModel.shared
+    @Binding var searchText: String
+    @ObservedObject private var library       = LibraryViewModel.shared
+    @ObservedObject private var recentSearches = RecentSearchStore.shared
 
     private let pinnedNames = [
         "Bach", "Beethoven", "Brahms", "Mozart", "Schubert",
@@ -147,19 +186,30 @@ struct SearchSuggestionsView: View {
         "Handel", "Vivaldi", "Haydn", "Chopin", "Liszt"
     ]
 
-    // PERF: The original `pinnedComposers` and `allComposers` were computed
-    // properties — O(n × pinnedNames.count) string-folding comparisons executed
-    // on EVERY SwiftUI render pass. With a large library any published-property
-    // change (isLoadingComposers, etc.) would re-run the full scan.
-    //
-    // These @State caches are rebuilt only when library.composers changes (a
-    // true list update), which is at most once per app launch / refresh.
+    // PERF: rebuilt only when library.composers changes, not on every render.
     @State private var cachedPinnedComposers: [Composer] = []
     @State private var cachedOtherComposers:  [Composer] = []
 
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 28) {
+
+                // MARK: Recent searches
+                if !recentSearches.searches.isEmpty {
+                    RecentSearchesSection(
+                        searches: recentSearches.searches,
+                        onSelect: { query in searchText = query },
+                        onClear:  { recentSearches.clear() },
+                        onRemove: { recentSearches.remove($0) }
+                    )
+                }
+
+                // MARK: Genres
+                if !library.genres.isEmpty {
+                    GenresSection(genres: library.genres)
+                }
+
+                // MARK: Popular composers
                 if !cachedPinnedComposers.isEmpty {
                     VStack(alignment: .leading, spacing: 14) {
                         Text("Popular Composers")
@@ -183,6 +233,7 @@ struct SearchSuggestionsView: View {
                     }
                 }
 
+                // MARK: All composers
                 if !cachedOtherComposers.isEmpty {
                     VStack(alignment: .leading, spacing: 12) {
                         HStack {
@@ -214,10 +265,10 @@ struct SearchSuggestionsView: View {
                     }
                 }
 
-                if library.isLoadingComposers {
+                if library.isLoadingComposers || library.isLoadingGenres {
                     HStack { Spacer(); ProgressView().tint(.roonAccent); Spacer() }
                 }
-                Spacer(minLength: 40)
+                Spacer(minLength: 80)
             }
             .padding(.top, 4)
         }
@@ -229,6 +280,9 @@ struct SearchSuggestionsView: View {
         .onChange(of: library.composers) { _, composers in
             rebuildCaches(composers)
         }
+        .task {
+            if library.genres.isEmpty { await library.loadGenres() }
+        }
     }
 
     private func rebuildCaches(_ composers: [Composer]) {
@@ -238,6 +292,131 @@ struct SearchSuggestionsView: View {
         let pinnedIDs = Set(pinned.map(\.id))
         cachedPinnedComposers = pinned
         cachedOtherComposers  = Array(composers.filter { !pinnedIDs.contains($0.id) }.prefix(80))
+    }
+}
+
+// MARK: - Recent searches section
+
+private struct RecentSearchesSection: View {
+    let searches: [String]
+    let onSelect: (String) -> Void
+    let onClear:  () -> Void
+    let onRemove: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("Recent")
+                    .font(.roonTitle(22))
+                    .foregroundColor(.roonPrimary)
+                Spacer()
+                Button("Clear", action: onClear)
+                    .font(.roonBody(14, weight: .semibold))
+                    .foregroundColor(.roonAccent)
+            }
+            .padding(.horizontal, 20)
+
+            VStack(spacing: 0) {
+                ForEach(Array(searches.enumerated()), id: \.element) { index, query in
+                    HStack(spacing: 12) {
+                        Image(systemName: "clock")
+                            .font(.system(size: 14))
+                            .foregroundColor(.roonTertiary)
+                            .frame(width: 20)
+                        Text(query)
+                            .font(.roonBody(15))
+                            .foregroundColor(.roonPrimary)
+                            .lineLimit(1)
+                        Spacer()
+                        Button {
+                            onRemove(query)
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundColor(.roonTertiary)
+                                .frame(width: 28, height: 28)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                    .contentShape(Rectangle())
+                    .onTapGesture { onSelect(query) }
+
+                    if index < searches.count - 1 {
+                        Color.roonBorder.frame(height: 0.5).padding(.leading, 46)
+                    }
+                }
+            }
+            .background(Color.roonSurface)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .padding(.horizontal, 16)
+        }
+    }
+}
+
+// MARK: - Genres section
+
+private struct GenresSection: View {
+    let genres: [Genre]
+
+    private let columns = [
+        GridItem(.flexible(), spacing: 10),
+        GridItem(.flexible(), spacing: 10),
+        GridItem(.flexible(), spacing: 10)
+    ]
+
+    private static let palette: [Color] = [
+        .roonAccent, .orange, Color(red: 0.55, green: 0.35, blue: 0.9),
+        Color(red: 0.9, green: 0.35, blue: 0.55), .mint, .cyan,
+        Color(red: 0.85, green: 0.75, blue: 0.2), Color(red: 0.3, green: 0.75, blue: 0.4)
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Genres")
+                .font(.roonTitle(22))
+                .foregroundColor(.roonPrimary)
+                .padding(.horizontal, 20)
+
+            LazyVGrid(columns: columns, spacing: 10) {
+                ForEach(genres.prefix(30)) { genre in
+                    NavigationLink {
+                        GenreAlbumListView(genre: genre)
+                    } label: {
+                        GenreCard(genre: genre, palette: Self.palette)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 16)
+        }
+    }
+}
+
+struct GenreCard: View {
+    let genre: Genre
+    let palette: [Color]
+
+    private var color: Color {
+        palette[abs(genre.name.hashValue) % palette.count]
+    }
+
+    var body: some View {
+        Text(genre.name)
+            .font(.roonBody(12, weight: .semibold))
+            .foregroundColor(.white)
+            .lineLimit(2)
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, minHeight: 56)
+            .background(color.opacity(0.22))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(color.opacity(0.45), lineWidth: 1)
+            )
     }
 }
 
@@ -371,7 +550,7 @@ struct SearchResultsView: View {
                     .padding(.horizontal, 16)
                 }
 
-                Spacer(minLength: 40)
+                Spacer(minLength: 80)
             }
             .padding(.top, 4)
         }

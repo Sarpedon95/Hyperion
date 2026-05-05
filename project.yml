@@ -35,6 +35,7 @@ targets:
           NSAllowsArbitraryLoads: true
           NSAllowsLocalNetworking: true
         NSLocalNetworkUsageDescription: Hyperion needs local network access to connect to your Lyrion Music Server.
+        NSBluetoothAlwaysUsageDescription: Hyperion uses Bluetooth to detect connected headphones and automatically load matching EQ presets.
         UIBackgroundModes:
           - audio
         UIApplicationSceneManifest:

@@ -422,6 +422,7 @@ struct CenteredArtworkHeader: View {
     let coverid: String?
     let title: String
     let subtitle: String?
+    var year: Int? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -456,6 +457,13 @@ struct CenteredArtworkHeader: View {
                     .multilineTextAlignment(.center)
                     .lineLimit(2)
                     .padding(.horizontal, 20)
+                    .padding(.bottom, year != nil ? 2 : 6)
+            }
+
+            if let year, year > 0 {
+                Text("\(year)")
+                    .font(.roonBody(13))
+                    .foregroundColor(.roonTertiary)
                     .padding(.bottom, 6)
             }
         }
@@ -496,6 +504,7 @@ struct MovementRowView: View {
     let track: Track
     let index: Int
     let isActive: Bool
+    var showPerformer: Bool = false
     let onTap: () -> Void
 
     var body: some View {
@@ -503,8 +512,6 @@ struct MovementRowView: View {
             HStack(spacing: 14) {
                 Group {
                     if isActive {
-                        // POLISH: symbolEffect makes the waveform animate while playing,
-                        // matching the indicator style used in QueueView and NowPlayingView.
                         if #available(iOS 17.0, *) {
                             Image(systemName: "waveform")
                                 .symbolEffect(.variableColor.iterative, isActive: true)
@@ -524,12 +531,18 @@ struct MovementRowView: View {
                 .frame(width: 24, alignment: .center)
                 .padding(.leading, 16)
 
-                VStack(alignment: .leading, spacing: 3) {
+                VStack(alignment: .leading, spacing: 2) {
                     Text(track.title)
                         .font(.roonBody(15, weight: isActive ? .semibold : .regular))
                         .foregroundColor(isActive ? .roonAccent : .roonPrimary)
                         .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
+                    if showPerformer, let performer = track.trackartist ?? track.albumartist, !performer.isEmpty {
+                        Text(performer)
+                            .font(.roonBody(12))
+                            .foregroundColor(.roonSecondary)
+                            .lineLimit(1)
+                    }
                 }
 
                 Spacer()
@@ -764,7 +777,7 @@ struct AlbumListRow: View {
     }
 }
 
-// MARK: - Album detail (with Tracks / Info tabs)
+// MARK: - Album detail (with Tracks / Info / Credits tabs)
 
 struct AlbumDetailView: View {
 
@@ -778,26 +791,28 @@ struct AlbumDetailView: View {
     @State private var selectedTab: AlbumTab   = .tracks
 
     enum AlbumTab: String, CaseIterable {
-        case tracks = "TRACKS"
-        case info   = "INFO"
+        case tracks  = "TRACKS"
+        case info    = "INFO"
+        case credits = "CREDITS"
     }
 
     var body: some View {
         ScrollView {
             VStack(spacing: 0) {
-                // Header: artwork + title + artist
+                // Header: artwork + title + artist + year
                 CenteredArtworkHeader(
                     coverid:  album.artwork_track_id,
                     title:    album.album,
-                    subtitle: album.artist ?? album.composer
+                    subtitle: album.artist ?? album.composer,
+                    year:     album.year
                 )
 
-                // Play / Add buttons
+                // Play Now / Add buttons
                 albumPlaybackButtons
                     .padding(.horizontal, 20)
                     .padding(.vertical, 20)
 
-                // MARK: Tab bar (Tracks / Info)
+                // MARK: Tab bar (Tracks / Info / Credits)
                 AlbumTabBar(selected: $selectedTab)
                     .padding(.horizontal, 20)
                     .padding(.bottom, 16)
@@ -808,9 +823,10 @@ struct AlbumDetailView: View {
                 switch selectedTab {
                 case .tracks:
                     tracksContent
-
                 case .info:
                     AlbumInfoPanel(album: album, workGroups: workGroups)
+                case .credits:
+                    creditsContent
                 }
             }
         }
@@ -853,9 +869,69 @@ struct AlbumDetailView: View {
                 .frame(maxWidth: .infinity)
         } else {
             ForEach(workGroups) { group in
-                WorkGroupSectionView(group: group)
+                WorkGroupSectionView(group: group, showPerformer: true)
+            }
+            Spacer(minLength: 80)
+        }
+    }
+
+    @ViewBuilder
+    private var creditsContent: some View {
+        let performers = uniquePerformers(from: workGroups)
+        if isLoading {
+            ProgressView().tint(.roonAccent).padding(40)
+        } else if performers.isEmpty {
+            Text("No performer credits available.")
+                .font(.roonBody(14))
+                .foregroundColor(.roonSecondary)
+                .multilineTextAlignment(.center)
+                .padding(32)
+                .frame(maxWidth: .infinity)
+        } else {
+            VStack(spacing: 0) {
+                ForEach(Array(performers.enumerated()), id: \.element) { index, performer in
+                    HStack(spacing: 14) {
+                        ZStack {
+                            Circle()
+                                .fill(Color.roonElevated)
+                                .frame(width: 38, height: 38)
+                            Text(NameFormatting.initials(performer))
+                                .font(.roonTitle(12))
+                                .foregroundColor(.roonAccent)
+                        }
+                        Text(performer)
+                            .font(.roonBody(15, weight: .medium))
+                            .foregroundColor(.roonPrimary)
+                            .lineLimit(1)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+
+                    if index < performers.count - 1 {
+                        Color.roonBorder.frame(height: 0.5).padding(.leading, 68)
+                    }
+                }
+            }
+            .background(Color.roonSurface)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .padding(.horizontal, 16)
+            .padding(.vertical, 16)
+            Spacer(minLength: 80)
+        }
+    }
+
+    private func uniquePerformers(from workGroups: [WorkGroup]) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for group in workGroups {
+            for track in group.tracks {
+                if let artist = track.trackartist ?? track.albumartist, !artist.isEmpty {
+                    if seen.insert(artist).inserted { result.append(artist) }
+                }
             }
         }
+        return result.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
 
     private var albumPlaybackButtons: some View {
@@ -868,7 +944,7 @@ struct AlbumDetailView: View {
                 HStack(spacing: 8) {
                     Image(systemName: "play.fill")
                         .font(.system(size: 15, weight: .semibold))
-                    Text("Play")
+                    Text("Play Now")
                         .font(.roonBody(16, weight: .semibold))
                 }
                 .foregroundColor(.white)
@@ -1011,7 +1087,7 @@ struct AlbumInfoPanel: View {
                 }
             }
 
-            Spacer(minLength: 32)
+            Spacer(minLength: 80)
         }
     }
 
@@ -1068,6 +1144,7 @@ private struct AlbumInfoRow: View {
 
 struct WorkGroupSectionView: View {
     let group: WorkGroup
+    var showPerformer: Bool = false
     @ObservedObject private var player = PlayerViewModel.shared
 
     var body: some View {
@@ -1104,9 +1181,10 @@ struct WorkGroupSectionView: View {
             // Tracks
             ForEach(Array(group.tracks.enumerated()), id: \.element.id) { index, track in
                 MovementRowView(
-                    track:    track,
-                    index:    index,
-                    isActive: player.currentTrack?.id == track.id
+                    track:        track,
+                    index:        index,
+                    isActive:     player.currentTrack?.id == track.id,
+                    showPerformer: showPerformer
                 ) {
                     Haptics.light()
                     player.playWork(group, startingAt: index)
@@ -1339,6 +1417,57 @@ struct ArtistDetailView: View {
             isLoading = true
             defer { isLoading = false }
             albums = (try? await LyrionAPI.shared.getAlbumsForArtist(artistID: artist.id)) ?? []
+            albums.sort { $0.album.localizedCaseInsensitiveCompare($1.album) == .orderedAscending }
+        }
+    }
+}
+
+// MARK: - Genre album list
+
+struct GenreAlbumListView: View {
+
+    let genre: Genre
+    @State private var albums: [Album] = []
+    @State private var isLoading: Bool = true
+
+    var body: some View {
+        List {
+            ForEach(albums) { album in
+                NavigationLink {
+                    AlbumDetailView(album: album)
+                } label: {
+                    AlbumListRow(album: album)
+                }
+                .listRowBackground(Color.clear)
+                .listRowSeparatorTint(Color.roonBorder)
+            }
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .background(Color.roonBase)
+        .navigationTitle(genre.name)
+        .navigationBarTitleDisplayMode(.large)
+        .toolbarBackground(Color.roonBase, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
+        .toolbarColorScheme(.dark, for: .navigationBar)
+        .overlay {
+            if isLoading {
+                ProgressView().tint(.roonAccent)
+            } else if albums.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "square.stack")
+                        .font(.system(size: 40))
+                        .foregroundColor(.roonTertiary)
+                    Text("No albums found")
+                        .font(.roonTitle(18))
+                        .foregroundColor(.roonPrimary)
+                }
+            }
+        }
+        .task(id: genre.id) {
+            isLoading = true
+            defer { isLoading = false }
+            albums = (try? await LyrionAPI.shared.getAlbumsForGenre(genreID: genre.id)) ?? []
             albums.sort { $0.album.localizedCaseInsensitiveCompare($1.album) == .orderedAscending }
         }
     }

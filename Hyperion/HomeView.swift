@@ -6,6 +6,8 @@ struct HomeView: View {
     @ObservedObject private var connection = ConnectionManager.shared
 
     @State private var showingSettings: Bool = false
+    @State private var recommendedComposers: [OOComposer] = []
+    @State private var isLoadingClassical: Bool = false
 
     var body: some View {
         NavigationStack {
@@ -91,6 +93,9 @@ struct HomeView: View {
                         .padding(.bottom, 32)
                     }
 
+                    // MARK: Classical
+                    classicalSection
+
                     // MARK: Artists
                     if !library.artists.isEmpty {
                         HomeSectionHeader(label: "YOUR LIBRARY", title: "Artists")
@@ -135,9 +140,65 @@ struct HomeView: View {
                 async let recentAdded: Void  = library.loadRecentAlbums()
                 async let recentPlayed: Void = library.loadRecentlyPlayed()
                 async let artistsLoad: Void  = library.loadArtists()
-                _ = await (totals, recentAdded, recentPlayed, artistsLoad)
+                async let classicalLoad: Void = loadClassicalComposers()
+                _ = await (totals, recentAdded, recentPlayed, artistsLoad, classicalLoad)
             }
         }
+    }
+
+    @ViewBuilder
+    private var classicalSection: some View {
+        if !recommendedComposers.isEmpty || isLoadingClassical {
+            HomeSectionHeader(label: "CLASSICAL MUSIC", title: "Featured Composers")
+                .padding(.horizontal, 16)
+                .padding(.bottom, 14)
+
+            if isLoadingClassical && recommendedComposers.isEmpty {
+                ProgressView()
+                    .tint(.roonAccent)
+                    .padding(.bottom, 32)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(spacing: 16) {
+                        ForEach(recommendedComposers.prefix(15)) { composer in
+                            NavigationLink {
+                                ClassicalBrowserView()
+                            } label: {
+                                ClassicalComposerCard(composer: composer)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        NavigationLink {
+                            ClassicalBrowserView()
+                        } label: {
+                            VStack(spacing: 6) {
+                                ZStack {
+                                    Circle()
+                                        .fill(Color.roonElevated)
+                                        .frame(width: 72, height: 72)
+                                    Image(systemName: "chevron.right")
+                                        .font(.system(size: 20, weight: .semibold))
+                                        .foregroundColor(.roonAccent)
+                                }
+                                Text("All")
+                                    .font(.roonBody(11, weight: .medium))
+                                    .foregroundColor(.roonSecondary)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, 16)
+                }
+                .padding(.bottom, 32)
+            }
+        }
+    }
+
+    private func loadClassicalComposers() async {
+        guard recommendedComposers.isEmpty else { return }
+        isLoadingClassical = true
+        recommendedComposers = (try? await OpenOpusService.shared.recommendedComposers()) ?? []
+        isLoadingClassical = false
     }
 
     @ViewBuilder

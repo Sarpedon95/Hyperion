@@ -89,6 +89,11 @@ struct Artist: Identifiable, Hashable, Codable {
     let name: String
 }
 
+struct Genre: Identifiable, Hashable, Codable {
+    let id: Int
+    let name: String
+}
+
 struct WorkGroup: Identifiable, Hashable, Codable {
     let id: Int
     let workTitle: String

@@ -13,11 +13,13 @@ final class LibraryViewModel: ObservableObject {
     @Published var albums: [Album] = []
     @Published var recentAlbums: [Album] = []
     @Published var recentlyPlayed: [Album] = []
+    @Published var genres: [Genre] = []
     @Published var isLoadingComposers: Bool = false
     @Published var isLoadingWorks: Bool = false
     @Published var isLoadingAlbums: Bool = false
     @Published var isLoadingArtists: Bool = false
     @Published var isLoadingSongs: Bool = false
+    @Published var isLoadingGenres: Bool = false
     @Published var error: String? = nil
     @Published var totalWorks:  Int? = nil
     @Published var totalAlbums: Int? = nil
@@ -26,7 +28,9 @@ final class LibraryViewModel: ObservableObject {
 
     private var composerCache: [Composer]? = nil
     private var artistCache: [Artist]? = nil
+    private var genreCache: [Genre]? = nil
     private var artistsLoadTask: Task<[Artist], Error>?
+    private var genresLoadTask: Task<[Genre], Error>?
     private var songsLoadTask: Task<[Track], Error>?
 
     private enum WorksCacheKey: Hashable {
@@ -184,6 +188,34 @@ final class LibraryViewModel: ObservableObject {
         }
     }
 
+
+    // MARK: - Genres
+
+    func loadGenres() async {
+        if let cached = genreCache {
+            genres = cached
+            return
+        }
+        if let existing = genresLoadTask {
+            do { genres = try await existing.value } catch { }
+            return
+        }
+        isLoadingGenres = true
+        let task = Task<[Genre], Error> {
+            let all = try await LyrionAPI.shared.getGenres()
+            return all.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        }
+        genresLoadTask = task
+        defer { genresLoadTask = nil; isLoadingGenres = false }
+        do {
+            let all = try await task.value
+            genreCache = all
+            genres = all
+        } catch is CancellationError {
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
 
     // MARK: - Artists
 
@@ -642,6 +674,8 @@ final class LibraryViewModel: ObservableObject {
         composersLoadTask = nil
         artistsLoadTask?.cancel()
         artistsLoadTask = nil
+        genresLoadTask?.cancel()
+        genresLoadTask = nil
         songsLoadTask?.cancel()
         songsLoadTask = nil
         worksLoadTasks.values.forEach { $0.cancel() }
@@ -670,6 +704,9 @@ final class LibraryViewModel: ObservableObject {
         albumsLoadGeneration = UUID()
         composerCache  = nil
         artistCache    = nil
+        genreCache     = nil
+        genres         = []
+        isLoadingGenres = false
         worksCache     = [:]
         tracksForWork  = [:]
         tracksForAlbum = [:]

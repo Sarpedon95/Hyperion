@@ -7,6 +7,7 @@ struct ContentView: View {
     @StateObject private var player     = PlayerViewModel.shared
     @StateObject private var library    = LibraryViewModel.shared
     @StateObject private var connection = ConnectionManager.shared
+    @StateObject private var orpheus    = OrpheusDSPEngine.shared
 
     @State private var selectedTab: Tab = .home
     @State private var showingNowPlaying: Bool = false
@@ -22,7 +23,7 @@ struct ContentView: View {
     /// Track whether initial data load has completed to prevent rapid tab switching during initialization.
     @State private var isInitialized: Bool = false
 
-    enum Tab { case home, search, library, queue }
+    enum Tab { case home, search, library, queue, orpheus }
 
     private let tabBarHeight: CGFloat     = 56
     private let miniPlayerHeight: CGFloat = 64
@@ -228,6 +229,7 @@ struct ContentView: View {
             // state was indicated by colour only — failed accessibility's
             // recommendation to not rely on colour alone.
             RoonTabButton(icon: "list.bullet",     selectedIcon: "list.bullet.rectangle.fill", tab: .queue,   selected: $selectedTab)
+            RoonTabButton(icon: "waveform",        selectedIcon: "waveform.circle.fill",        tab: .orpheus, selected: $selectedTab)
         }
         .disabled(!isInitialized)
     }
@@ -239,6 +241,7 @@ struct ContentView: View {
         case .search:  SearchView()
         case .library: LibraryView()
         case .queue:   QueueView()
+        case .orpheus: OrpheusView()
         }
     }
 }
@@ -261,6 +264,7 @@ struct RoonTabButton: View {
         case .search:  return "Search"
         case .library: return "Library"
         case .queue:   return "Queue"
+        case .orpheus: return "Orpheus"
         }
     }
 
