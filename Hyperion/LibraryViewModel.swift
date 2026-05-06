@@ -651,10 +651,10 @@ final class LibraryViewModel: ObservableObject {
         }
 
         let serverAlbums = await serverAlbumsTask
-        guard !Task.isCancelled else { return ([], [], []) }
+        guard !Task.isCancelled else { return ([], [], [], [], []) }
 
         let serverWorkBatches = (try? await directWorksTask) ?? []
-        guard !Task.isCancelled else { return ([], [], []) }
+        guard !Task.isCancelled else { return ([], [], [], [], []) }
 
         serverAlbums.forEach { mergeAlbum($0) }
 

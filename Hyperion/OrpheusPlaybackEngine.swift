@@ -123,9 +123,9 @@ final class OrpheusPlaybackEngine {
 
     // MARK: - Constants
 
-    private static let maxScheduledBuffers = 8
+    static let maxScheduledBuffers = 8
     static let preloadFrames: Int = 88_200          // ~2 s @ 44.1 kHz
-    private static let streamingTimeoutSeconds: Double = 15.0
+    static let streamingTimeoutSeconds: Double = 15.0
 
     // MARK: - Audio graph (captured at init, safe to use from any queue)
 
@@ -681,7 +681,7 @@ final class OrpheusPlaybackEngine {
     private func tick(node: AVAudioPlayerNode, mode: OrpheusPlaybackMode) {
         guard isPlaying,
               let nodeTime   = node.lastRenderTime,
-              let playerTime = node.playerTime(forHostTime: nodeTime.hostTime),
+              let playerTime = node.playerTime(forNodeTime: nodeTime),
               playerTime.sampleTime >= 0 else { return }
         let elapsed = Double(playerTime.sampleTime) / playerTime.sampleRate
         switch mode {
