@@ -60,12 +60,16 @@ jobs:
           security import certificate.p12 -k build.keychain -P "$P12_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" build.keychain
 
-      - name: Install provisioning profile
+      - name: Install provisioning profiles
         env:
           PROVISIONING_PROFILE_BASE64: ${{ secrets.PROVISIONING_PROFILE_BASE64 }}
+          WIDGET_PROVISIONING_PROFILE_BASE64: ${{ secrets.WIDGET_PROVISIONING_PROFILE_BASE64 }}
         run: |
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-          echo "$PROVISIONING_PROFILE_BASE64" | base64 --decode > ~/Library/MobileDevice/Provisioning\ Profiles/hyperion.mobileprovision
+          echo "$PROVISIONING_PROFILE_BASE64" | base64 --decode \
+            > ~/Library/MobileDevice/Provisioning\ Profiles/hyperion.mobileprovision
+          echo "$WIDGET_PROVISIONING_PROFILE_BASE64" | base64 --decode \
+            > ~/Library/MobileDevice/Provisioning\ Profiles/hyperion-widget.mobileprovision
 
       - name: Build & Archive
         env:
@@ -79,9 +83,10 @@ jobs:
             -archivePath Hyperion.xcarchive \
             DEVELOPMENT_TEAM="$TEAM_ID" \
             CODE_SIGN_STYLE=Manual \
-            PROVISIONING_PROFILE_SPECIFIER="Hyperion AppStore" \
             CODE_SIGN_IDENTITY="iPhone Distribution" \
-            CURRENT_PROJECT_VERSION=${{ github.run_number }}
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            "PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]:com.sarpedon.hyperion=Hyperion AppStore" \
+            "PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]:com.sarpedon.hyperion.widget=Hyperion Widget AppStore"
 
       - name: Patch and verify archived app bundle
         run: |
@@ -107,6 +112,8 @@ jobs:
             <dict>
               <key>com.sarpedon.hyperion</key>
               <string>Hyperion AppStore</string>
+              <key>com.sarpedon.hyperion.widget</key>
+              <string>Hyperion Widget AppStore</string>
             </dict>
             <key>stripSwiftSymbols</key>
             <true/>
