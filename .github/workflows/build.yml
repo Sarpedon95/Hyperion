@@ -84,9 +84,7 @@ jobs:
             DEVELOPMENT_TEAM="$TEAM_ID" \
             CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY="iPhone Distribution" \
-            CURRENT_PROJECT_VERSION=${{ github.run_number }} \
-            "PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]:com.sarpedon.hyperion=Hyperion AppStore" \
-            "PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]:com.sarpedon.hyperion.widget=Hyperion Widget AppStore"
+            CURRENT_PROJECT_VERSION=${{ github.run_number }}
 
       - name: Patch and verify archived app bundle
         run: |
