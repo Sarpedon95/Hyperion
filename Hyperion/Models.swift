@@ -413,6 +413,7 @@ struct OrpheusSignalPathItem: Identifiable, Hashable {
 
 struct OrpheusSignalPathState: Hashable {
     let isPlaybackRoutedThroughOrpheus: Bool
+    let isPureModeEnabled: Bool
     let activePresetName: String?
     let activeItems: [OrpheusSignalPathItem]
     let configuredOnlyItems: [OrpheusSignalPathItem]
@@ -640,6 +641,8 @@ struct AudioSignalPath: Identifiable, Hashable {
         if orpheusSteps.processingAffectsPath {
             whyNotBitPerfect.append("Orpheus DSP is active in the verified playback path.")
         }
+        let isOrpheusActive   = orpheusSteps.isOrpheusActive
+        let isPureModeEnabled = orpheusSteps.isPureModeEnabled
 
         let volumePercent = Int((max(0, min(1, localVolume)) * 100).rounded())
         let hasLocalAttenuation = volumePercent < 100
@@ -715,7 +718,9 @@ struct AudioSignalPath: Identifiable, Hashable {
         let badge = badge(forSourceLossless: sourceIsLossless,
                           appearsTranscoded: appearsTranscoded,
                           hasLocalAttenuation: hasLocalAttenuation,
-                          orpheusProcessingAffectsPath: orpheusSteps.processingAffectsPath)
+                          orpheusProcessingAffectsPath: orpheusSteps.processingAffectsPath,
+                          isOrpheusActive: isOrpheusActive,
+                          isPureModeEnabled: isPureModeEnabled)
         steps.append(AudioPathStep(
             id: "verification",
             icon: badge.label == "Bit-perfect" ? "checkmark.circle.fill" : "questionmark.circle",
@@ -751,7 +756,9 @@ struct AudioSignalPath: Identifiable, Hashable {
                                whyNotBitPerfect: Array(NSOrderedSet(array: whyNotBitPerfect).compactMap { $0 as? String }))
     }
 
-    private static func buildOrpheusSteps(_ state: OrpheusSignalPathState?) -> (steps: [AudioPathStep], processingAffectsPath: Bool, notes: [String]) {
+    private static func buildOrpheusSteps(_ state: OrpheusSignalPathState?)
+        -> (steps: [AudioPathStep], processingAffectsPath: Bool, isOrpheusActive: Bool, isPureModeEnabled: Bool, notes: [String])
+    {
         guard let state else {
             return ([AudioPathStep(
                 id: "orpheus",
@@ -764,15 +771,52 @@ struct AudioSignalPath: Identifiable, Hashable {
                 explanation: "Hyperion could not read Orpheus DSP/EQ settings for this signal-path snapshot.",
                 sourceOfTruth: "Not reported",
                 missingFields: ["orpheus_state"]
-            )], false, [])
+            )], false, false, false, [])
         }
 
-        let presetSuffix = state.activePresetName.map { " — preset ‘\($0)’" } ?? ""
+        let presetSuffix    = state.activePresetName.map { " — preset ‘\($0)’" } ?? ""
+        let isOrpheusActive = state.isPlaybackRoutedThroughOrpheus
         var notes: [String] = []
+
         if !state.isPlaybackRoutedThroughOrpheus, state.hasAnyConfiguredProcessing {
-            notes.append("Orpheus has configured processing, but the current AVPlayer stream is not verified to pass through the Orpheus AVAudioEngine chain.")
+            notes.append("Orpheus has configured processing, but current playback uses AVPlayer compatibility mode and is not verified to pass through the Orpheus DSP chain.")
         }
 
+        // Pure Mode + Orpheus active: all DSP intentionally bypassed on the graph.
+        if state.isPlaybackRoutedThroughOrpheus && state.isPureModeEnabled {
+            let step = AudioPathStep(
+                id: "orpheus-pure",
+                icon: "waveform.path",
+                title: "Orpheus · Pure Mode",
+                subtitle: "Orpheus playback engine active — all intentional DSP processing bypassed\(presetSuffix)",
+                status: .lossless,
+                statusLabel: "Pure Mode",
+                confidence: .verified,
+                explanation: "Pure Mode disables EQ, crossfeed, leveling, balance, headroom, and all other intentional Hyperion processing. Saved settings are preserved unchanged and will restore when Pure Mode is turned off. Final iOS/device output may still apply its own processing depending on the current audio route.",
+                sourceOfTruth: "OrpheusDSPEngine.isPureModeEnabled + isPlaybackRoutedThroughOrpheus",
+                usedFields: ["isPureModeEnabled", "isPlaybackRoutedThroughOrpheus"]
+            )
+            return ([step], false, true, true, notes)
+        }
+
+        // Pure Mode configured but Orpheus not active (compatibility/AVPlayer fallback).
+        if !state.isPlaybackRoutedThroughOrpheus && state.isPureModeEnabled {
+            let step = AudioPathStep(
+                id: "orpheus-pure-unavailable",
+                icon: "waveform.path",
+                title: "Orpheus · Pure Mode",
+                subtitle: "Pure Mode configured, but Orpheus playback engine is not active",
+                status: .unknown,
+                statusLabel: "Unavailable",
+                confidence: .configured,
+                explanation: "Playback is using AVPlayer compatibility mode. Orpheus processing (including Pure Mode bypass) is not active on this stream.",
+                sourceOfTruth: "OrpheusDSPEngine.isPureModeEnabled + isPlaybackRoutedThroughOrpheus",
+                usedFields: ["isPureModeEnabled", "isPlaybackRoutedThroughOrpheus"]
+            )
+            return ([step], false, false, true, notes)
+        }
+
+        // No intentional DSP configured.
         if !state.hasAnyConfiguredProcessing {
             return ([AudioPathStep(
                 id: "orpheus",
@@ -785,9 +829,10 @@ struct AudioSignalPath: Identifiable, Hashable {
                 explanation: "Orpheus settings do not report active EQ, crossfeed, headroom, leveling, balance, or SRC preferences. This only covers Hyperion’s Orpheus settings, not LMS or OS processing.",
                 sourceOfTruth: "OrpheusDSPEngine settings",
                 usedFields: ["orpheusSettings"]
-            )], false, notes)
+            )], false, isOrpheusActive, false, notes)
         }
 
+        // Normal DSP active or configured.
         let configuredItems = state.isPlaybackRoutedThroughOrpheus ? state.activeItems : state.configuredOnlyItems
         let subtitle = state.isPlaybackRoutedThroughOrpheus
             ? "\(configuredItems.count) active item(s) in verified Orpheus path\(presetSuffix)"
@@ -821,17 +866,24 @@ struct AudioSignalPath: Identifiable, Hashable {
                 sourceOfTruth: "OrpheusDSPEngine settings"
             ))
         }
-        return (steps, state.isPlaybackRoutedThroughOrpheus && !configuredItems.isEmpty, notes)
+        return (steps, state.isPlaybackRoutedThroughOrpheus && !configuredItems.isEmpty, isOrpheusActive, false, notes)
     }
 
     private static func badge(
         forSourceLossless sourceIsLossless: Bool?,
         appearsTranscoded: Bool,
         hasLocalAttenuation: Bool,
-        orpheusProcessingAffectsPath: Bool
+        orpheusProcessingAffectsPath: Bool,
+        isOrpheusActive: Bool,
+        isPureModeEnabled: Bool
     ) -> (label: String, status: QualityStatus) {
         if sourceIsLossless == false { return ("Lossy source", .converted) }
         if appearsTranscoded { return ("Transcoded?", .converted) }
+        if isOrpheusActive {
+            if isPureModeEnabled { return ("Orpheus · Pure", .unknown) }
+            if orpheusProcessingAffectsPath { return ("Orpheus · DSP", .enhanced) }
+            return ("Orpheus", .unknown)
+        }
         if hasLocalAttenuation || orpheusProcessingAffectsPath { return ("Processed", .enhanced) }
         if sourceIsLossless == true { return ("Direct?", .unknown) }
         return ("Unknown", .unknown)

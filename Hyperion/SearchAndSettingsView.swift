@@ -42,11 +42,16 @@ final class RecentSearchStore: ObservableObject {
 @MainActor
 final class SearchViewModel: ObservableObject {
     @Published var searchText: String = ""
-    @Published var results: (composers: [Composer], works: [Work], albums: [Album]) = ([], [], [])
+    @Published var results: (composers: [Composer], works: [Work], albums: [Album], artists: [Artist], tracks: [Track]) = ([], [], [], [], [])
     @Published var isSearching: Bool = false
 
     private var searchTask: Task<Void, Never>? = nil
     private var searchSequence: Int = 0
+
+    var hasResults: Bool {
+        !results.composers.isEmpty || !results.works.isEmpty || !results.albums.isEmpty
+            || !results.artists.isEmpty || !results.tracks.isEmpty
+    }
 
     func performSearch(query: String, library: LibraryViewModel) {
         searchTask?.cancel()
@@ -54,13 +59,13 @@ final class SearchViewModel: ObservableObject {
         let sequence = searchSequence
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            results = ([], [], [])
+            results = ([], [], [], [], [])
             isSearching = false
             return
         }
         isSearching = true
         searchTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 150_000_000)
+            try? await Task.sleep(nanoseconds: 200_000_000)
             guard !Task.isCancelled, let self, self.searchSequence == sequence else { return }
             let r = await library.search(query: trimmed)
             guard !Task.isCancelled, self.searchSequence == sequence else { return }
@@ -105,9 +110,7 @@ struct SearchView: View {
                         ProgressView()
                             .tint(.roonAccent)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else if vm.results.composers.isEmpty
-                                && vm.results.works.isEmpty
-                                && vm.results.albums.isEmpty {
+                    } else if !vm.hasResults {
                         NoResultsView(query: vm.searchText)
                     } else {
                         SearchResultsView(results: vm.results)
@@ -140,7 +143,7 @@ struct SearchInputField: View {
             Image(systemName: "magnifyingglass")
                 .foregroundColor(.roonTertiary)
                 .font(.system(size: 16))
-            TextField("Albums, composers, works…", text: $text)
+            TextField("Artists, albums, songs…", text: $text)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .focused($focused)
@@ -475,80 +478,124 @@ struct ComposerSmallRow: View {
 // MARK: - Search results
 
 struct SearchResultsView: View {
-    let results: (composers: [Composer], works: [Work], albums: [Album])
+    let results: (composers: [Composer], works: [Work], albums: [Album], artists: [Artist], tracks: [Track])
     @ObservedObject private var library = LibraryViewModel.shared
+    @ObservedObject private var player  = PlayerViewModel.shared
 
     var body: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 20) {
-                if !results.albums.isEmpty {
-                    SearchSectionTitle("ALBUMS")
-                    LazyVStack(spacing: 0) {
-                        ForEach(results.albums) { album in
-                            NavigationLink {
-                                AlbumDetailView(album: album)
-                            } label: {
-                                AlbumListRow(album: album)
-                                    .padding(.horizontal, 14)
-                                    .padding(.vertical, 8)
-                            }
-                            .buttonStyle(.plain)
-                            // Prefetch tracks on press-down so detail opens instantly.
-                            .simultaneousGesture(DragGesture(minimumDistance: 0)
-                                .onChanged { _ in
-                                    Task { try? await library.getTracksForAlbum(album.id) }
+            LazyVStack(alignment: .leading, spacing: 24) {
+
+                if !results.artists.isEmpty {
+                    searchSection("ARTISTS") {
+                        LazyVStack(spacing: 0) {
+                            ForEach(results.artists) { artist in
+                                NavigationLink {
+                                    ArtistDetailView(artist: artist)
+                                } label: {
+                                    SearchArtistRow(artist: artist)
                                 }
-                            )
-                            if album.id != results.albums.last?.id {
-                                Color.roonBorder.frame(height: 0.5).padding(.leading, 68)
+                                .buttonStyle(.plain)
+                                if artist.id != results.artists.last?.id {
+                                    Color.roonBorder.frame(height: 0.5).padding(.leading, 64)
+                                }
                             }
                         }
+                        .background(Color.roonSurface)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .padding(.horizontal, 16)
                     }
-                    .background(Color.roonSurface)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .padding(.horizontal, 16)
+                }
+
+                if !results.albums.isEmpty {
+                    searchSection("ALBUMS") {
+                        LazyVStack(spacing: 0) {
+                            ForEach(results.albums) { album in
+                                NavigationLink {
+                                    AlbumDetailView(album: album)
+                                } label: {
+                                    AlbumListRow(album: album)
+                                        .padding(.horizontal, 14)
+                                        .padding(.vertical, 8)
+                                }
+                                .buttonStyle(.plain)
+                                .simultaneousGesture(DragGesture(minimumDistance: 0)
+                                    .onChanged { _ in Task { try? await library.getTracksForAlbum(album.id) } }
+                                )
+                                if album.id != results.albums.last?.id {
+                                    Color.roonBorder.frame(height: 0.5).padding(.leading, 68)
+                                }
+                            }
+                        }
+                        .background(Color.roonSurface)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .padding(.horizontal, 16)
+                    }
+                }
+
+                if !results.tracks.isEmpty {
+                    searchSection("SONGS") {
+                        LazyVStack(spacing: 0) {
+                            ForEach(Array(results.tracks.enumerated()), id: \.element.id) { idx, track in
+                                Button {
+                                    player.playTracks(results.tracks, startingAt: idx)
+                                } label: {
+                                    SearchTrackRow(track: track)
+                                }
+                                .buttonStyle(.plain)
+                                if track.id != results.tracks.last?.id {
+                                    Color.roonBorder.frame(height: 0.5).padding(.leading, 64)
+                                }
+                            }
+                        }
+                        .background(Color.roonSurface)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .padding(.horizontal, 16)
+                    }
                 }
 
                 if !results.composers.isEmpty {
-                    SearchSectionTitle("COMPOSERS")
-                    LazyVStack(spacing: 0) {
-                        ForEach(results.composers) { composer in
-                            NavigationLink {
-                                WorkListView(composerID: composer.id, composerName: composer.artist)
-                            } label: {
-                                ComposerSmallRow(composer: composer)
-                            }
-                            .buttonStyle(.plain)
-                            if composer.id != results.composers.last?.id {
-                                Color.roonBorder.frame(height: 0.5).padding(.leading, 64)
+                    searchSection("COMPOSERS") {
+                        LazyVStack(spacing: 0) {
+                            ForEach(results.composers) { composer in
+                                NavigationLink {
+                                    WorkListView(composerID: composer.id, composerName: composer.artist)
+                                } label: {
+                                    ComposerSmallRow(composer: composer)
+                                }
+                                .buttonStyle(.plain)
+                                if composer.id != results.composers.last?.id {
+                                    Color.roonBorder.frame(height: 0.5).padding(.leading, 64)
+                                }
                             }
                         }
+                        .background(Color.roonSurface)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .padding(.horizontal, 16)
                     }
-                    .background(Color.roonSurface)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .padding(.horizontal, 16)
                 }
 
                 if !results.works.isEmpty {
-                    SearchSectionTitle("WORKS")
-                    LazyVStack(spacing: 0) {
-                        ForEach(results.works) { work in
-                            NavigationLink {
-                                WorkDetailView(work: work)
-                            } label: {
-                                WorkRowView(work: work, showComposer: true)
-                                    .padding(.horizontal, 14)
-                                    .padding(.vertical, 6)
-                            }
-                            .buttonStyle(.plain)
-                            if work.id != results.works.last?.id {
-                                Color.roonBorder.frame(height: 0.5).padding(.leading, 82)
+                    searchSection("WORKS") {
+                        LazyVStack(spacing: 0) {
+                            ForEach(results.works) { work in
+                                NavigationLink {
+                                    WorkDetailView(work: work)
+                                } label: {
+                                    WorkRowView(work: work, showComposer: true)
+                                        .padding(.horizontal, 14)
+                                        .padding(.vertical, 6)
+                                }
+                                .buttonStyle(.plain)
+                                if work.id != results.works.last?.id {
+                                    Color.roonBorder.frame(height: 0.5).padding(.leading, 82)
+                                }
                             }
                         }
+                        .background(Color.roonSurface)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .padding(.horizontal, 16)
                     }
-                    .background(Color.roonSurface)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .padding(.horizontal, 16)
                 }
 
                 Spacer(minLength: 80)
@@ -558,6 +605,103 @@ struct SearchResultsView: View {
         .background(Color.roonBase)
         .scrollContentBackground(.hidden)
         .bottomOverlayAwareScroll()
+    }
+
+    @ViewBuilder
+    private func searchSection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            SearchSectionTitle(title)
+            content()
+        }
+    }
+}
+
+// MARK: - Search row components
+
+struct SearchArtistRow: View {
+    let artist: Artist
+
+    var body: some View {
+        HStack(spacing: 14) {
+            ZStack {
+                Circle()
+                    .fill(Color.roonElevated)
+                    .frame(width: 40, height: 40)
+                Text(NameFormatting.initials(artist.name))
+                    .font(.roonTitle(13))
+                    .foregroundColor(.roonAccent)
+            }
+            Text(artist.name)
+                .font(.roonBody(15, weight: .medium))
+                .foregroundColor(.roonPrimary)
+                .lineLimit(1)
+            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.roonTertiary)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .contentShape(Rectangle())
+    }
+}
+
+struct SearchTrackRow: View {
+    let track: Track
+    @ObservedObject private var player = PlayerViewModel.shared
+    @State private var navigateToAlbum: Album? = nil
+
+    var body: some View {
+        HStack(spacing: 14) {
+            ArtworkView(coverid: track.coverid, size: 40)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(track.title)
+                    .font(.roonBody(14, weight: .medium))
+                    .foregroundColor(player.currentTrack?.id == track.id ? .roonAccent : .roonPrimary)
+                    .lineLimit(1)
+
+                HStack(spacing: 4) {
+                    if let artist = track.trackartist ?? track.albumartist, !artist.isEmpty {
+                        Text(artist)
+                            .font(.roonBody(12))
+                            .foregroundColor(.roonSecondary)
+                            .lineLimit(1)
+                    }
+                    if let albumName = track.album, !albumName.isEmpty {
+                        Text("·")
+                            .font(.roonBody(12))
+                            .foregroundColor(.roonTertiary)
+                        Button {
+                            if let albumID = track.albumID,
+                               let album = LibraryViewModel.shared.albums.first(where: { $0.id == albumID }) {
+                                navigateToAlbum = album
+                            }
+                        } label: {
+                            Text(albumName)
+                                .font(.roonBody(12))
+                                .foregroundColor(.roonAccent.opacity(0.8))
+                                .lineLimit(1)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+
+            Spacer()
+
+            Image(systemName: "play.fill")
+                .font(.system(size: 11))
+                .foregroundColor(.roonTertiary)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .contentShape(Rectangle())
+        .sheet(item: $navigateToAlbum) { album in
+            NavigationStack { AlbumDetailView(album: album) }
+                .environment(\.hyperionBottomOverlayHeight, 0)
+        }
     }
 }
 
@@ -584,7 +728,7 @@ struct NoResultsView: View {
             Text("No results for \"\(query)\"")
                 .font(.roonTitle(18))
                 .foregroundColor(.roonPrimary)
-            Text("Try an album, composer, or work title")
+            Text("Try searching by artist, album, song title, or composer")
                 .font(.roonBody(14))
                 .foregroundColor(.roonSecondary)
                 .multilineTextAlignment(.center)
@@ -601,6 +745,7 @@ struct SettingsView: View {
 
     @ObservedObject private var connection = ConnectionManager.shared
     @ObservedObject private var serverLogs = ServerLogStore.shared
+    @ObservedObject private var player     = PlayerViewModel.shared
     @Environment(\.dismiss) private var dismiss
 
     @State private var localURL: String     = ""
@@ -716,6 +861,26 @@ struct SettingsView: View {
                     }
                 } header: { Text("SERVER DIAGNOSTICS") } footer: {
                     Text("These entries also go to the system Console through os.Logger and include URL, HTTP status, RPC failures, timeout, TLS, DNS, and proxy/upstream errors.")
+                        .font(.roonBody(12)).foregroundColor(.roonTertiary)
+                }
+                .listRowBackground(Color.roonSurface)
+
+                Section {
+                    Toggle(isOn: $player.useOrpheusEngine) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Orpheus Engine")
+                                .foregroundColor(.roonPrimary)
+                            Text(player.useOrpheusEngine
+                                 ? "PCM audio decoded and routed through the Orpheus DSP chain."
+                                 : "Compatibility mode — AVPlayer streams directly. Orpheus DSP inactive.")
+                                .font(.roonBody(12))
+                                .foregroundColor(.roonSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .tint(.roonAccent)
+                } header: { Text("PLAYBACK ENGINE") } footer: {
+                    Text("Orpheus is recommended. Disable only if you experience playback issues. AirPlay always uses Compatibility mode regardless of this setting.")
                         .font(.roonBody(12)).foregroundColor(.roonTertiary)
                 }
                 .listRowBackground(Color.roonSurface)

@@ -10,6 +10,9 @@ struct HomeView: View {
     @State private var isLoadingClassical: Bool = false
     @State private var popularWorks: [OORandomWork] = []
     @State private var isLoadingHighlights: Bool = false
+    @State private var recentActivityTab: RecentActivityTab = .played
+
+    enum RecentActivityTab { case played, added }
 
     var body: some View {
         NavigationStack {
@@ -70,30 +73,8 @@ struct HomeView: View {
                     .padding(.horizontal, 16)
                     .padding(.bottom, 32)
 
-                    // MARK: Recently Played
-                    recentlyPlayedSection
-
-                    // MARK: Recently Added
-                    if !library.recentAlbums.isEmpty {
-                        HomeSectionHeader(label: "YOUR LIBRARY", title: "Recently Added")
-                            .padding(.horizontal, 16)
-                            .padding(.bottom, 14)
-
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            LazyHStack(spacing: 14) {
-                                ForEach(library.recentAlbums) { album in
-                                    NavigationLink {
-                                        AlbumDetailView(album: album)
-                                    } label: {
-                                        RecentAlbumCard(album: album)
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-                            }
-                            .padding(.horizontal, 16)
-                        }
-                        .padding(.bottom, 32)
-                    }
+                    // MARK: Recent Activity
+                    recentActivitySection
 
                     // MARK: Classical Highlights
                     classicalHighlightsSection
@@ -249,19 +230,72 @@ struct HomeView: View {
     }
 
     @ViewBuilder
-    private var recentlyPlayedSection: some View {
-        HomeSectionHeader(label: "RECENT ACTIVITY", title: "Recently Played")
-            .padding(.horizontal, 16)
-            .padding(.bottom, 14)
+    private var recentActivitySection: some View {
+        // Section header with tab toggle
+        HStack(alignment: .center, spacing: 0) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("RECENT ACTIVITY")
+                    .font(.roonBody(11, weight: .semibold))
+                    .foregroundColor(.roonAccent)
+                    .kerning(1.4)
+                Text("History")
+                    .font(.roonTitle(22))
+                    .foregroundColor(.roonPrimary)
+            }
+            Spacer()
+            // Played / Added pill toggle
+            HStack(spacing: 0) {
+                recentTab("Played", tab: .played)
+                recentTab("Added", tab: .added)
+            }
+            .background(Color.roonSurface)
+            .clipShape(Capsule())
+            .overlay(Capsule().strokeBorder(Color.roonBorder, lineWidth: 1))
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 14)
 
-        if library.recentlyPlayed.isEmpty {
-            RecentlyPlayedEmptyCard()
+        let activeItems: [Album] = recentActivityTab == .played
+            ? library.recentlyPlayed
+            : library.recentAlbums
+
+        if activeItems.isEmpty {
+            if recentActivityTab == .played {
+                RecentlyPlayedEmptyCard()
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 32)
+            } else {
+                HStack(spacing: 12) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(Color.white.opacity(0.07))
+                            .frame(width: 52, height: 52)
+                        Image(systemName: "plus.square.on.square")
+                            .font(.system(size: 22, weight: .medium))
+                            .foregroundColor(.roonAccent)
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("No recent additions")
+                            .font(.roonBody(15, weight: .semibold))
+                            .foregroundColor(.roonPrimary)
+                        Text("Recently added albums from your library will appear here.")
+                            .font(.roonBody(12))
+                            .foregroundColor(.roonSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(14)
+                .background(Color.roonSurface)
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Color.white.opacity(0.08), lineWidth: 1))
                 .padding(.horizontal, 16)
                 .padding(.bottom, 32)
+            }
         } else {
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: 14) {
-                    ForEach(library.recentlyPlayed) { album in
+                    ForEach(activeItems) { album in
                         NavigationLink {
                             AlbumDetailView(album: album)
                         } label: {
@@ -274,6 +308,21 @@ struct HomeView: View {
             }
             .padding(.bottom, 32)
         }
+    }
+
+    @ViewBuilder
+    private func recentTab(_ label: String, tab: RecentActivityTab) -> some View {
+        let isActive = recentActivityTab == tab
+        Button { withAnimation(.easeInOut(duration: 0.18)) { recentActivityTab = tab } } label: {
+            Text(label)
+                .font(.roonBody(12, weight: isActive ? .semibold : .regular))
+                .foregroundColor(isActive ? .roonPrimary : .roonTertiary)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(isActive ? Color.roonElevated : Color.clear)
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
     }
 
 }

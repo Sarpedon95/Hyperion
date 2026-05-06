@@ -19,6 +19,9 @@ struct OrpheusView: View {
                     orpheusHeader
                         .padding(.horizontal, 20)
                         .padding(.top, 12)
+                        .padding(.bottom, 16)
+
+                    pureModeToggle
                         .padding(.bottom, 20)
 
                     presetsRow
@@ -35,6 +38,8 @@ struct OrpheusView: View {
                     }
                     .padding(.horizontal, 16)
                     .padding(.bottom, 32)
+                    .opacity(dsp.isPureModeEnabled ? 0.5 : 1.0)
+                    .animation(.easeInOut(duration: 0.2), value: dsp.isPureModeEnabled)
                 }
             }
             .scrollContentBackground(.hidden)
@@ -45,11 +50,19 @@ struct OrpheusView: View {
             .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    NavigationLink {
-                        OrpheusSignalPathView()
-                    } label: {
-                        Image(systemName: "point.3.connected.trianglepath.dotted")
-                            .foregroundColor(.roonSecondary)
+                    HStack(spacing: 16) {
+                        NavigationLink {
+                            OrpheusEngineDebugView()
+                        } label: {
+                            Image(systemName: "chart.bar.doc.horizontal")
+                                .foregroundColor(.roonSecondary)
+                        }
+                        NavigationLink {
+                            OrpheusSignalPathView()
+                        } label: {
+                            Image(systemName: "point.3.connected.trianglepath.dotted")
+                                .foregroundColor(.roonSecondary)
+                        }
                     }
                 }
             }
@@ -70,6 +83,58 @@ struct OrpheusView: View {
                 .font(.roonBody(14))
                 .foregroundColor(.roonSecondary)
         }
+    }
+
+    // MARK: - Pure Mode toggle
+
+    private var pureModeToggle: some View {
+        HStack(spacing: 14) {
+            ZStack {
+                Circle()
+                    .fill(dsp.isPureModeEnabled ? Color.roonAccent.opacity(0.15) : Color.roonSurface)
+                    .frame(width: 40, height: 40)
+                Image(systemName: "waveform.path")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundColor(dsp.isPureModeEnabled ? .roonAccent : .roonTertiary)
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Pure Mode")
+                    .font(.roonBody(15, weight: .semibold))
+                    .foregroundColor(.roonPrimary)
+                Text(dsp.isPureModeEnabled
+                     ? "EQ, crossfeed, leveling, and all processing bypassed."
+                     : "Bypasses EQ, crossfeed, leveling, balance, and all sound-shaping processing.")
+                    .font(.roonBody(12))
+                    .foregroundColor(.roonSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer()
+
+            Toggle("", isOn: Binding(
+                get: { dsp.isPureModeEnabled },
+                set: {
+                    dsp.isPureModeEnabled = $0
+                    dsp.applyAllSettings()
+                    Haptics.light()
+                }
+            ))
+            .labelsHidden()
+            .tint(.roonAccent)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(dsp.isPureModeEnabled ? Color.roonAccent.opacity(0.07) : Color.roonElevated)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(dsp.isPureModeEnabled ? Color.roonAccent.opacity(0.45) : Color.roonBorder, lineWidth: 1)
+        )
+        .padding(.horizontal, 16)
+        .animation(.easeInOut(duration: 0.2), value: dsp.isPureModeEnabled)
     }
 
     // MARK: - Presets row

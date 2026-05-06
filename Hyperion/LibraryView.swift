@@ -455,6 +455,7 @@ struct CenteredArtworkHeader: View {
     let title: String
     let subtitle: String?
     var year: Int? = nil
+    var subtitleAction: (() -> Void)? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -483,13 +484,26 @@ struct CenteredArtworkHeader: View {
                 .padding(.bottom, 6)
 
             if let subtitle, !subtitle.isEmpty {
-                Text(subtitle)
-                    .font(.roonBody(15))
-                    .foregroundColor(.roonSecondary)
-                    .multilineTextAlignment(.center)
-                    .lineLimit(2)
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, year != nil ? 2 : 6)
+                if let subtitleAction {
+                    Button(action: subtitleAction) {
+                        Text(subtitle)
+                            .font(.roonBody(15))
+                            .foregroundColor(.roonAccent)
+                            .multilineTextAlignment(.center)
+                            .lineLimit(2)
+                            .padding(.horizontal, 20)
+                            .padding(.bottom, year != nil ? 2 : 6)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    Text(subtitle)
+                        .font(.roonBody(15))
+                        .foregroundColor(.roonSecondary)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                        .padding(.horizontal, 20)
+                        .padding(.bottom, year != nil ? 2 : 6)
+                }
             }
 
             if let year, year > 0 {
@@ -827,6 +841,30 @@ struct AlbumListRow: View {
     }
 }
 
+struct ArtistAlbumGridCard: View {
+    let album: Album
+
+    var body: some View {
+        GeometryReader { geo in
+            VStack(alignment: .leading, spacing: 6) {
+                ArtworkView(coverid: album.artwork_track_id, size: geo.size.width)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .shadow(color: .black.opacity(0.4), radius: 6, y: 3)
+                Text(album.album)
+                    .font(.roonBody(13, weight: .semibold))
+                    .foregroundColor(.roonPrimary)
+                    .lineLimit(2)
+                if let year = album.year, year > 0 {
+                    Text(String(year))
+                        .font(.roonBody(11))
+                        .foregroundColor(.roonSecondary)
+                }
+            }
+        }
+        .aspectRatio(0.75, contentMode: .fit)
+    }
+}
+
 // MARK: - Album detail (with Tracks / Info / Credits tabs)
 
 struct AlbumDetailView: View {
@@ -839,6 +877,13 @@ struct AlbumDetailView: View {
     @State private var isLoading: Bool         = true
     @State private var loadError: String?      = nil
     @State private var selectedTab: AlbumTab   = .tracks
+    @State private var showArtistDetail: Bool  = false
+
+    private var albumArtist: Artist? {
+        guard let name = album.artist ?? album.composer, !name.isEmpty else { return nil }
+        return library.artists.first { $0.name == name }
+            ?? Artist(id: 0, name: name)
+    }
 
     enum AlbumTab: String, CaseIterable {
         case tracks  = "TRACKS"
@@ -851,10 +896,11 @@ struct AlbumDetailView: View {
             VStack(spacing: 0) {
                 // Header: artwork + title + artist + year
                 CenteredArtworkHeader(
-                    coverid:  album.artwork_track_id,
-                    title:    album.album,
-                    subtitle: album.artist ?? album.composer,
-                    year:     album.year
+                    coverid:        album.artwork_track_id,
+                    title:          album.album,
+                    subtitle:       album.artist ?? album.composer,
+                    year:           album.year,
+                    subtitleAction: albumArtist != nil ? { showArtistDetail = true } : nil
                 )
 
                 // Play Now / Add buttons
@@ -887,6 +933,9 @@ struct AlbumDetailView: View {
         .toolbarBackground(Color.roonBase, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
         .toolbarColorScheme(.dark, for: .navigationBar)
+        .navigationDestination(isPresented: $showArtistDetail) {
+            if let artist = albumArtist { ArtistDetailView(artist: artist) }
+        }
         .task(id: album.id) {
             isLoading = true
             loadError = nil
@@ -1370,22 +1419,44 @@ struct SongRowView: View {
     let isActive: Bool
     @ObservedObject private var likedTracks = LikedTracksStore.shared
     @State private var showingAddToPlaylist = false
+    @State private var navigateToAlbum: Album? = nil
+    @State private var navigateToArtist: Artist? = nil
 
     var body: some View {
         HStack(spacing: 14) {
             ArtworkView(coverid: track.coverid, size: 44)
                 .clipShape(RoundedRectangle(cornerRadius: 4))
 
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(track.title)
                     .font(.roonBody(15, weight: .medium))
                     .foregroundColor(isActive ? .roonAccent : .roonPrimary)
                     .lineLimit(1)
-                if let artist = track.trackartist ?? track.albumartist, !artist.isEmpty {
-                    Text(artist)
-                        .font(.roonBody(13))
-                        .foregroundColor(.roonSecondary)
-                        .lineLimit(1)
+
+                HStack(spacing: 0) {
+                    if let artist = track.trackartist ?? track.albumartist, !artist.isEmpty {
+                        Text(artist)
+                            .font(.roonBody(12))
+                            .foregroundColor(.roonSecondary)
+                            .lineLimit(1)
+                    }
+                    if let albumName = track.album, !albumName.isEmpty {
+                        Text(" · ")
+                            .font(.roonBody(12))
+                            .foregroundColor(.roonTertiary)
+                        Button {
+                            if let albumID = track.albumID,
+                               let album = LibraryViewModel.shared.albums.first(where: { $0.id == albumID }) {
+                                navigateToAlbum = album
+                            }
+                        } label: {
+                            Text(albumName)
+                                .font(.roonBody(12))
+                                .foregroundColor(.roonAccent.opacity(0.8))
+                                .lineLimit(1)
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
             }
 
@@ -1401,15 +1472,38 @@ struct SongRowView: View {
             Button(likedTracks.isLiked(track) ? "Unlike" : "Like", systemImage: likedTracks.isLiked(track) ? "heart.slash" : "heart") {
                 likedTracks.toggle(track)
             }
-            Button("Add to Playlist", systemImage: "music.note.list") {
-                showingAddToPlaylist = true
+            Button("Play Next", systemImage: "text.insert") {
+                PlayerViewModel.shared.playNext([track])
             }
             Button("Add to Queue", systemImage: "text.badge.plus") {
                 PlayerViewModel.shared.addTracksToQueue([track])
             }
+            Button("Go to Album", systemImage: "square.stack") {
+                if let albumID = track.albumID,
+                   let album = LibraryViewModel.shared.albums.first(where: { $0.id == albumID }) {
+                    navigateToAlbum = album
+                }
+            }
+            Button("Go to Artist", systemImage: "person.crop.circle") {
+                let name = track.trackartist ?? track.albumartist ?? ""
+                guard !name.isEmpty else { return }
+                navigateToArtist = LibraryViewModel.shared.artists.first { $0.name == name }
+                    ?? Artist(id: 0, name: name)
+            }
+            Button("Add to Playlist", systemImage: "music.note.list") {
+                showingAddToPlaylist = true
+            }
         }
         .sheet(isPresented: $showingAddToPlaylist) {
             AddToPlaylistSheet(tracks: [track])
+                .environment(\.hyperionBottomOverlayHeight, 0)
+        }
+        .sheet(item: $navigateToAlbum) { album in
+            NavigationStack { AlbumDetailView(album: album) }
+                .environment(\.hyperionBottomOverlayHeight, 0)
+        }
+        .sheet(item: $navigateToArtist) { artist in
+            NavigationStack { ArtistDetailView(artist: artist) }
                 .environment(\.hyperionBottomOverlayHeight, 0)
         }
     }
@@ -1627,28 +1721,26 @@ struct ArtistDetailView: View {
                 } else {
                     if !albums.isEmpty {
                         artistSectionTitle("Albums")
-                        LazyVStack(spacing: 0) {
+                        LazyVGrid(
+                            columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)],
+                            spacing: 16
+                        ) {
                             ForEach(albums) { album in
                                 NavigationLink {
                                     AlbumDetailView(album: album)
                                 } label: {
-                                    AlbumListRow(album: album)
-                                        .padding(.horizontal, 16)
-                                        .padding(.vertical, 10)
+                                    ArtistAlbumGridCard(album: album)
                                 }
                                 .buttonStyle(.plain)
-                                Color.roonBorder.frame(height: 0.5).padding(.leading, 82)
                             }
                         }
-                        .background(Color.roonSurface)
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
                         .padding(.horizontal, 16)
                     }
 
                     if !tracksByArtist.isEmpty {
-                        artistSectionTitle("Top Tracks")
+                        artistSectionTitle("Songs")
                         LazyVStack(spacing: 0) {
-                            ForEach(Array(tracksByArtist.prefix(12).enumerated()), id: \.element.id) { index, track in
+                            ForEach(Array(tracksByArtist.enumerated()), id: \.element.id) { index, track in
                                 Button {
                                     player.playTracks(tracksByArtist, startingAt: index)
                                 } label: {
@@ -1657,7 +1749,7 @@ struct ArtistDetailView: View {
                                         .padding(.vertical, 6)
                                 }
                                 .buttonStyle(.plain)
-                                if index < min(tracksByArtist.count, 12) - 1 {
+                                if index < tracksByArtist.count - 1 {
                                     Color.roonBorder.frame(height: 0.5).padding(.leading, 76)
                                 }
                             }

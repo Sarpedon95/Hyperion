@@ -4,26 +4,30 @@ import Foundation
 
 /// Single long-lived owner for Hyperion's audio playback and DSP infrastructure.
 ///
-/// AVPlayer handles HTTP streaming from LMS (seeking, KVO, buffering).
-/// AVAudioEngine owns Orpheus DSP configuration nodes. Current playback is not
-/// fed into those nodes, so the signal-path UI must not present Orpheus as
-/// verified audio processing unless this routing flag changes.
+/// Orpheus (AVAudioPlayerNode → AVAudioEngine DSP chain) is the primary playback
+/// path. OrpheusPlaybackEngine decodes LMS HTTP streams as PCM and schedules buffers
+/// into `playerNode`, which feeds the full DSP graph. AVPlayer is retained as a
+/// compatibility fallback (AirPlay, load failures, unsupported formats).
+///
 /// Both are process-wide singletons; SwiftUI views must never own either directly.
+/// Routing truth is in PlayerViewModel.isPlaybackRoutedThroughOrpheus, not here.
 @MainActor
 final class AudioPlayerManager: ObservableObject {
 
     static let shared = AudioPlayerManager()
 
-    // MARK: - Streaming path (AVPlayer)
-    /// Kept for backward compat with all PlayerViewModel KVO / AVPlayerItem usage.
+    // MARK: - Compatibility fallback (AVPlayer)
+    /// Used only when OrpheusPlaybackEngine cannot take the stream (AirPlay,
+    /// load failure, unsupported format). Not connected to the DSP chain.
     let player: AVPlayer
 
     // MARK: - DSP signal chain (AVAudioEngine)
-    /// Configured chain: playerNode → mainEQNode → headphoneEQNode → crossfeedMixer
+    /// Primary path: playerNode → mainEQNode → headphoneEQNode → crossfeedMixer
     ///        → levelingMixer → balanceMixer → mainMixerNode → outputNode
-    /// Important: AVPlayer output is not connected to `playerNode`; this graph is
-    /// currently a configurable Orpheus engine, not the verified playback route.
-    let isDSPChainFedByPlayback = false
+    /// OrpheusPlaybackEngine schedules decoded PCM buffers into `playerNode`.
+    /// When `PlayerViewModel.isPlaybackRoutedThroughOrpheus` is true, audio is
+    /// confirmed to be flowing through this chain.
+    let isDSPChainFedByPlayback = false  // legacy flag — routing truth is in PlayerViewModel
 
     let engine          = AVAudioEngine()
     let playerNode      = AVAudioPlayerNode()
@@ -43,7 +47,7 @@ final class AudioPlayerManager: ObservableObject {
         try? session.setCategory(.playback, mode: .default, options: [])
 
         buildDSPChain()
-        ServerLogStore.shared.info("AudioPlayerManager initialized (AVPlayer direct stream; Orpheus AVAudioEngine configured separately)")
+        ServerLogStore.shared.info("AudioPlayerManager initialized (Orpheus primary: PCM → AVAudioEngine DSP chain; AVPlayer retained as compatibility fallback)")
     }
 
     deinit {

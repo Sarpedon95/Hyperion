@@ -551,19 +551,23 @@ final class LibraryViewModel: ObservableObject {
 
     // MARK: - Search
 
-    func search(query: String) async -> (composers: [Composer], works: [Work], albums: [Album]) {
+    func search(query: String) async -> (composers: [Composer], works: [Work], albums: [Album], artists: [Artist], tracks: [Track]) {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return ([], [], []) }
+        guard !trimmed.isEmpty else { return ([], [], [], [], []) }
 
         let needle = SearchTextNormalizer.Needle(trimmed)
 
         var foundComposers: [Composer] = []
         var foundWorks:     [Work]     = []
         var foundAlbums:    [Album]    = []
+        var foundArtists:   [Artist]   = []
+        var foundTracks:    [Track]    = []
         var seenComposerIDs = Set<Int>()
         var seenWorkIDs     = Set<Int>()
         var seenWorkKeys    = Set<String>()
         var seenAlbumIDs    = Set<Int>()
+        var seenArtistIDs   = Set<Int>()
+        var seenTrackIDs    = Set<Int>()
 
         func mergeComposer(_ c: Composer) {
             guard seenComposerIDs.insert(c.id).inserted else { return }
@@ -586,6 +590,21 @@ final class LibraryViewModel: ObservableObject {
         // 1. Local composer search (always complete — paginated on load)
         if composers.isEmpty { await loadComposers() }
         composers.filter { needle.matches($0.artist) }.forEach { mergeComposer($0) }
+
+        // 1a. Local artist search
+        artists.filter { needle.matches($0.name) }.forEach { a in
+            if seenArtistIDs.insert(a.id).inserted { foundArtists.append(a) }
+        }
+
+        // 1b. Local track search
+        if songs.isEmpty { await loadSongs() }
+        songs.filter {
+            needle.matches($0.title) ||
+            needle.matches($0.trackartist ?? $0.albumartist ?? "") ||
+            needle.matches($0.album ?? "")
+        }.forEach { t in
+            if seenTrackIDs.insert(t.id).inserted { foundTracks.append(t) }
+        }
 
         // 2. Local album cache search
         if albums.isEmpty && !isLoadingAlbums {
@@ -659,11 +678,25 @@ final class LibraryViewModel: ObservableObject {
             if lExact != rExact { return lExact }
             return lhs.album.localizedCaseInsensitiveCompare(rhs.album) == .orderedAscending
         }
+        let sortedArtists = foundArtists.sorted { lhs, rhs in
+            let lExact = SearchTextNormalizer.folded(lhs.name).hasPrefix(needle.folded)
+            let rExact = SearchTextNormalizer.folded(rhs.name).hasPrefix(needle.folded)
+            if lExact != rExact { return lExact }
+            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+        }
+        let sortedTracks = foundTracks.sorted { lhs, rhs in
+            let lTitle = SearchTextNormalizer.folded(lhs.title).hasPrefix(needle.folded)
+            let rTitle = SearchTextNormalizer.folded(rhs.title).hasPrefix(needle.folded)
+            if lTitle != rTitle { return lTitle }
+            return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+        }
 
         return (
             Array(sortedComposers.prefix(30)),
             Array(sortedWorks.prefix(50)),
-            Array(sortedAlbums.prefix(60))
+            Array(sortedAlbums.prefix(60)),
+            Array(sortedArtists.prefix(20)),
+            Array(sortedTracks.prefix(30))
         )
     }
 

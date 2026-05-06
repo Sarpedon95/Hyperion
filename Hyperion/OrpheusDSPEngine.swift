@@ -129,6 +129,14 @@ final class OrpheusDSPEngine: NSObject, ObservableObject {
     @Published var presets: [OrpheusPreset]  = []
     @Published var activePresetID: UUID?     = nil
 
+    // MARK: Pure Mode
+    /// When true, all intentional Orpheus DSP processing is bypassed on the live
+    /// AVAudioEngine graph. Saved EQ/DSP settings are preserved unchanged.
+    /// Pure Mode is a temporary processing state, not a destructive reset.
+    @Published var isPureModeEnabled: Bool = UserDefaults.standard.bool(forKey: "hyperion.orpheus.pureMode") {
+        didSet { UserDefaults.standard.set(isPureModeEnabled, forKey: "hyperion.orpheus.pureMode") }
+    }
+
     // MARK: Bluetooth auto-switch
     @Published var connectedBluetoothDeviceName: String? = nil
 
@@ -154,12 +162,12 @@ final class OrpheusDSPEngine: NSObject, ObservableObject {
     }
 
     func applyMainEQ() {
-        applyEQBands(mainEQBands, bypassed: mainEQBypassed, to: audioManager.mainEQNode)
+        applyEQBands(mainEQBands, bypassed: isPureModeEnabled || mainEQBypassed, to: audioManager.mainEQNode)
         scheduleSettingsSave()
     }
 
     func applyHeadphoneEQ() {
-        applyEQBands(headphoneEQBands, bypassed: headphoneEQBypassed, to: audioManager.headphoneEQNode)
+        applyEQBands(headphoneEQBands, bypassed: isPureModeEnabled || headphoneEQBypassed, to: audioManager.headphoneEQNode)
         scheduleSettingsSave()
     }
 
@@ -182,7 +190,7 @@ final class OrpheusDSPEngine: NSObject, ObservableObject {
 
     func applyCrossfeed() {
         let mixer = audioManager.crossfeedMixer
-        if crossfeedBypassed {
+        if isPureModeEnabled || crossfeedBypassed {
             mixer.outputVolume = 1.0
         } else {
             let attenuation = max(0.5, 1.0 - (crossfeedLevel / 24.0))
@@ -193,7 +201,7 @@ final class OrpheusDSPEngine: NSObject, ObservableObject {
 
     func applyVolumeLeveling() {
         let mixer = audioManager.levelingMixer
-        if volumeLevelingBypassed {
+        if isPureModeEnabled || volumeLevelingBypassed {
             mixer.outputVolume = 1.0
         } else {
             let gainDB = volumeLevelingTargetLUFS - (-14.0)
@@ -204,7 +212,7 @@ final class OrpheusDSPEngine: NSObject, ObservableObject {
 
     func applyBalance() {
         let mixer = audioManager.balanceMixer
-        if balanceBypassed {
+        if isPureModeEnabled || balanceBypassed {
             mixer.pan = 0
             mixer.outputVolume = 1.0
         } else {
@@ -217,7 +225,7 @@ final class OrpheusDSPEngine: NSObject, ObservableObject {
 
     func applyHeadroom() {
         let mainMixer = audioManager.engine.mainMixerNode
-        if headroomBypassed {
+        if isPureModeEnabled || headroomBypassed {
             mainMixer.outputVolume = 1.0
         } else {
             let db: Float = headroomMode == .auto ? -3.0 : max(-3.0, min(0.0, headroomManualDB))
@@ -303,11 +311,15 @@ final class OrpheusDSPEngine: NSObject, ObservableObject {
             balanceBypassed || (abs(balanceLeft) <= 0.05 && abs(balanceRight) <= 0.05 && !balanceMono) ? "Balance" : nil
         ].compactMap { $0 }
 
+        // In Pure Mode all processing is bypassed on the graph, so nothing is "active"
+        // even if Orpheus is routing. The items are still captured for reference.
+        let orpheusRoutedAndNormal = isPlaybackRoutedThroughOrpheus && !isPureModeEnabled
         return OrpheusSignalPathState(
             isPlaybackRoutedThroughOrpheus: isPlaybackRoutedThroughOrpheus,
+            isPureModeEnabled: isPureModeEnabled,
             activePresetName: presetName,
-            activeItems: isPlaybackRoutedThroughOrpheus ? items : [],
-            configuredOnlyItems: isPlaybackRoutedThroughOrpheus ? [] : items,
+            activeItems: orpheusRoutedAndNormal ? items : [],
+            configuredOnlyItems: orpheusRoutedAndNormal ? [] : (isPlaybackRoutedThroughOrpheus ? [] : items),
             inactiveItems: inactive
         )
     }

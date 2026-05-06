@@ -107,6 +107,9 @@ struct NowPlayingView: View {
     @State private var ooWorkDetail: OOWorkDetailResponse? = nil
     @State private var showLyrics: Bool = false
 
+    @State private var navigateToArtist: Artist? = nil
+    @State private var navigateToAlbum: Album? = nil
+
     private var qualityPillInfo: (label: String, dotColor: Color, shouldPulse: Bool) {
         let path = signalPath
         return (path.badgeLabel, path.worstStatus.tintColor, path.isVerifiedBitPerfect)
@@ -122,7 +125,7 @@ struct NowPlayingView: View {
             localVolume:       player.volume,
             lmsQuality:        player.lmsAudioQuality,
             orpheusState:      orpheus.signalPathState(
-                isPlaybackRoutedThroughOrpheus: AudioPlayerManager.shared.isDSPChainFedByPlayback
+                isPlaybackRoutedThroughOrpheus: player.isPlaybackRoutedThroughOrpheus
             )
         )
     }
@@ -230,6 +233,12 @@ struct NowPlayingView: View {
                 Haptics.light()
                 withAnimation { showQueuePanel = true }
             }
+            if let track = player.currentTrack {
+                Button("Play Next") {
+                    Haptics.light()
+                    player.playNext([track])
+                }
+            }
             Button("Lyrics") {
                 Haptics.light()
                 showLyrics = true
@@ -238,13 +247,13 @@ struct NowPlayingView: View {
                 Haptics.light()
                 showSignalPath = true
             }
-            if player.currentTrack != nil {
+            if let track = player.currentTrack {
                 Button("Add to Playlist") {
                     Haptics.light()
                     showAddToPlaylist = true
                 }
                 Button(likedTracks.isLiked(player.currentTrack) ? "Unlike" : "Like") {
-                    if let track = player.currentTrack { likedTracks.toggle(track) }
+                    likedTracks.toggle(track)
                 }
             }
             Button(player.isPlaying ? "Pause" : "Play") {
@@ -278,6 +287,18 @@ struct NowPlayingView: View {
                 AddToPlaylistSheet(tracks: [track])
                     .environment(\.hyperionBottomOverlayHeight, 0)
             }
+        }
+        .sheet(item: $navigateToArtist) { artist in
+            NavigationStack {
+                ArtistDetailView(artist: artist)
+            }
+            .environment(\.hyperionBottomOverlayHeight, 0)
+        }
+        .sheet(item: $navigateToAlbum) { album in
+            NavigationStack {
+                AlbumDetailView(album: album)
+            }
+            .environment(\.hyperionBottomOverlayHeight, 0)
         }
     }
 
@@ -449,7 +470,6 @@ struct NowPlayingView: View {
     // MARK: - Track info
 
     private var trackInfo: some View {
-        // ARC-style: left-aligned track info
         VStack(alignment: .leading, spacing: 4) {
             Text(player.currentTrack?.title ?? "")
                 .font(.system(size: 22, weight: .bold, design: .default))
@@ -464,15 +484,44 @@ struct NowPlayingView: View {
                 ?? player.currentTrack?.trackartist
                 ?? ""
             if !artistLine.isEmpty {
-                Text(artistLine)
-                    .font(.system(size: 15, weight: .regular, design: .default))
-                    .foregroundColor(.roonSecondary)
-                    .multilineTextAlignment(.leading)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                Button {
+                    navigateToArtist = resolvedArtist(named: artistLine)
+                } label: {
+                    Text(artistLine)
+                        .font(.system(size: 15, weight: .regular, design: .default))
+                        .foregroundColor(.roonAccent)
+                        .multilineTextAlignment(.leading)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+            }
+
+            if let albumName = player.currentTrack?.album, !albumName.isEmpty {
+                Button {
+                    if let album = resolvedAlbum() { navigateToAlbum = album }
+                } label: {
+                    Text(albumName)
+                        .font(.system(size: 13, weight: .regular, design: .default))
+                        .foregroundColor(.roonSecondary)
+                        .multilineTextAlignment(.leading)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func resolvedArtist(named name: String) -> Artist {
+        LibraryViewModel.shared.artists.first { $0.name == name }
+            ?? Artist(id: 0, name: name)
+    }
+
+    private func resolvedAlbum() -> Album? {
+        guard let albumID = player.currentTrack?.albumID else { return nil }
+        return LibraryViewModel.shared.albums.first { $0.id == albumID }
     }
 
     // MARK: - Progress

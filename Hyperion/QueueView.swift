@@ -229,6 +229,8 @@ struct QueueTrackRow: View {
     let isUpcoming: Bool
     @ObservedObject private var player = PlayerViewModel.shared
     @State private var showingAddToPlaylist = false
+    @State private var navigateToAlbum: Album? = nil
+    @State private var navigateToArtist: Artist? = nil
 
     var body: some View {
         HStack(spacing: 14) {
@@ -277,11 +279,33 @@ struct QueueTrackRow: View {
             } label: {
                 Label("Play Now", systemImage: "play.fill")
             }
+            Button {
+                Haptics.light()
+                player.playNext([track])
+            } label: {
+                Label("Play Next", systemImage: "text.insert")
+            }
             Button(role: .destructive) {
                 Haptics.medium()
                 player.removeFromQueue(at: queueIndex)
             } label: {
                 Label("Remove from Queue", systemImage: "trash")
+            }
+            Button {
+                if let albumID = track.albumID,
+                   let album = LibraryViewModel.shared.albums.first(where: { $0.id == albumID }) {
+                    navigateToAlbum = album
+                }
+            } label: {
+                Label("Go to Album", systemImage: "square.stack")
+            }
+            Button {
+                let name = track.trackartist ?? track.albumartist ?? ""
+                guard !name.isEmpty else { return }
+                navigateToArtist = LibraryViewModel.shared.artists.first { $0.name == name }
+                    ?? Artist(id: 0, name: name)
+            } label: {
+                Label("Go to Artist", systemImage: "person.crop.circle")
             }
             Button {
                 showingAddToPlaylist = true
@@ -291,6 +315,14 @@ struct QueueTrackRow: View {
         }
         .sheet(isPresented: $showingAddToPlaylist) {
             AddToPlaylistSheet(tracks: [track])
+                .environment(\.hyperionBottomOverlayHeight, 0)
+        }
+        .sheet(item: $navigateToAlbum) { album in
+            NavigationStack { AlbumDetailView(album: album) }
+                .environment(\.hyperionBottomOverlayHeight, 0)
+        }
+        .sheet(item: $navigateToArtist) { artist in
+            NavigationStack { ArtistDetailView(artist: artist) }
                 .environment(\.hyperionBottomOverlayHeight, 0)
         }
         .accessibilityAction(named: "Remove from queue") {
