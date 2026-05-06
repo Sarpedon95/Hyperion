@@ -115,7 +115,7 @@ final class MetadataService {
 
     private func fetchOpenOpusPortrait(composer: String) async -> URL? {
         do {
-            let composers = try await withTimeout(seconds: 5) {
+            let composers = try await MetadataService.withTimeout(seconds: 5) {
                 try await OpenOpusService.shared.searchComposers(name: composer)
             }
             if let c = composers.first, let portrait = c.portrait, !portrait.isEmpty {

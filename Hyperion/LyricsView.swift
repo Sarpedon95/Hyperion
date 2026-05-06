@@ -390,7 +390,7 @@ private struct InterludeDots: View {
     var body: some View {
         // .animation schedule drives at display refresh rate when active,
         // .paused emits a single update so the view renders once while inactive.
-        TimelineView(isActive ? .animation : .paused) { context in
+        TimelineView(.animation(paused: !isActive)) { context in
             let t = context.date.timeIntervalSince1970
             HStack(spacing: 8) {
                 ForEach(0..<3, id: \.self) { i in

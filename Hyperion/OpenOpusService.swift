@@ -409,7 +409,7 @@ extension String {
                 if a[i-1] == b[j-1] {
                     curr = dp[j-1]
                 } else {
-                    curr = 1 + Swift.min(dp[j-1], dp[j], prev)
+                    curr = 1 + Swift.min(dp[j-1], Swift.min(dp[j], prev))
                 }
                 dp[j-1] = prev
                 prev = curr
