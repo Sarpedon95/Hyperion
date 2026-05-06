@@ -644,7 +644,7 @@ struct SearchResultsView: View {
                         LazyVStack(spacing: 0) {
                             ForEach(results.playlists) { playlist in
                                 NavigationLink {
-                                    PlaylistDetailView(playlist: playlist)
+                                    PlaylistDetailView(playlistID: playlist.id)
                                 } label: {
                                     SearchPlaylistRow(playlist: playlist)
                                 }
