@@ -404,6 +404,15 @@ final class LyrionAPI {
         return Self.parseAlbums(arr)
     }
 
+    func getTracksForGenre(genreID: Int, count: Int = 20) async throws -> [Track] {
+        try Task.checkCancellation()
+        let result = try await request(params: [
+            "titles", 0, count, "genre_id:\(genreID)",
+            "tags:\(trackTags)", "sort:random"
+        ])
+        return Self.parseTracks(result["titles_loop"] as? [[String: Any]] ?? [])
+    }
+
     func getAllSongs(start: Int = 0, count: Int = 500) async throws -> [Track] {
         try Task.checkCancellation()
         let result = try await request(params: [

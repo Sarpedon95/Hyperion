@@ -67,77 +67,112 @@ struct LyricsView: View {
     // MARK: - Synced view
 
     private func syncedView(lines: [LyricsLine]) -> some View {
-        GeometryReader { geo in
-            ScrollViewReader { proxy in
-                ScrollView(showsIndicators: false) {
-                    VStack(spacing: 0) {
-                        // Top padding so the first line starts centered.
-                        Color.clear.frame(height: geo.size.height * 0.38)
+        let displayLines = buildDisplayLines(from: lines)
+        return GeometryReader { geo in
+            ZStack {
+                ScrollViewReader { proxy in
+                    ScrollView(showsIndicators: false) {
+                        VStack(spacing: 0) {
+                            Color.clear.frame(height: geo.size.height * 0.38)
 
-                        ForEach(Array(lines.enumerated()), id: \.element.id) { idx, line in
-                            lyricLine(text: line.text, index: idx)
-                                .id(line.id)
+                            ForEach(Array(displayLines.enumerated()), id: \.element.id) { idx, line in
+                                lyricLine(line: line, index: idx, activeIndex: activeLineIndex)
+                                    .id(line.id)
+                                    .onTapGesture {
+                                        if case .lyric(let ll) = line.kind {
+                                            player.seek(to: ll.time)
+                                        }
+                                    }
+                            }
+
+                            Color.clear.frame(height: geo.size.height * 0.55)
                         }
+                    }
+                    .onChange(of: activeLineIndex) { _, newIndex in
+                        guard newIndex < displayLines.count else { return }
+                        withAnimation(.spring(response: 0.45, dampingFraction: 0.88)) {
+                            proxy.scrollTo(displayLines[newIndex].id, anchor: .center)
+                        }
+                    }
+                    .onChange(of: player.currentTime) { _, time in
+                        let newIndex = lineIndex(for: time, in: displayLines)
+                        if newIndex != activeLineIndex { activeLineIndex = newIndex }
+                    }
+                    .onAppear {
+                        let idx = lineIndex(for: player.currentTime, in: displayLines)
+                        activeLineIndex = idx
+                        if idx < displayLines.count {
+                            proxy.scrollTo(displayLines[idx].id, anchor: .center)
+                        }
+                    }
+                }
 
-                        // Bottom padding so the last line can scroll to center.
-                        Color.clear.frame(height: geo.size.height * 0.55)
-                    }
-                }
-                // Scroll to active line whenever it changes.
-                .onChange(of: activeLineIndex) { _, newIndex in
-                    guard newIndex < lines.count else { return }
-                    withAnimation(.spring(response: 0.45, dampingFraction: 0.88)) {
-                        proxy.scrollTo(lines[newIndex].id, anchor: .center)
-                    }
-                }
-                // Recompute active line on every playback-time tick.
-                .onChange(of: player.currentTime) { _, time in
-                    let newIndex = lineIndex(for: time, in: lines)
-                    if newIndex != activeLineIndex { activeLineIndex = newIndex }
-                }
-                // Snap to current position immediately on appear — no animation.
-                .onAppear {
-                    let idx = lineIndex(for: player.currentTime, in: lines)
-                    activeLineIndex = idx
-                    if idx < lines.count {
-                        proxy.scrollTo(lines[idx].id, anchor: .center)
-                    }
+                // Top and bottom gradient masks
+                VStack {
+                    LinearGradient(
+                        colors: [Color(hex: "#0f1209"), Color(hex: "#0f1209").opacity(0)],
+                        startPoint: .top, endPoint: .bottom
+                    )
+                    .frame(height: 80)
+                    .allowsHitTesting(false)
+                    Spacer()
+                    LinearGradient(
+                        colors: [Color(hex: "#0f1209").opacity(0), Color(hex: "#0f1209")],
+                        startPoint: .top, endPoint: .bottom
+                    )
+                    .frame(height: 80)
+                    .allowsHitTesting(false)
                 }
             }
         }
     }
 
-    // Each lyric line adapts font/color based on its position relative to the
-    // active line. The transition is driven by `activeLineIndex` only — not by
-    // every `currentTime` tick — so the animation triggers at most once per line.
     @ViewBuilder
-    private func lyricLine(text: String, index: Int) -> some View {
-        let isActive = index == activeLineIndex
-        let isPast   = index < activeLineIndex
-        let display  = text.trimmingCharacters(in: .whitespaces).isEmpty ? "•" : text
+    private func lyricLine(line: DisplayLine, index: Int, activeIndex: Int) -> some View {
+        let distance = abs(index - activeIndex)
+        let isActive = distance == 0
 
-        Text(display)
-            .font(isActive
-                ? .system(size: 24, weight: .bold,    design: .default)
-                : .system(size: 20, weight: .regular, design: .default))
-            .foregroundColor(
-                isActive ? .white
-                : isPast ? Color.white.opacity(0.22)
-                         : Color.white.opacity(0.38)
-            )
-            .multilineTextAlignment(.center)
-            .padding(.horizontal, 32)
-            .padding(.vertical, isActive ? 16 : 10)
-            .frame(maxWidth: .infinity)
-            .animation(.easeOut(duration: 0.22), value: activeLineIndex)
-            .contentShape(Rectangle())
+        switch line.kind {
+        case .lyric:
+            let opacity: Double = isActive ? 1.0 : distance == 1 ? 0.38 : distance == 2 ? 0.20 : 0.12
+            Text(line.text)
+                .font(isActive
+                    ? .system(size: 24, weight: .bold,    design: .default)
+                    : .system(size: 20, weight: .regular, design: .default))
+                .foregroundColor(.white.opacity(opacity))
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 32)
+                .padding(.vertical, isActive ? 16 : 10)
+                .frame(maxWidth: .infinity)
+                .animation(.easeOut(duration: 0.22), value: activeIndex)
+                .contentShape(Rectangle())
+
+        case .interlude:
+            InterludeDots(isActive: isActive)
+                .padding(.vertical, isActive ? 20 : 14)
+                .frame(maxWidth: .infinity)
+                .animation(.easeOut(duration: 0.22), value: activeIndex)
+        }
     }
 
     // MARK: - Plain lyrics view
 
     private func plainView(text: String) -> some View {
         ScrollView(showsIndicators: false) {
-            VStack(spacing: 12) {
+            VStack(spacing: 16) {
+                // "No sync" badge
+                HStack(spacing: 6) {
+                    Image(systemName: "text.alignleft")
+                        .font(.system(size: 11))
+                    Text("Lyrics available — no sync")
+                        .font(.roonBody(11, weight: .medium))
+                }
+                .foregroundColor(.roonAccent)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Color.roonAccent.opacity(0.15))
+                .clipShape(Capsule())
+
                 Text(text)
                     .font(.system(size: 17, weight: .regular))
                     .foregroundColor(.white.opacity(0.72))
@@ -145,14 +180,19 @@ struct LyricsView: View {
                     .lineSpacing(8)
                     .padding(.horizontal, 32)
 
-                HStack(spacing: 5) {
-                    Image(systemName: "text.quote")
-                        .font(.system(size: 10))
-                        .foregroundColor(.roonTertiary)
-                    Text("Not time-synced")
-                        .font(.roonBody(11))
-                        .foregroundColor(.roonTertiary)
+                Button {
+                    showManualSearch = true
+                } label: {
+                    Text("Search for synced lyrics")
+                        .font(.roonBody(14, weight: .semibold))
+                        .foregroundColor(.roonBase)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 11)
+                        .background(Color.roonAccent)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .padding(.horizontal, 40)
                 }
+                .buttonStyle(.plain)
             }
             .padding(.top, 80)
             .padding(.bottom, 48)
@@ -182,17 +222,17 @@ struct LyricsView: View {
                     .padding(.horizontal, 40)
             }
             if let searchAction {
-                Button("Search manually", action: searchAction)
-                    .font(.roonBody(14, weight: .medium))
-                    .foregroundColor(.roonAccent)
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 10)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(Color.roonAccent, lineWidth: 1)
-                    )
-                    .buttonStyle(.plain)
-                    .padding(.top, 4)
+                Button(action: searchAction) {
+                    Text("Search manually")
+                        .font(.roonBody(14, weight: .semibold))
+                        .foregroundColor(.roonBase)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 10)
+                        .background(Color.roonAccent)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 4)
             }
         }
     }
@@ -201,7 +241,6 @@ struct LyricsView: View {
 
     private var topBar: some View {
         ZStack(alignment: .top) {
-            // Gradient fade so lyrics appear to scroll under the bar.
             LinearGradient(
                 colors: [Color(hex: "#0f1209"), Color(hex: "#0f1209").opacity(0)],
                 startPoint: .top,
@@ -238,7 +277,6 @@ struct LyricsView: View {
 
                 Spacer()
 
-                // Mirror of the close button to keep the title centered.
                 Color.clear.frame(width: 44, height: 44)
             }
             .padding(.horizontal, 16)
@@ -246,12 +284,55 @@ struct LyricsView: View {
         }
     }
 
+    // MARK: - Display line model
+
+    private enum DisplayLineKind {
+        case lyric(LyricsLine)
+        case interlude
+    }
+
+    private struct DisplayLine: Identifiable {
+        let id: UUID
+        let text: String
+        let time: TimeInterval
+        let kind: DisplayLineKind
+
+        init(lyric: LyricsLine) {
+            id = lyric.id
+            text = lyric.text.trimmingCharacters(in: .whitespaces).isEmpty ? "•" : lyric.text
+            time = lyric.time
+            kind = .lyric(lyric)
+        }
+
+        init(interludeAt time: TimeInterval) {
+            id = UUID()
+            text = "•••"
+            self.time = time
+            kind = .interlude
+        }
+    }
+
+    private func buildDisplayLines(from lines: [LyricsLine]) -> [DisplayLine] {
+        var result: [DisplayLine] = []
+        for (i, line) in lines.enumerated() {
+            if i > 0 {
+                let gap = line.time - lines[i - 1].time
+                if gap > 8 {
+                    result.append(DisplayLine(interludeAt: lines[i - 1].time + gap / 2))
+                }
+            }
+            result.append(DisplayLine(lyric: line))
+        }
+        return result
+    }
+
     // MARK: - Helpers
 
-    private func lineIndex(for time: TimeInterval, in lines: [LyricsLine]) -> Int {
+    private func lineIndex(for time: TimeInterval, in lines: [DisplayLine]) -> Int {
+        let adjusted = time - 0.3
         var result = 0
         for (i, line) in lines.enumerated() {
-            if line.time <= time { result = i } else { break }
+            if line.time <= adjusted { result = i } else { break }
         }
         return result
     }
@@ -268,7 +349,8 @@ struct LyricsView: View {
             artistName: artist.isEmpty ? (track.albumartist ?? track.title) : artist,
             trackName:  title,
             albumName:  album.isEmpty ? nil : album,
-            duration:   (track.duration ?? 0) > 0 ? track.duration : nil
+            duration:   (track.duration ?? 0) > 0 ? track.duration : nil,
+            trackID:    track.id
         )
 
         withAnimation(.easeIn(duration: 0.2)) {
@@ -282,13 +364,54 @@ struct LyricsView: View {
         let title  = track.work?.isEmpty == false ? track.work! : track.title
         let album  = track.album ?? ""
         LyricsService.shared.pinResult(
-            candidate,
-            artist: artistResolved,
-            track:  title,
-            album:  album
+            candidate: candidate,
+            trackID:   track.id,
+            artist:    artistResolved,
+            track:     title,
+            album:     album
         )
         withAnimation(.easeIn(duration: 0.2)) {
             loadState = .loaded(candidate.result)
+        }
+    }
+}
+
+// MARK: - Interlude dots animation
+
+private struct InterludeDots: View {
+    let isActive: Bool
+    @State private var phase: Int = 0
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ForEach(0..<3) { i in
+                Circle()
+                    .fill(Color.white.opacity(dotOpacity(for: i)))
+                    .frame(width: isActive ? 8 : 5, height: isActive ? 8 : 5)
+                    .animation(.easeInOut(duration: 0.3).delay(Double(i) * 0.12), value: phase)
+            }
+        }
+        .onAppear {
+            guard isActive else { return }
+            startPulse()
+        }
+        .onChange(of: isActive) { _, active in
+            if active { startPulse() }
+        }
+    }
+
+    private func dotOpacity(for index: Int) -> Double {
+        guard isActive else { return 0.15 }
+        let active = phase % 3
+        if index == active { return 0.9 }
+        if index == (active + 1) % 3 { return 0.45 }
+        return 0.15
+    }
+
+    private func startPulse() {
+        Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { timer in
+            guard isActive else { timer.invalidate(); return }
+            withAnimation { phase += 1 }
         }
     }
 }

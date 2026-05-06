@@ -20,7 +20,8 @@ final class PlaylistStore: ObservableObject {
 
     @Published private(set) var playlists: [LocalPlaylist] = []
 
-    private let defaultsKey = "hyperion.localPlaylists.v1"
+    private let filename  = "hyperion_playlists.json"
+    private let legacyKey = "hyperion.localPlaylists.v1"
     private var saveTask: Task<Void, Never>?
 
     private init() {
@@ -86,7 +87,14 @@ final class PlaylistStore: ObservableObject {
     }
 
     private func load() {
-        guard let data = UserDefaults.standard.data(forKey: defaultsKey) else { return }
+        let fileURL = AppFiles.url(for: filename)
+        // One-time migration from UserDefaults
+        if !FileManager.default.fileExists(atPath: fileURL.path),
+           let data = UserDefaults.standard.data(forKey: legacyKey) {
+            try? data.write(to: fileURL, options: .atomicWrite)
+            UserDefaults.standard.removeObject(forKey: legacyKey)
+        }
+        guard let data = try? Data(contentsOf: fileURL) else { return }
         do {
             playlists = try JSONDecoder().decode([LocalPlaylist].self, from: data)
                 .sorted { $0.updatedAt > $1.updatedAt }
@@ -98,20 +106,21 @@ final class PlaylistStore: ObservableObject {
     func saveNow() {
         saveTask?.cancel()
         saveTask = nil
+        let url = AppFiles.url(for: filename)
         if let data = try? JSONEncoder().encode(playlists) {
-            UserDefaults.standard.set(data, forKey: defaultsKey)
+            try? data.write(to: url, options: .atomicWrite)
         }
     }
 
     private func scheduleSave() {
         saveTask?.cancel()
         let snapshot = playlists
-        let key = defaultsKey
+        let url = AppFiles.url(for: filename)
         saveTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 500_000_000)
             guard !Task.isCancelled else { return }
             if let data = try? JSONEncoder().encode(snapshot) {
-                UserDefaults.standard.set(data, forKey: key)
+                try? data.write(to: url, options: .atomicWrite)
             }
         }
     }

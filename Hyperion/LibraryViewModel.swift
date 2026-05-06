@@ -551,9 +551,9 @@ final class LibraryViewModel: ObservableObject {
 
     // MARK: - Search
 
-    func search(query: String) async -> (composers: [Composer], works: [Work], albums: [Album], artists: [Artist], tracks: [Track]) {
+    func search(query: String) async -> (composers: [Composer], works: [Work], albums: [Album], artists: [Artist], tracks: [Track], genres: [Genre], playlists: [LocalPlaylist]) {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return ([], [], [], [], []) }
+        guard !trimmed.isEmpty else { return ([], [], [], [], [], [], []) }
 
         let needle = SearchTextNormalizer.Needle(trimmed)
 
@@ -651,10 +651,10 @@ final class LibraryViewModel: ObservableObject {
         }
 
         let serverAlbums = await serverAlbumsTask
-        guard !Task.isCancelled else { return ([], [], [], [], []) }
+        guard !Task.isCancelled else { return ([], [], [], [], [], [], []) }
 
         let serverWorkBatches = (try? await directWorksTask) ?? []
-        guard !Task.isCancelled else { return ([], [], [], [], []) }
+        guard !Task.isCancelled else { return ([], [], [], [], [], [], []) }
 
         serverAlbums.forEach { mergeAlbum($0) }
 
@@ -690,13 +690,19 @@ final class LibraryViewModel: ObservableObject {
             if lTitle != rTitle { return lTitle }
             return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
         }
+        let matchedGenres = genres.filter { needle.matches($0.name) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        let matchedPlaylists = await PlaylistStore.shared.playlists.filter { needle.matches($0.name) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
 
         return (
             Array(sortedComposers.prefix(30)),
             Array(sortedWorks.prefix(50)),
             Array(sortedAlbums.prefix(60)),
             Array(sortedArtists.prefix(20)),
-            Array(sortedTracks.prefix(30))
+            Array(sortedTracks.prefix(30)),
+            Array(matchedGenres.prefix(15)),
+            Array(matchedPlaylists.prefix(15))
         )
     }
 

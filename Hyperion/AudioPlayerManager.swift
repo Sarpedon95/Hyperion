@@ -16,10 +16,12 @@ final class AudioPlayerManager: ObservableObject {
 
     static let shared = AudioPlayerManager()
 
-    // MARK: - Compatibility fallback (AVPlayer)
+    // MARK: - Compatibility fallback (AVQueuePlayer)
     /// Used only when OrpheusPlaybackEngine cannot take the stream (AirPlay,
     /// load failure, unsupported format). Not connected to the DSP chain.
-    let player: AVPlayer
+    /// AVQueuePlayer enables gapless playback by pre-inserting the next item
+    /// before the current one ends; the player auto-advances with no silence gap.
+    let player: AVQueuePlayer
 
     // MARK: - DSP signal chain (AVAudioEngine)
     /// Primary path: playerNode → mainEQNode → headphoneEQNode → crossfeedMixer
@@ -38,9 +40,10 @@ final class AudioPlayerManager: ObservableObject {
     let balanceMixer    = AVAudioMixerNode()
 
     private init() {
-        let persistentPlayer = AVPlayer()
+        let persistentPlayer = AVQueuePlayer()
         persistentPlayer.automaticallyWaitsToMinimizeStalling = true
-        persistentPlayer.actionAtItemEnd = .pause
+        // Do NOT set actionAtItemEnd to .pause — leave the default (.advance) so
+        // pre-inserted items play back-to-back without a silence gap (gapless).
         player = persistentPlayer
 
         let session = AVAudioSession.sharedInstance()
@@ -86,8 +89,26 @@ final class AudioPlayerManager: ObservableObject {
 
     // MARK: - PlayerViewModel compatibility surface
 
+    /// Replace the entire queue with a single item. Removes all pre-queued
+    /// gapless items so the player starts fresh on the new track.
     func replaceCurrentItem(with item: AVPlayerItem?) {
-        player.replaceCurrentItem(with: item)
+        player.removeAllItems()
+        if let item { player.insert(item, after: nil) }
+    }
+
+    /// Pre-insert the next item at the tail of the queue so AVQueuePlayer can
+    /// advance to it without a silence gap when the current item ends.
+    func preloadNextItem(_ item: AVPlayerItem) {
+        guard !player.items().contains(item) else { return }
+        player.insert(item, after: player.items().last)
+    }
+
+    /// Remove all queued items except the currently playing one.
+    /// Called when the queue changes so stale pre-loaded items don't play.
+    func removePreloadedItems() {
+        let items = player.items()
+        guard items.count > 1 else { return }
+        for item in items.dropFirst() { player.remove(item) }
     }
 
     func pause() {

@@ -3,6 +3,7 @@ import Combine
 import AVFoundation
 import MediaPlayer
 import UIKit
+import WidgetKit
 
 @MainActor
 final class PlayerViewModel: ObservableObject {
@@ -39,7 +40,7 @@ final class PlayerViewModel: ObservableObject {
             // Guard NaN/inf — AVPlayer volume is undefined for non-finite values.
             let clamped = volume.isFinite ? max(0, min(1, volume)) : 1
             if clamped != volume { volume = clamped; return }
-            player.volume = clamped
+            player.volume = clamped * crossfadeVolume
         }
     }
 
@@ -49,6 +50,8 @@ final class PlayerViewModel: ObservableObject {
             prefetchTask?.cancel()
             prefetchTask = nil
             prefetchedNextAsset = nil   // queue changed — cached asset may be wrong
+            gaplessPreloadedItem = nil
+            audioManager.removePreloadedItems()
             postQueueChangedNotification()
         }
     }
@@ -99,6 +102,17 @@ final class PlayerViewModel: ObservableObject {
     private var pendingSeekWatchdogTask: Task<Void, Never>?
     private var playbackStartupWatchdogTask: Task<Void, Never>?
 
+    // MARK: - Radio mode
+
+    /// When on, appends similar tracks automatically when the queue runs out.
+    @Published var isRadioEnabled: Bool = {
+        UserDefaults.standard.bool(forKey: "hyperion.radio.enabled")
+    }() {
+        didSet { UserDefaults.standard.set(isRadioEnabled, forKey: "hyperion.radio.enabled") }
+    }
+
+    private var radioRefreshTask: Task<Void, Never>? = nil
+
     // MARK: - Orpheus engine
 
     /// When true, new tracks route through OrpheusPlaybackEngine (PCM → DSP chain).
@@ -141,6 +155,31 @@ final class PlayerViewModel: ObservableObject {
     private var prefetchedNextAsset: (trackID: Int, asset: AVURLAsset)? = nil
     private var prefetchTask: Task<Void, Never>? = nil
     private var lmsAudioQualityTask: Task<Void, Never>? = nil
+
+    // MARK: - Gapless playback (AVPlayer path only)
+
+    /// Pre-inserted AVPlayerItem in the AVQueuePlayer for the next track.
+    /// When non-nil the player already has this item queued and will advance
+    /// to it without a silence gap when the current item ends.
+    private var gaplessPreloadedItem: (trackID: Int, item: AVPlayerItem, url: URL)? = nil
+
+    // MARK: - Crossfade (AVPlayer path only)
+
+    /// Duration in seconds of the fade-out/fade-in at track boundaries.
+    /// 0 = off. Persisted in UserDefaults.
+    @Published var crossfadeDuration: Double = {
+        UserDefaults.standard.double(forKey: "hyperion.crossfade.duration")
+    }() {
+        didSet { UserDefaults.standard.set(crossfadeDuration, forKey: "hyperion.crossfade.duration") }
+    }
+    /// Multiplied with `volume` to produce the actual AVPlayer volume during
+    /// crossfade ramps. 1.0 at rest, ramps 1→0 on fade-out, 0→1 on fade-in.
+    private var crossfadeVolume: Float = 1.0
+    private var crossfadeTask: Task<Void, Never>? = nil
+    private var isCrossfadingOut: Bool = false
+
+    /// Prevents fetching radio tracks more than once per track when ≤30 s remain.
+    private var radioEarlyFetchTriggered: Bool = false
 
     // MARK: - "Resume where you left off" state persistence
 
@@ -981,6 +1020,7 @@ final class PlayerViewModel: ObservableObject {
         if let original = originalQueueBeforeShuffle {
             originalQueueBeforeShuffle = original + tracks
         }
+        prefetchNextTrackAsset()
     }
 
     func playTrack(at index: Int) {
@@ -1008,6 +1048,7 @@ final class PlayerViewModel: ObservableObject {
         // Update lock screen immediately
         MPNowPlayingInfoCenter.default().playbackState = .paused
         refreshNowPlayingPlaybackState(force: true)
+        NowPlayingWidgetStore.shared.update(track: currentTrack, isPlaying: false)
     }
 
     func resume() {
@@ -1206,6 +1247,12 @@ final class PlayerViewModel: ObservableObject {
         prefetchTask = nil
         lmsAudioQualityTask?.cancel()
         lmsAudioQualityTask = nil
+        crossfadeTask?.cancel()
+        crossfadeTask = nil
+        isCrossfadingOut = false
+        crossfadeVolume = 1
+        gaplessPreloadedItem = nil
+        radioEarlyFetchTriggered = false
 
         // Invalidate all KVO observations first.
         statusObservation?.invalidate()
@@ -1321,6 +1368,9 @@ final class PlayerViewModel: ObservableObject {
         if originalQueueBeforeShuffle != nil {
             originalQueueBeforeShuffle = filteredOriginalQueuePreservingCounts()
         }
+
+        // Re-queue the new next track for gapless playback after the reorder.
+        prefetchNextTrackAsset()
     }
 
     // MARK: - Artwork (delegates to ArtworkCache)
@@ -1511,7 +1561,12 @@ final class PlayerViewModel: ObservableObject {
             self.orpheusDidStartAudiblePlayback = confirmed
             if confirmed {
                 ServerLogStore.shared.info("Orpheus: first audio confirmed through DSP chain")
+                self.prefetchNextTrackAsset()
             }
+        }
+        engine.onNearEnd = { [weak self] in
+            guard let self, playbackID == self.activePlaybackID else { return }
+            self.prefetchNextTrackAsset()
         }
 
         let headers = LyrionAPI.shared.httpHeaders(
@@ -1644,6 +1699,12 @@ final class PlayerViewModel: ObservableObject {
         prefetchTask = nil
         lmsAudioQualityTask?.cancel()
         lmsAudioQualityTask = nil
+        crossfadeTask?.cancel()
+        crossfadeTask = nil
+        isCrossfadingOut = false
+        crossfadeVolume = 1
+        gaplessPreloadedItem = nil
+        radioEarlyFetchTriggered = false
         pendingSeekTime = restoredSeekTime
         if pendingSeekTime != nil { installPendingSeekWatchdog() }
 
@@ -1793,8 +1854,9 @@ final class PlayerViewModel: ObservableObject {
         // local Wi-Fi / LAN connection there is effectively no stall risk, and
         // the default value adds hundreds of milliseconds of unnecessary delay.
         player.automaticallyWaitsToMinimizeStalling = false
-        player.actionAtItemEnd = .pause
-        player.volume = volume
+        // Do NOT set actionAtItemEnd = .pause — keep the default .advance so
+        // AVQueuePlayer can step to the pre-inserted gapless item without a gap.
+        player.volume = volume * crossfadeVolume
 
         timeControlObservation = player.observe(
             \.timeControlStatus,
@@ -1885,8 +1947,17 @@ final class PlayerViewModel: ObservableObject {
                     ? min(1, self.currentTime / self.duration)
                     : 0
                 self.refreshNowPlayingPlaybackState()
-                // Debounced: coalesces rapid updates into at most 1 write per 2 s.
                 self.schedulePlaybackStateSave()
+                let remaining = self.duration > 0 ? self.duration - self.currentTime : 0
+                if !self.isPlaybackRoutedThroughOrpheus && self.crossfadeDuration > 0
+                   && remaining > 0 && remaining <= self.crossfadeDuration && !self.isCrossfadingOut {
+                    self.startCrossfadeOut()
+                }
+                if self.isRadioEnabled && !self.radioEarlyFetchTriggered
+                   && remaining > 0 && remaining <= 30 {
+                    self.radioEarlyFetchTriggered = true
+                    self.fetchRadioTracks()
+                }
             }
         }
 
@@ -2188,7 +2259,8 @@ final class PlayerViewModel: ObservableObject {
     }
 
     /// Prefetch the next track's AVURLAsset so its HTTP headers are already
-    /// resolved when the user skips. Saves ~200–400 ms on the next-track tap.
+    /// resolved when the user skips. Also pre-inserts an AVPlayerItem into the
+    /// AVQueuePlayer so it can advance gaplessly when the current item ends.
     private func prefetchNextTrackAsset() {
         let nextIndex = currentIndex + 1
         guard queue.indices.contains(nextIndex) else {
@@ -2207,14 +2279,25 @@ final class PlayerViewModel: ObservableObject {
                 accept: "audio/flac,audio/mpeg,audio/mp4,audio/aac,audio/wav,audio/*,*/*"
             )
         ])
-        // Load just the duration property to warm the HTTP connection without
-        // downloading audio data. This is lightweight and non-blocking.
+        // Warm the HTTP connection without downloading audio data.
         prefetchTask?.cancel()
         prefetchTask = Task.detached(priority: .background) {
             _ = try? await asset.load(.duration)
         }
         prefetchedNextAsset = (trackID: nextTrack.id, asset: asset)
-        ServerLogStore.shared.debug("Prefetched next track asset: \(nextTrack.title)")
+
+        // Pre-insert a player item for gapless advance (AVPlayer path only).
+        // Orpheus manages its own buffer pipeline and cannot share AVPlayerItems.
+        if !isPlaybackRoutedThroughOrpheus {
+            let gaplessItem = AVPlayerItem(asset: asset)
+            gaplessItem.preferredForwardBufferDuration = 2
+            gaplessItem.canUseNetworkResourcesForLiveStreamingWhilePaused = true
+            gaplessPreloadedItem = (trackID: nextTrack.id, item: gaplessItem, url: url)
+            audioManager.preloadNextItem(gaplessItem)
+            ServerLogStore.shared.debug("Gapless item queued for: \(nextTrack.title)")
+        } else {
+            ServerLogStore.shared.debug("Prefetched next track asset: \(nextTrack.title)")
+        }
     }
 
     private func handleTimeControlStatus(_ status: AVPlayer.TimeControlStatus, playbackID: UUID) {
@@ -2344,7 +2427,19 @@ final class PlayerViewModel: ObservableObject {
                 return
             }
             if currentIndex < queue.count - 1 || repeatMode == 2 {
-                nextTrack()
+                let nextIdx = (repeatMode == 2 && currentIndex >= queue.count - 1) ? 0 : currentIndex + 1
+                if !isPlaybackRoutedThroughOrpheus,
+                   let g = gaplessPreloadedItem,
+                   queue.indices.contains(nextIdx),
+                   g.trackID == queue[nextIdx].id {
+                    performGaplessAdvance(nextIndex: nextIdx)
+                } else {
+                    nextTrack()
+                }
+            } else if isRadioEnabled {
+                // Queue exhausted — radio refresh was already triggered early;
+                // if it hasn't arrived yet, fetch now.
+                if !radioEarlyFetchTriggered { fetchRadioTracks() }
             } else {
                 isPlaying = false
                 isPaused  = false
@@ -2353,6 +2448,238 @@ final class PlayerViewModel: ObservableObject {
                 deactivateAudioSession()
             }
         }
+    }
+
+    // MARK: - Gapless advance
+
+    /// Updates PlayerViewModel state when AVQueuePlayer automatically steps to
+    /// the pre-inserted gapless item. No `replaceCurrentItem` call — the player
+    /// is already playing the new item. We just reinstall all observers.
+    private func performGaplessAdvance(nextIndex: Int) {
+        guard queue.indices.contains(nextIndex), let gItem = gaplessPreloadedItem else {
+            nextTrack(); return
+        }
+
+        let track = queue[nextIndex]
+        gaplessPreloadedItem = nil
+        radioEarlyFetchTriggered = false
+
+        crossfadeTask?.cancel()
+        isCrossfadingOut = false
+
+        removeTimeObserver()
+        removeItemNotificationObservers()
+        statusObservation?.invalidate();      statusObservation      = nil
+        durationObservation?.invalidate();    durationObservation    = nil
+        timeControlObservation?.invalidate(); timeControlObservation = nil
+
+        currentIndex     = nextIndex
+        currentTrack     = track
+        duration         = track.duration ?? 0
+        currentTime      = 0
+        progress         = 0
+        isLoading        = false
+        isPlaying        = true
+        isPaused         = false
+        error            = nil
+        currentStreamURL = gItem.url
+
+        playerItem           = gItem.item
+        let item             = gItem.item
+        let playbackID       = UUID()
+        activePlaybackID     = playbackID
+
+        lmsAudioQualityTask?.cancel()
+        lmsAudioQuality = nil
+
+        syncCurrentWorkGroup()
+        updateNowPlayingInfo(track: track)
+        refreshNowPlayingPlaybackState(force: true)
+        LibraryViewModel.shared.recordPlayback(track)
+
+        // Reinstall time observer with the new playbackID so the progress bar
+        // keeps updating and crossfade/radio triggers fire for the new track.
+        timeObserver = player.addPeriodicTimeObserver(
+            forInterval: CMTime(seconds: 0.5, preferredTimescale: 600),
+            queue: .main
+        ) { [weak self] time in
+            MainActor.assumeIsolated { [weak self] in
+                guard time.isValid, let self, playbackID == self.activePlaybackID else { return }
+                let secs = time.seconds
+                guard secs.isFinite else { return }
+                self.currentTime = max(0, secs)
+                self.progress    = self.duration > 0 ? min(1, self.currentTime / self.duration) : 0
+                self.refreshNowPlayingPlaybackState()
+                self.schedulePlaybackStateSave()
+                let remaining = self.duration > 0 ? self.duration - self.currentTime : 0
+                if self.crossfadeDuration > 0 && remaining > 0
+                   && remaining <= self.crossfadeDuration && !self.isCrossfadingOut {
+                    self.startCrossfadeOut()
+                }
+                if self.isRadioEnabled && !self.radioEarlyFetchTriggered && remaining > 0 && remaining <= 30 {
+                    self.radioEarlyFetchTriggered = true
+                    self.fetchRadioTracks()
+                }
+            }
+        }
+
+        statusObservation = item.observe(\.status, options: [.new]) { [weak self, weak item] obs, _ in
+            Task { @MainActor [weak self, weak item] in
+                guard let self, let ei = item, ei === obs,
+                      playbackID == self.activePlaybackID, obs === self.playerItem else { return }
+                if obs.status == .readyToPlay {
+                    self.isLoading = false
+                    self.prefetchNextTrackAsset()
+                    self.refreshNowPlayingPlaybackState(force: true)
+                }
+            }
+        }
+
+        durationObservation = item.observe(\.duration, options: [.new]) { [weak self, weak item] obs, _ in
+            Task { @MainActor [weak self, weak item] in
+                guard let self, let ei = item, ei === obs,
+                      playbackID == self.activePlaybackID, obs === self.playerItem else { return }
+                let secs = obs.duration.seconds
+                if secs.isFinite && secs > 0 {
+                    self.duration = secs
+                    self.refreshNowPlayingPlaybackState(force: true)
+                }
+            }
+        }
+
+        itemEndObservation = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main
+        ) { [weak self] notification in
+            Task { @MainActor [weak self] in
+                guard let self, playbackID == self.activePlaybackID,
+                      (notification.object as? AVPlayerItem) === self.playerItem else { return }
+                self.trackDidFinish()
+            }
+        }
+
+        itemFailureObservation = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemFailedToPlayToEndTime, object: item, queue: .main
+        ) { [weak self] notification in
+            Task { @MainActor [weak self] in
+                guard let self, playbackID == self.activePlaybackID,
+                      (notification.object as? AVPlayerItem) === self.playerItem else { return }
+                let failure = notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error
+                self.lastPlaybackErrorDescription = failure?.localizedDescription ?? "Playback stopped unexpectedly"
+                ServerLogStore.shared.warn("Gapless: item failed — \(self.lastPlaybackErrorDescription ?? "unknown")")
+                self.playCurrentTrack(autoPlay: true)
+            }
+        }
+
+        itemStalledObservation = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemPlaybackStalled, object: item, queue: .main
+        ) { [weak self] notification in
+            Task { @MainActor [weak self] in
+                guard let self, playbackID == self.activePlaybackID,
+                      (notification.object as? AVPlayerItem) === self.playerItem else { return }
+                self.isLoading = true
+                ServerLogStore.shared.warn("Gapless: playback stalled")
+                _ = self.activateAudioSession()
+                if self.isPlaying {
+                    self.startPlayer(preferImmediateStart: UIApplication.shared.applicationState != .active)
+                }
+            }
+        }
+
+        timeControlObservation = player.observe(\.timeControlStatus, options: [.initial, .new]) { [weak self] obs, _ in
+            let status = obs.timeControlStatus
+            Task { @MainActor [weak self] in
+                guard let self, playbackID == self.activePlaybackID else { return }
+                self.handleTimeControlStatus(status, playbackID: playbackID)
+            }
+        }
+
+        startCrossfadeIn()
+        prefetchNextTrackAsset()
+        fetchLMSAudioQuality(for: track, playbackID: playbackID)
+        schedulePlaybackStateSave()
+
+        ServerLogStore.shared.info("Gapless advance → \(track.title)")
+    }
+
+    // MARK: - Crossfade (AVPlayer path only)
+
+    /// Ramp `crossfadeVolume` from its current value down to 0 over `crossfadeDuration`.
+    private func startCrossfadeOut() {
+        guard crossfadeDuration > 0 else { return }
+        isCrossfadingOut = true
+        crossfadeTask?.cancel()
+        let steps = max(1, Int(crossfadeDuration / 0.016))
+        let startVol = crossfadeVolume
+        let decrement = startVol / Float(steps)
+        crossfadeTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            for _ in 0..<steps {
+                guard !Task.isCancelled else { return }
+                self.crossfadeVolume = max(0, self.crossfadeVolume - decrement)
+                self.player.volume   = max(0, min(1, self.volume)) * self.crossfadeVolume
+                try? await Task.sleep(nanoseconds: 16_000_000)
+            }
+            self.crossfadeVolume = 0
+            self.player.volume   = 0
+        }
+    }
+
+    /// Ramp `crossfadeVolume` from 0 up to 1 over `crossfadeDuration`.
+    /// Resets immediately to 1 when crossfade is off.
+    private func startCrossfadeIn() {
+        crossfadeTask?.cancel()
+        isCrossfadingOut = false
+        guard crossfadeDuration > 0 else {
+            crossfadeVolume  = 1
+            player.volume    = max(0, min(1, volume))
+            return
+        }
+        crossfadeVolume  = 0
+        player.volume    = 0
+        let steps        = max(1, Int(crossfadeDuration / 0.016))
+        let increment    = Float(1.0) / Float(steps)
+        crossfadeTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            for _ in 0..<steps {
+                guard !Task.isCancelled else { return }
+                self.crossfadeVolume = min(1, self.crossfadeVolume + increment)
+                self.player.volume   = max(0, min(1, self.volume)) * self.crossfadeVolume
+                try? await Task.sleep(nanoseconds: 16_000_000)
+            }
+            self.crossfadeVolume = 1
+            self.player.volume   = max(0, min(1, self.volume))
+        }
+    }
+
+    // MARK: - Radio queue refresh
+
+    private func fetchRadioTracks() {
+        radioRefreshTask?.cancel()
+        let seedTrack = currentTrack
+        radioRefreshTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let tracks = await Self.radioTracks(seedTrack: seedTrack)
+            guard !Task.isCancelled, !tracks.isEmpty else { return }
+            let deduped = tracks.filter { t in !self.queue.contains { $0.id == t.id } }
+            guard !deduped.isEmpty else { return }
+            self.addTracksToQueue(deduped)
+            self.nextTrack()
+        }
+    }
+
+    private static func radioTracks(seedTrack: Track?) async -> [Track] {
+        // Try to get tracks for the seed track's genre; fall back to random songs.
+        if let genreStr = seedTrack?.genres,
+           let genreName = genreStr.split(separator: ",").first.map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) }),
+           !genreName.isEmpty,
+           let genre = LibraryViewModel.shared.genres.first(where: { $0.name == genreName }) {
+            let tracks = (try? await LyrionAPI.shared.getTracksForGenre(genreID: genre.id, count: 15)) ?? []
+            if !tracks.isEmpty { return Array(tracks.shuffled().prefix(10)) }
+        }
+        // Fallback: random songs from library
+        let songs = LibraryViewModel.shared.songs
+        if !songs.isEmpty { return Array(songs.shuffled().prefix(10)) }
+        return []
     }
 
     private func removeTimeObserver() {
@@ -2398,6 +2725,7 @@ final class PlayerViewModel: ObservableObject {
     // MARK: - Now Playing Info
 
     private func updateNowPlayingInfo(track: Track?) {
+        NowPlayingWidgetStore.shared.update(track: track, isPlaying: isPlaying)
         guard let track else {
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
             return

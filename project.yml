@@ -53,6 +53,11 @@ targets:
       SystemCapabilities:
         com.apple.BackgroundModes:
           enabled: 1
+        com.apple.ApplicationGroups:
+          enabled: 1
+    dependencies:
+      - target: HyperionWidget
+        embed: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.sarpedon.hyperion
@@ -81,6 +86,28 @@ targets:
           ENABLE_TESTABILITY: NO
           VALIDATE_PRODUCT: YES
           SWIFT_COMPILATION_MODE: wholemodule
+
+  HyperionWidget:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: HyperionWidget
+        excludes:
+          - "**/.DS_Store"
+    entitlements:
+      path: HyperionWidget/HyperionWidget.entitlements
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.sarpedon.hyperion.widget
+        SWIFT_VERSION: "5.9"
+        IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        DEVELOPMENT_TEAM: "S55WHMKG3U"
+        CODE_SIGN_STYLE: Automatic
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: HyperionWidget/Info.plist
+        INFOPLIST_KEY_NSExtensionPointIdentifier: com.apple.widgetkit-extension
 
   HyperionTests:
     type: bundle.unit-test

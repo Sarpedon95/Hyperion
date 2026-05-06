@@ -9,5 +9,12 @@
 	     CarPlaySceneDelegate will never be instantiated at runtime. -->
 	<key>com.apple.developer.carplay-audio</key>
 	<true/>
+	<!-- App Group shared with the HyperionWidget extension so the widget
+	     can read the current track without an IPC call. Must also be
+	     registered in the Apple Developer portal and provisioning profile. -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.sarpedon.hyperion</string>
+	</array>
 </dict>
 </plist>

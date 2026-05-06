@@ -73,12 +73,19 @@ final class LyricsService {
     /// Returns cached lyrics instantly, or fetches via the active provider.
     /// Negative results ("unavailable") are only cached after all provider
     /// fallback attempts have been exhausted.
+    /// If `trackID` is provided and a pin exists for it, the pin takes priority.
     func lyrics(
         artistName: String,
         trackName:  String,
         albumName:  String?,
-        duration:   TimeInterval?
+        duration:   TimeInterval?,
+        trackID:    Int? = nil
     ) async -> LyricsResult {
+        if let tid = trackID, let pinned = loadPin(trackID: tid) {
+            lyricsLog("Pin hit — trackID \(tid)")
+            return pinned
+        }
+
         let key = cacheKey(artist: artistName, track: trackName, album: albumName ?? "")
 
         if let cached = loadFromCache(key: key) {
@@ -110,6 +117,38 @@ final class LyricsService {
         let key = cacheKey(artist: artist, track: track, album: album)
         saveToCache(candidate.result, key: key)
         lyricsLog("Pinned '\(candidate.trackName)' by '\(candidate.artistName)' for '\(track)'")
+    }
+
+    /// Pin with an explicit trackID so the pin survives artist/title changes.
+    func pinResult(candidate: LyricsCandidate, trackID: Int, artist: String, track: String, album: String) {
+        pinResult(candidate, artist: artist, track: track, album: album)
+        savePin(candidate.result, trackID: trackID)
+        lyricsLog("Pinned trackID \(trackID) → '\(candidate.trackName)'")
+    }
+
+    // MARK: - Pin file (tracks pinned by track ID)
+
+    private var pinsURL: URL { AppFiles.url(for: "lyrics_pins.json") }
+
+    private typealias PinStore = [String: CacheDTO]
+
+    private func loadPins() -> PinStore {
+        guard let data = try? Data(contentsOf: pinsURL),
+              let store = try? JSONDecoder().decode(PinStore.self, from: data) else { return [:] }
+        return store
+    }
+
+    private func loadPin(trackID: Int) -> LyricsResult? {
+        let store = loadPins()
+        return store[String(trackID)]?.toResult()
+    }
+
+    private func savePin(_ result: LyricsResult, trackID: Int) {
+        guard let dto = CacheDTO(from: result) else { return }
+        var store = loadPins()
+        store[String(trackID)] = dto
+        guard let data = try? JSONEncoder().encode(store) else { return }
+        try? data.write(to: pinsURL, options: .atomicWrite)
     }
 
     /// Wipe the entire on-disk lyrics cache (e.g. after a lookup-logic upgrade).

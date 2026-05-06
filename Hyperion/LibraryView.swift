@@ -77,6 +77,13 @@ struct LibraryView: View {
                             LibraryMenuRow(icon: "music.note.tv",             label: "Classical")
                         }
                         .buttonStyle(.plain)
+
+                        Color.roonBorder.frame(height: 0.5).padding(.leading, 66)
+
+                        NavigationLink(destination: HistoryView()) {
+                            LibraryMenuRow(icon: "chart.bar.fill",            label: "History")
+                        }
+                        .buttonStyle(.plain)
                     }
                     .background(Color.roonSurface)
                     .clipShape(RoundedRectangle(cornerRadius: 14))
@@ -789,6 +796,9 @@ struct AlbumGridCell: View {
     /// layout pass per-cell and defeats the lazy rendering optimisation.
     var cellWidth: CGFloat = 160
 
+    @State private var showAddToPlaylist = false
+    @State private var playlistTracks: [Track] = []
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             ArtworkView(coverid: album.artwork_track_id, size: cellWidth)
@@ -808,6 +818,50 @@ struct AlbumGridCell: View {
                         .lineLimit(1)
                 }
             }
+        }
+        .contextMenu {
+            Button("Play Now", systemImage: "play.fill") {
+                Task {
+                    let groups = (try? await LibraryViewModel.shared.getWorkGroupsForAlbum(album.id)) ?? []
+                    guard !groups.isEmpty else { return }
+                    await MainActor.run { PlayerViewModel.shared.playAlbum(groups) }
+                }
+            }
+            Button("Play Next", systemImage: "text.insert") {
+                Task {
+                    let tracks = (try? await LibraryViewModel.shared.getTracksForAlbum(album.id)) ?? []
+                    await MainActor.run { PlayerViewModel.shared.playNext(tracks) }
+                }
+            }
+            Button("Add to Queue", systemImage: "text.badge.plus") {
+                Task {
+                    let groups = (try? await LibraryViewModel.shared.getWorkGroupsForAlbum(album.id)) ?? []
+                    await MainActor.run { PlayerViewModel.shared.addWorkGroupsToQueue(groups) }
+                }
+            }
+            Button("Start Radio", systemImage: "dot.radiowaves.left.and.right") {
+                Task {
+                    let groups = (try? await LibraryViewModel.shared.getWorkGroupsForAlbum(album.id)) ?? []
+                    guard !groups.isEmpty else { return }
+                    await MainActor.run {
+                        PlayerViewModel.shared.playAlbum(groups)
+                        PlayerViewModel.shared.isRadioEnabled = true
+                    }
+                }
+            }
+            Button("Add to Playlist", systemImage: "music.note.list") {
+                Task {
+                    let tracks = (try? await LibraryViewModel.shared.getTracksForAlbum(album.id)) ?? []
+                    await MainActor.run {
+                        playlistTracks = tracks
+                        if !tracks.isEmpty { showAddToPlaylist = true }
+                    }
+                }
+            }
+        }
+        .sheet(isPresented: $showAddToPlaylist) {
+            AddToPlaylistSheet(tracks: playlistTracks)
+                .environment(\.hyperionBottomOverlayHeight, 0)
         }
     }
 }
@@ -1059,6 +1113,25 @@ struct AlbumDetailView: View {
             }
             .buttonStyle(.plain)
             .disabled(workGroups.isEmpty)
+
+            Button {
+                Haptics.light()
+                guard !workGroups.isEmpty else { return }
+                player.playAlbum(workGroups)
+                player.isRadioEnabled = true
+            } label: {
+                ZStack {
+                    Circle()
+                        .stroke(Color.roonBorder, lineWidth: 1.5)
+                        .frame(width: 50, height: 50)
+                    Image(systemName: "dot.radiowaves.left.and.right")
+                        .font(.system(size: 18))
+                        .foregroundColor(.roonSecondary)
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(workGroups.isEmpty)
+            .accessibilityLabel("Start Radio")
 
             Button {
                 Haptics.light()
@@ -1711,6 +1784,25 @@ struct ArtistDetailView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(tracksByArtist.isEmpty)
+
+                    Button {
+                        guard !tracksByArtist.isEmpty else { return }
+                        player.playTracks(tracksByArtist)
+                        player.isRadioEnabled = true
+                    } label: {
+                        ZStack {
+                            Circle()
+                                .fill(Color.roonSurface)
+                                .overlay(Capsule().strokeBorder(Color.roonBorder, lineWidth: 1))
+                                .frame(width: 46, height: 46)
+                            Image(systemName: "dot.radiowaves.left.and.right")
+                                .font(.system(size: 17))
+                                .foregroundColor(.roonSecondary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(tracksByArtist.isEmpty)
+                    .accessibilityLabel("Start Radio")
                 }
                 .padding(.horizontal, 20)
 

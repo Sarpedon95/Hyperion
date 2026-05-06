@@ -42,7 +42,7 @@ final class RecentSearchStore: ObservableObject {
 @MainActor
 final class SearchViewModel: ObservableObject {
     @Published var searchText: String = ""
-    @Published var results: (composers: [Composer], works: [Work], albums: [Album], artists: [Artist], tracks: [Track]) = ([], [], [], [], [])
+    @Published var results: (composers: [Composer], works: [Work], albums: [Album], artists: [Artist], tracks: [Track], genres: [Genre], playlists: [LocalPlaylist]) = ([], [], [], [], [], [], [])
     @Published var isSearching: Bool = false
 
     private var searchTask: Task<Void, Never>? = nil
@@ -51,6 +51,7 @@ final class SearchViewModel: ObservableObject {
     var hasResults: Bool {
         !results.composers.isEmpty || !results.works.isEmpty || !results.albums.isEmpty
             || !results.artists.isEmpty || !results.tracks.isEmpty
+            || !results.genres.isEmpty || !results.playlists.isEmpty
     }
 
     func performSearch(query: String, library: LibraryViewModel) {
@@ -59,7 +60,7 @@ final class SearchViewModel: ObservableObject {
         let sequence = searchSequence
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            results = ([], [], [], [], [])
+            results = ([], [], [], [], [], [], [])
             isSearching = false
             return
         }
@@ -478,7 +479,7 @@ struct ComposerSmallRow: View {
 // MARK: - Search results
 
 struct SearchResultsView: View {
-    let results: (composers: [Composer], works: [Work], albums: [Album], artists: [Artist], tracks: [Track])
+    let results: (composers: [Composer], works: [Work], albums: [Album], artists: [Artist], tracks: [Track], genres: [Genre], playlists: [LocalPlaylist])
     @ObservedObject private var library = LibraryViewModel.shared
     @ObservedObject private var player  = PlayerViewModel.shared
 
@@ -598,6 +599,67 @@ struct SearchResultsView: View {
                     }
                 }
 
+                if !results.genres.isEmpty {
+                    searchSection("GENRES") {
+                        LazyVStack(spacing: 0) {
+                            ForEach(results.genres) { genre in
+                                NavigationLink {
+                                    GenreAlbumListView(genre: genre)
+                                } label: {
+                                    HStack(spacing: 14) {
+                                        ZStack {
+                                            RoundedRectangle(cornerRadius: 8)
+                                                .fill(Color.roonElevated)
+                                                .frame(width: 40, height: 40)
+                                            Image(systemName: "music.note.list")
+                                                .font(.system(size: 16))
+                                                .foregroundColor(.roonAccent)
+                                        }
+                                        Text(genre.name)
+                                            .font(.roonBody(15, weight: .medium))
+                                            .foregroundColor(.roonPrimary)
+                                            .lineLimit(1)
+                                        Spacer()
+                                        Image(systemName: "chevron.right")
+                                            .font(.system(size: 12, weight: .semibold))
+                                            .foregroundColor(.roonTertiary)
+                                    }
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 10)
+                                }
+                                .buttonStyle(.plain)
+                                if genre.id != results.genres.last?.id {
+                                    Color.roonBorder.frame(height: 0.5).padding(.leading, 68)
+                                }
+                            }
+                        }
+                        .background(Color.roonSurface)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .padding(.horizontal, 16)
+                    }
+                }
+
+                if !results.playlists.isEmpty {
+                    searchSection("PLAYLISTS") {
+                        LazyVStack(spacing: 0) {
+                            ForEach(results.playlists) { playlist in
+                                NavigationLink {
+                                    PlaylistDetailView(playlist: playlist)
+                                } label: {
+                                    SearchPlaylistRow(playlist: playlist)
+                                }
+                                .buttonStyle(.plain)
+                                if playlist.id != results.playlists.last?.id {
+                                    Color.roonBorder.frame(height: 0.5).padding(.leading, 68)
+                                }
+                            }
+                        }
+                        .background(Color.roonSurface)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .padding(.horizontal, 16)
+                    }
+                }
+
                 Spacer(minLength: 80)
             }
             .padding(.top, 4)
@@ -702,6 +764,39 @@ struct SearchTrackRow: View {
             NavigationStack { AlbumDetailView(album: album) }
                 .environment(\.hyperionBottomOverlayHeight, 0)
         }
+    }
+}
+
+struct SearchPlaylistRow: View {
+    let playlist: LocalPlaylist
+
+    var body: some View {
+        HStack(spacing: 14) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.roonElevated)
+                    .frame(width: 40, height: 40)
+                Image(systemName: "music.note.list")
+                    .font(.system(size: 16))
+                    .foregroundColor(.roonAccent)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(playlist.name)
+                    .font(.roonBody(15, weight: .medium))
+                    .foregroundColor(.roonPrimary)
+                    .lineLimit(1)
+                Text(playlist.subtitle)
+                    .font(.roonBody(12))
+                    .foregroundColor(.roonSecondary)
+            }
+            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.roonTertiary)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .contentShape(Rectangle())
     }
 }
 
@@ -881,6 +976,37 @@ struct SettingsView: View {
                     .tint(.roonAccent)
                 } header: { Text("PLAYBACK ENGINE") } footer: {
                     Text("Orpheus is recommended. Disable only if you experience playback issues. AirPlay always uses Compatibility mode regardless of this setting.")
+                        .font(.roonBody(12)).foregroundColor(.roonTertiary)
+                }
+                .listRowBackground(Color.roonSurface)
+
+                Section {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Text("Crossfade").foregroundColor(.roonPrimary)
+                            Spacer()
+                            Text(player.crossfadeDuration == 0
+                                 ? "Off"
+                                 : String(format: "%.1f s", player.crossfadeDuration))
+                                .foregroundColor(.roonSecondary)
+                                .monospacedDigit()
+                        }
+                        Slider(value: $player.crossfadeDuration, in: 0...12, step: 0.5)
+                            .tint(.roonAccent)
+                    }
+                    .padding(.vertical, 4)
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: "waveform.path.badge.minus")
+                            .foregroundColor(.roonSecondary)
+                            .font(.system(size: 13))
+                            .padding(.top, 1)
+                        Text("Gapless playback is always active (AVPlayer path). Crossfade fades the current track out before the next one begins.")
+                            .font(.roonBody(12))
+                            .foregroundColor(.roonSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                } header: { Text("PLAYBACK") } footer: {
+                    Text("Crossfade does not apply to the Orpheus DSP engine path.")
                         .font(.roonBody(12)).foregroundColor(.roonTertiary)
                 }
                 .listRowBackground(Color.roonSurface)

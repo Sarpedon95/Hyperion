@@ -93,6 +93,8 @@ struct NowPlayingView: View {
     @State private var showQueuePanel: Bool = false
     @State private var showMoreActions: Bool = false
     @State private var showAddToPlaylist: Bool = false
+    @State private var showSleepTimer: Bool = false
+    @ObservedObject private var sleepTimer = SleepTimerManager.shared
 
     @State private var dragOffset: CGFloat = 0
     @State private var isDraggingDown: Bool = false
@@ -286,6 +288,26 @@ struct NowPlayingView: View {
             if let track = player.currentTrack {
                 AddToPlaylistSheet(tracks: [track])
                     .environment(\.hyperionBottomOverlayHeight, 0)
+            }
+        }
+        .confirmationDialog("Sleep Timer", isPresented: $showSleepTimer, titleVisibility: .visible) {
+            if sleepTimer.isActive {
+                Button("Turn Off", role: .destructive) { sleepTimer.cancel() }
+            }
+            Button("End of Track") { sleepTimer.set(mode: .endOfTrack) }
+            ForEach(SleepTimerManager.minuteOptions, id: \.self) { minutes in
+                Button("\(minutes) min") { sleepTimer.set(mode: .minutes(minutes)) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            if sleepTimer.isActive {
+                if case .endOfTrack = sleepTimer.mode {
+                    Text("Stops after current track")
+                } else {
+                    let mins = Int(sleepTimer.timeRemaining / 60)
+                    let secs = Int(sleepTimer.timeRemaining) % 60
+                    Text(String(format: "%d:%02d remaining", mins, secs))
+                }
             }
         }
         .sheet(item: $navigateToArtist) { artist in
@@ -656,15 +678,40 @@ struct NowPlayingView: View {
 
             Spacer(minLength: 0)
 
-            BottomToolbarButton(systemName: "quote.bubble", accessibilityLabel: "Lyrics") {
-                Haptics.light()
-                showLyrics = true
+            // Sleep timer button — badge shows remaining minutes when active
+            ZStack(alignment: .topTrailing) {
+                BottomToolbarButton(
+                    systemName: "moon.zzz.fill",
+                    tint: sleepTimer.isActive ? .roonAccent : .white.opacity(0.36),
+                    accessibilityLabel: sleepTimer.isActive ? "Sleep timer active" : "Sleep timer"
+                ) {
+                    Haptics.light()
+                    showSleepTimer = true
+                }
+                if sleepTimer.isActive, case .minutes = sleepTimer.mode {
+                    let mins = max(1, Int(sleepTimer.timeRemaining / 60) + (sleepTimer.timeRemaining.truncatingRemainder(dividingBy: 60) > 0 ? 1 : 0))
+                    Text("\(mins)")
+                        .font(.roonMono(8, weight: .semibold))
+                        .foregroundColor(Color.roonBase)
+                        .padding(.horizontal, 3)
+                        .padding(.vertical, 1)
+                        .background(Color.roonAccent)
+                        .clipShape(Capsule())
+                        .offset(x: 6, y: -2)
+                }
             }
 
             Spacer(minLength: 0)
 
-            AirPlayButton()
-                .frame(width: 48, height: 48)
+            // Radio mode toggle
+            BottomToolbarButton(
+                systemName: "dot.radiowaves.left.and.right",
+                tint: player.isRadioEnabled ? .roonAccent : .white.opacity(0.36),
+                accessibilityLabel: player.isRadioEnabled ? "Radio on" : "Radio off"
+            ) {
+                Haptics.light()
+                player.isRadioEnabled.toggle()
+            }
 
             Spacer(minLength: 0)
 

@@ -4,6 +4,7 @@ struct HomeView: View {
 
     @ObservedObject private var library    = LibraryViewModel.shared
     @ObservedObject private var connection = ConnectionManager.shared
+    @ObservedObject private var mixGen     = MixGenerator.shared
 
     @State private var showingSettings: Bool = false
     @State private var recommendedComposers: [OOComposer] = []
@@ -76,6 +77,9 @@ struct HomeView: View {
                     // MARK: Recent Activity
                     recentActivitySection
 
+                    // MARK: Daily Mixes
+                    mixesSection
+
                     // MARK: Classical Highlights
                     classicalHighlightsSection
 
@@ -127,16 +131,29 @@ struct HomeView: View {
                 async let recentAdded: Void  = library.loadRecentAlbums()
                 async let recentPlayed: Void = library.loadRecentlyPlayed()
                 async let artistsLoad: Void  = library.loadArtists()
+                async let genresLoad: Void   = library.loadGenres()
                 async let classicalLoad: Void    = loadClassicalComposers()
                 async let highlightsLoad: Void   = loadClassicalHighlights()
-                _ = await (totals, recentAdded, recentPlayed, artistsLoad, classicalLoad, highlightsLoad)
+                _ = await (totals, recentAdded, recentPlayed, artistsLoad, genresLoad, classicalLoad, highlightsLoad)
+                mixGen.refreshIfNeeded()
             }
         }
     }
 
+    private static let genrePalette: [Color] = [
+        .roonAccent, .orange, Color(red: 0.55, green: 0.35, blue: 0.9),
+        Color(red: 0.9, green: 0.35, blue: 0.55), .mint, .cyan,
+        Color(red: 0.85, green: 0.75, blue: 0.2), Color(red: 0.3, green: 0.75, blue: 0.4)
+    ]
+
+    private var hasClassicalContent: Bool {
+        !library.composers.isEmpty ||
+        library.albums.contains { $0.isClassical == 1 || $0.composer != nil }
+    }
+
     @ViewBuilder
     private var classicalHighlightsSection: some View {
-        if !popularWorks.isEmpty || isLoadingHighlights {
+        if hasClassicalContent, !popularWorks.isEmpty || isLoadingHighlights {
             HomeSectionHeader(label: "CLASSICAL MUSIC", title: "Popular Works")
                 .padding(.horizontal, 16)
                 .padding(.bottom, 14)
@@ -165,8 +182,87 @@ struct HomeView: View {
     }
 
     @ViewBuilder
+    private var nonClassicalSection: some View {
+        // Top Genres row
+        if !library.genres.isEmpty {
+            HomeSectionHeader(label: "YOUR LIBRARY", title: "Genres")
+                .padding(.horizontal, 16)
+                .padding(.bottom, 14)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: 10) {
+                    ForEach(library.genres.prefix(20)) { genre in
+                        NavigationLink {
+                            GenreAlbumListView(genre: genre)
+                        } label: {
+                            GenreCard(genre: genre, palette: Self.genrePalette)
+                                .frame(width: 110, height: 56)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 16)
+            }
+            .padding(.bottom, 24)
+        }
+
+        // Liked Tracks shortcut
+        NavigationLink(destination: LikedTracksView()) {
+            HStack(spacing: 14) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(Color.roonElevated)
+                        .frame(width: 52, height: 52)
+                    Image(systemName: "heart.fill")
+                        .font(.system(size: 22))
+                        .foregroundColor(.red.opacity(0.85))
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Liked Tracks")
+                        .font(.roonBody(16, weight: .semibold))
+                        .foregroundColor(.roonPrimary)
+                    Text("Your favourites")
+                        .font(.roonBody(12))
+                        .foregroundColor(.roonSecondary)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.roonTertiary)
+            }
+            .padding(14)
+            .background(Color.roonSurface)
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .padding(.horizontal, 16)
+        }
+        .buttonStyle(.plain)
+        .padding(.bottom, 32)
+    }
+
+    @ViewBuilder
+    private var mixesSection: some View {
+        if !mixGen.mixes.isEmpty {
+            HomeSectionHeader(label: "FOR YOU", title: "Daily Mixes")
+                .padding(.horizontal, 16)
+                .padding(.bottom, 14)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: 14) {
+                    ForEach(mixGen.mixes) { mix in
+                        MixCard(mix: mix)
+                    }
+                }
+                .padding(.horizontal, 16)
+            }
+            .padding(.bottom, 32)
+        }
+    }
+
+    @ViewBuilder
     private var classicalSection: some View {
-        if !recommendedComposers.isEmpty || isLoadingClassical {
+        if !hasClassicalContent {
+            nonClassicalSection
+        } else if !recommendedComposers.isEmpty || isLoadingClassical {
             HomeSectionHeader(label: "CLASSICAL MUSIC", title: "Essential Composers")
                 .padding(.horizontal, 16)
                 .padding(.bottom, 14)

@@ -89,6 +89,9 @@ final class OrpheusPlaybackEngine {
     var onBufferingChanged: ((Bool) -> Void)?
     var onPlaybackEnded: (() -> Void)?
     var onError: ((String) -> Void)?
+    /// Fires once when ≤3 s remain on a finite track. Used to pre-warm the
+    /// next asset so the gap between Orpheus tracks is minimised.
+    var onNearEnd: (() -> Void)?
     /// Fires true after first audible buffer plays. Fires false on stop().
     var onRoutingConfirmed: ((Bool) -> Void)?
     /// Fires once per load when the AVAssetTrack format is decoded.
@@ -451,6 +454,7 @@ final class OrpheusPlaybackEngine {
         onBufferingChanged  = nil
         onPlaybackEnded     = nil
         onError             = nil
+        onNearEnd           = nil
         onRoutingConfirmed  = nil
         onDecodedFormatKnown = nil
     }
@@ -691,6 +695,12 @@ final class OrpheusPlaybackEngine {
             currentTime = elapsed
         }
         onTimeUpdate?(currentTime)
+        // Fire onNearEnd once when ≤3 s remain on a finite track so the caller
+        // can pre-warm the next asset and reduce the inter-track gap.
+        if durationKnown, duration > 0, (duration - currentTime) <= 3, let cb = onNearEnd {
+            onNearEnd = nil   // fire exactly once
+            cb()
+        }
     }
 }
 
