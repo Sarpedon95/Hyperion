@@ -4,6 +4,7 @@ import UIKit
 @main
 struct HyperionApp: App {
 
+    @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @Environment(\.scenePhase) private var scenePhase
 
     @StateObject private var connection = ConnectionManager.shared
@@ -12,10 +13,11 @@ struct HyperionApp: App {
 
     init() {
         HyperionApp.configureAppearance()
-        // Touch the shared player at app launch so the persistent AVPlayer,
-        // playback audio session, remote commands, and lifecycle observers are
-        // registered before any SwiftUI view can be refreshed or dismissed.
+        // Touch singletons at launch so their sessions/observers are registered
+        // before any SwiftUI view appears.
         _ = PlayerViewModel.shared
+        _ = DownloadManager.shared
+        _ = AudiomuseManager.shared
     }
 
     var body: some Scene {

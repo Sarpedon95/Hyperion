@@ -93,10 +93,16 @@ final class LyrionAPI {
         candidates.append("\(baseURL)/music/\(id)/download.mp3")
 
         var seen = Set<String>()
-        return candidates.compactMap { c in
+        var urls = candidates.compactMap { c -> URL? in
             guard seen.insert(c).inserted else { return nil }
             return URL(string: c)
         }
+        // Prefer a locally downloaded file — insert at front so all playback
+        // paths (AVPlayer, Orpheus, gapless prefetch) automatically use it.
+        if let localURL = DownloadManager.shared.localURL(for: track) {
+            urls.insert(localURL, at: 0)
+        }
+        return urls
     }
 
     func httpHeaders(accept: String? = nil) -> [String: String] {
@@ -702,6 +708,76 @@ final class LyrionAPI {
         }
 
         return found
+    }
+
+    // MARK: - Server playlists
+
+    func getLMSPlaylists() async throws -> [ServerPlaylist] {
+        try Task.checkCancellation()
+        let result = try await request(playerID: "", params: ["playlists", 0, 10_000, "tags:u"])
+        guard let arr = result["playlists_loop"] as? [[String: Any]] else { return [] }
+        return arr.compactMap { dict -> ServerPlaylist? in
+            guard let name = dict["playlist"] as? String ?? JSON.string(dict["name"]),
+                  !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            let rawID: Any? = dict["id"]
+            let idStr = JSON.string(rawID) ?? (JSON.int(rawID).map(String.init)) ?? ""
+            guard !idStr.isEmpty else { return nil }
+            let count = JSON.int(dict["count"]) ?? 0
+            return ServerPlaylist(id: idStr, name: name, tracks: [], trackCount: count)
+        }
+    }
+
+    func getLMSPlaylistTracks(playlistID: String) async throws -> [Track] {
+        try Task.checkCancellation()
+        let result = try await request(playerID: "", params: [
+            "playlists tracks", 0, 10_000,
+            "playlist_id:\(playlistID)",
+            "tags:\(trackTags)"
+        ])
+        let arr = (result["playlisttracks_loop"] as? [[String: Any]])
+            ?? (result["titles_loop"]            as? [[String: Any]])
+            ?? []
+        return Self.parseTracks(arr)
+    }
+
+    @discardableResult
+    func createLMSPlaylist(name: String) async throws -> ServerPlaylist {
+        try Task.checkCancellation()
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw HyperionError.rpcError("Playlist name is empty", nil)
+        }
+        let result = try await request(playerID: "", params: ["playlists", "new", "name:\(trimmed)"])
+        let rawID: Any? = result["playlist_id"] ?? result["id"] ?? result["__id"]
+        let idStr = JSON.string(rawID) ?? (JSON.int(rawID).map(String.init)) ?? ""
+        if idStr.isEmpty {
+            // LMS did not return the ID — find it by name in a fresh list.
+            let all = try await getLMSPlaylists()
+            if let found = all.first(where: {
+                $0.name.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed
+            }) {
+                return found
+            }
+            throw HyperionError.rpcError("Could not determine new playlist ID", nil)
+        }
+        return ServerPlaylist(id: idStr, name: trimmed, tracks: [], trackCount: 0)
+    }
+
+    func addTracksToLMSPlaylist(playlistID: String, trackIDs: [Int]) async throws {
+        try Task.checkCancellation()
+        for trackID in trackIDs {
+            try Task.checkCancellation()
+            _ = try await request(playerID: "", params: [
+                "playlists tracks", "add",
+                "playlist_id:\(playlistID)",
+                "track_id:\(trackID)"
+            ])
+        }
+    }
+
+    func deleteLMSPlaylist(playlistID: String) async throws {
+        try Task.checkCancellation()
+        _ = try await request(playerID: "", params: ["playlists", "delete", "id:\(playlistID)"])
     }
 
     func testConnection() async -> Bool {

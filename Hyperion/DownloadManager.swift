@@ -1,0 +1,226 @@
+import Foundation
+import SwiftUI
+
+// MARK: - Data models
+
+struct DownloadedTrack: Identifiable, Codable, Hashable {
+    let id: Int
+    let title: String
+    let artist: String
+    let album: String
+    let duration: Double?
+    let coverid: String?
+    let localFilename: String
+    let downloadedAt: Date
+}
+
+struct DownloadProgress {
+    enum State { case pending, downloading, failed }
+    var state: State
+    var progress: Double
+}
+
+// MARK: - Manager
+
+@MainActor
+final class DownloadManager: NSObject, ObservableObject {
+    static let shared = DownloadManager()
+    static let backgroundSessionID = "com.sarpedon.hyperion.downloads"
+
+    @Published private(set) var downloadedTracks: [DownloadedTrack] = []
+    @Published private(set) var downloads: [Int: DownloadProgress]  = [:]
+
+    /// Set by AppDelegate when the system wakes the app for a background session event.
+    var backgroundCompletionHandler: (() -> Void)?
+
+    private var session: URLSession!
+    private var taskToTrackID: [Int: Int]              = [:]
+    private var trackToTask: [Int: URLSessionDownloadTask] = [:]
+
+    private let manifestFilename = "hyperion_downloads.json"
+
+    static var downloadsDir: URL {
+        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Downloads")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    private override init() {
+        super.init()
+        let config = URLSessionConfiguration.background(withIdentifier: Self.backgroundSessionID)
+        config.isDiscretionary       = false
+        config.sessionSendsLaunchEvents = true
+        session = URLSession(configuration: config, delegate: self, delegateQueue: nil)
+        loadManifest()
+        // Reconnect tasks that survived an app relaunch so progress is tracked.
+        session.getTasksWithCompletionHandler { [weak self] _, _, downloadTasks in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                for task in downloadTasks {
+                    if let trackID = task.taskDescription.flatMap(Int.init) {
+                        self.taskToTrackID[task.taskIdentifier] = trackID
+                        self.trackToTask[trackID]               = task
+                        self.downloads[trackID] = DownloadProgress(state: .downloading, progress: 0)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Public API
+
+    func download(_ track: Track) {
+        guard downloads[track.id] == nil, !isDownloaded(trackID: track.id) else { return }
+        // Use the first non-file remote candidate so we don't try to "download" a local file.
+        guard let remoteURL = LyrionAPI.shared.streamURLs(for: track)
+                .first(where: { $0.scheme != "file" }) else { return }
+
+        var request = URLRequest(url: remoteURL)
+        for (k, v) in LyrionAPI.shared.httpHeaders() { request.setValue(v, forHTTPHeaderField: k) }
+
+        let task = session.downloadTask(with: request)
+        task.taskDescription = String(track.id)
+        taskToTrackID[task.taskIdentifier] = track.id
+        trackToTask[track.id]              = task
+        downloads[track.id] = DownloadProgress(state: .pending, progress: 0)
+        task.resume()
+    }
+
+    func cancelDownload(trackID: Int) {
+        trackToTask[trackID]?.cancel()
+        trackToTask[trackID] = nil
+        downloads[trackID]   = nil
+    }
+
+    func cancelDownload(for track: Track) { cancelDownload(trackID: track.id) }
+
+    func removeDownload(_ downloaded: DownloadedTrack) {
+        let fileURL = Self.downloadsDir.appendingPathComponent(downloaded.localFilename)
+        try? FileManager.default.removeItem(at: fileURL)
+        downloadedTracks.removeAll { $0.id == downloaded.id }
+        saveManifest()
+    }
+
+    func localURL(for track: Track) -> URL? {
+        guard let entry = downloadedTracks.first(where: { $0.id == track.id }) else { return nil }
+        let url = Self.downloadsDir.appendingPathComponent(entry.localFilename)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    func isDownloaded(trackID: Int) -> Bool {
+        guard let entry = downloadedTracks.first(where: { $0.id == trackID }) else { return false }
+        let url = Self.downloadsDir.appendingPathComponent(entry.localFilename)
+        return FileManager.default.fileExists(atPath: url.path)
+    }
+
+    // MARK: - Private
+
+    private func handleFinishedDownload(task: URLSessionDownloadTask, tempURL: URL) {
+        guard let trackID = taskToTrackID[task.taskIdentifier] else {
+            try? FileManager.default.removeItem(at: tempURL)
+            return
+        }
+        taskToTrackID[task.taskIdentifier] = nil
+        trackToTask[trackID]               = nil
+        downloads[trackID]                 = nil
+
+        let ext = task.originalRequest?.url?.pathExtension
+        let filename = "\(trackID).\(ext.flatMap { $0.isEmpty ? nil : $0 } ?? "audio")"
+        let destURL  = Self.downloadsDir.appendingPathComponent(filename)
+        do {
+            if FileManager.default.fileExists(atPath: destURL.path) {
+                try FileManager.default.removeItem(at: destURL)
+            }
+            try FileManager.default.moveItem(at: tempURL, to: destURL)
+        } catch {
+            try? FileManager.default.removeItem(at: tempURL)
+            return
+        }
+
+        let songs = LibraryViewModel.shared.songs
+        if let track = songs.first(where: { $0.id == trackID }) {
+            let record = DownloadedTrack(
+                id:            track.id,
+                title:         track.title,
+                artist:        track.trackartist ?? track.albumartist ?? "",
+                album:         track.album ?? "",
+                duration:      track.duration,
+                coverid:       track.coverid,
+                localFilename: filename,
+                downloadedAt:  Date()
+            )
+            downloadedTracks.removeAll { $0.id == trackID }
+            downloadedTracks.insert(record, at: 0)
+            saveManifest()
+        }
+    }
+
+    private func loadManifest() {
+        guard let data = try? Data(contentsOf: AppFiles.url(for: manifestFilename)) else { return }
+        downloadedTracks = (try? JSONDecoder().decode([DownloadedTrack].self, from: data)) ?? []
+    }
+
+    private func saveManifest() {
+        if let data = try? JSONEncoder().encode(downloadedTracks) {
+            try? data.write(to: AppFiles.url(for: manifestFilename), options: .atomic)
+        }
+    }
+}
+
+// MARK: - URLSessionDownloadDelegate
+
+extension DownloadManager: URLSessionDownloadDelegate {
+
+    nonisolated func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didFinishDownloadingTo location: URL
+    ) {
+        // Copy the file synchronously before URLSession deletes it after this method returns.
+        let tempCopy = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        try? FileManager.default.copyItem(at: location, to: tempCopy)
+        Task { @MainActor [weak self] in
+            self?.handleFinishedDownload(task: downloadTask, tempURL: tempCopy)
+        }
+    }
+
+    nonisolated func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didWriteData bytesWritten: Int64,
+        totalBytesWritten: Int64,
+        totalBytesExpectedToWrite: Int64
+    ) {
+        guard totalBytesExpectedToWrite > 0 else { return }
+        let progress = Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
+        Task { @MainActor [weak self] in
+            guard let self,
+                  let trackID = self.taskToTrackID[downloadTask.taskIdentifier] else { return }
+            self.downloads[trackID] = DownloadProgress(state: .downloading, progress: progress)
+        }
+    }
+
+    nonisolated func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didCompleteWithError error: Error?
+    ) {
+        guard let error, (error as NSError).code != NSURLErrorCancelled else { return }
+        Task { @MainActor [weak self] in
+            guard let self,
+                  let trackID = self.taskToTrackID[task.taskIdentifier] else { return }
+            self.downloads[trackID] = DownloadProgress(state: .failed, progress: 0)
+            self.taskToTrackID[task.taskIdentifier] = nil
+            self.trackToTask[trackID]               = nil
+        }
+    }
+
+    nonisolated func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
+        Task { @MainActor [weak self] in
+            self?.backgroundCompletionHandler?()
+            self?.backgroundCompletionHandler = nil
+        }
+    }
+}

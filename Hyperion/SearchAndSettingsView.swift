@@ -838,9 +838,11 @@ struct NoResultsView: View {
 
 struct SettingsView: View {
 
-    @ObservedObject private var connection = ConnectionManager.shared
-    @ObservedObject private var serverLogs = ServerLogStore.shared
-    @ObservedObject private var player     = PlayerViewModel.shared
+    @ObservedObject private var connection    = ConnectionManager.shared
+    @ObservedObject private var serverLogs   = ServerLogStore.shared
+    @ObservedObject private var player       = PlayerViewModel.shared
+    @ObservedObject private var playlistStore = PlaylistStore.shared
+    @ObservedObject private var audiomuse    = AudiomuseManager.shared
     @Environment(\.dismiss) private var dismiss
 
     @State private var localURL: String     = ""
@@ -959,6 +961,35 @@ struct SettingsView: View {
                         .font(.roonBody(12)).foregroundColor(.roonTertiary)
                 }
                 .listRowBackground(Color.roonSurface)
+
+                Section {
+                    Button { playlistStore.syncServerPlaylists() } label: {
+                        HStack {
+                            Text("Sync Server Playlists").foregroundColor(.roonPrimary)
+                            Spacer()
+                            if playlistStore.isLoadingServerPlaylists {
+                                ProgressView().tint(.roonAccent)
+                            } else {
+                                Image(systemName: "arrow.clockwise")
+                                    .foregroundColor(.roonAccent)
+                            }
+                        }
+                    }
+                    .disabled(playlistStore.isLoadingServerPlaylists)
+                    if let error = playlistStore.serverPlaylistError {
+                        Text(error)
+                            .font(.roonBody(12))
+                            .foregroundColor(.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                } header: { Text("LIBRARY SYNC") } footer: {
+                    Text("Fetches all playlists stored on the LMS server. Changes made in Hyperion (create, delete, add tracks) are written back to LMS immediately.")
+                        .font(.roonBody(12)).foregroundColor(.roonTertiary)
+                }
+                .listRowBackground(Color.roonSurface)
+
+                AudiomuseSectionView(audiomuse: audiomuse)
+                    .listRowBackground(Color.roonSurface)
 
                 Section {
                     Toggle(isOn: $player.useOrpheusEngine) {
@@ -1169,6 +1200,79 @@ struct SettingsTextField: View {
                 .autocorrectionDisabled()
                 .keyboardType(.URL)
                 .foregroundColor(.roonPrimary)
+        }
+    }
+}
+
+// MARK: - AudioMuse settings section
+
+private struct AudiomuseSectionView: View {
+
+    @ObservedObject var audiomuse: AudiomuseManager
+    @State private var isEnabled: Bool = AudiomuseManager.shared.isEnabled
+    @State private var testResult: String? = nil
+    @State private var isTesting: Bool = false
+
+    var body: some View {
+        Section {
+            Toggle(isOn: $isEnabled) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("AI Mixes (AudioMuse)")
+                        .foregroundColor(.roonPrimary)
+                    Text(audiomuse.audiomuseAvailable
+                         ? "Plugin detected — AI-generated mixes active"
+                         : "Plugin not detected — using local mix generation")
+                        .font(.roonBody(12))
+                        .foregroundColor(.roonSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .tint(.roonAccent)
+            .onChange(of: isEnabled) { _, newValue in
+                audiomuse.isEnabled = newValue
+                if newValue {
+                    Task { await audiomuse.probeAndRefreshIfNeeded() }
+                }
+            }
+
+            Button {
+                isTesting = true
+                testResult = nil
+                Task {
+                    testResult = await audiomuse.testConnection()
+                    isTesting = false
+                }
+            } label: {
+                HStack {
+                    Text("Test AudioMuse Connection")
+                        .foregroundColor(.roonPrimary)
+                    Spacer()
+                    if isTesting {
+                        ProgressView().tint(.roonAccent)
+                    } else {
+                        Image(systemName: "network")
+                            .foregroundColor(.roonAccent)
+                    }
+                }
+            }
+            .disabled(isTesting)
+
+            if let result = testResult {
+                Text(result)
+                    .font(.roonBody(12))
+                    .foregroundColor(result.contains("available") ? .green : .roonSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let error = audiomuse.lastRefreshError {
+                Text("Mix refresh error: \(error)")
+                    .font(.roonBody(12))
+                    .foregroundColor(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        } header: { Text("AI MIXES") } footer: {
+            Text("AudioMuse is an optional LMS plugin that generates AI mixes. When unavailable, Hyperion falls back to local mix generation. A 5-second timeout is used for all AudioMuse requests.")
+                .font(.roonBody(12)).foregroundColor(.roonTertiary)
         }
     }
 }

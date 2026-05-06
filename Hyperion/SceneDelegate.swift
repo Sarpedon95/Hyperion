@@ -1,6 +1,27 @@
 import UIKit
 import SwiftUI
 
+// MARK: - App delegate (background URL session handling)
+
+final class AppDelegate: NSObject, UIApplicationDelegate {
+    func application(
+        _ application: UIApplication,
+        handleEventsForBackgroundURLSession identifier: String,
+        completionHandler: @escaping () -> Void
+    ) {
+        guard identifier == DownloadManager.backgroundSessionID else {
+            completionHandler()
+            return
+        }
+        // Store the handler; DownloadManager calls it after all background events are processed.
+        Task { @MainActor in
+            DownloadManager.shared.backgroundCompletionHandler = completionHandler
+        }
+    }
+}
+
+// MARK: - Scene delegate
+
 // SceneDelegate is required when UIApplicationSceneManifest lists a
 // UISceneDelegateClassName. SwiftUI's @main App struct handles the
 // WindowGroup automatically; this delegate exists only to paint the

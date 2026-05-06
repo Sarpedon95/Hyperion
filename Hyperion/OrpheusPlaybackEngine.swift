@@ -104,6 +104,11 @@ final class OrpheusPlaybackEngine {
     private(set) var isPlaying: Bool = false
     private(set) var isBuffering: Bool = true
 
+    /// Volume applied to the AVAudioPlayerNode (0–1). Ramp this for crossfade.
+    var volume: Float = 1.0 {
+        didSet { playerNode.volume = max(0, min(1, volume)) }
+    }
+
     // MARK: - Diagnostics (MainActor-safe, exposed to debug UI)
 
     private(set) var playbackMode: OrpheusPlaybackMode = .fileLike

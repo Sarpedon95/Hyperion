@@ -9,6 +9,8 @@ struct ContentView: View {
     @StateObject private var connection = ConnectionManager.shared
     @StateObject private var orpheus    = OrpheusDSPEngine.shared
 
+    @Environment(\.horizontalSizeClass) private var sizeClass
+
     @State private var selectedTab: Tab = .home
     @State private var showingNowPlaying: Bool = false
     /// Set to true after the first launch restore attempt so we only show
@@ -23,129 +25,57 @@ struct ContentView: View {
     /// Track whether initial data load has completed to prevent rapid tab switching during initialization.
     @State private var isInitialized: Bool = false
 
-    enum Tab { case home, search, library, queue, orpheus }
+    enum Tab: CaseIterable {
+        case home, search, library, queue, orpheus
+
+        var title: String {
+            switch self {
+            case .home:    return "Home"
+            case .search:  return "Search"
+            case .library: return "Library"
+            case .queue:   return "Queue"
+            case .orpheus: return "Orpheus"
+            }
+        }
+        var icon: String {
+            switch self {
+            case .home:    return "house"
+            case .search:  return "magnifyingglass"
+            case .library: return "books.vertical"
+            case .queue:   return "list.bullet"
+            case .orpheus: return "waveform"
+            }
+        }
+        var selectedIcon: String {
+            switch self {
+            case .home:    return "house.fill"
+            case .search:  return "magnifyingglass.circle.fill"
+            case .library: return "books.vertical.fill"
+            case .queue:   return "list.bullet.rectangle.fill"
+            case .orpheus: return "waveform.circle.fill"
+            }
+        }
+    }
 
     private let tabBarHeight: CGFloat     = 56
     private let miniPlayerHeight: CGFloat = 64
 
+    // MARK: - Layout binding helper
+
+    private var selectedTabOptional: Binding<Tab?> {
+        Binding(get: { selectedTab }, set: { if let t = $0 { selectedTab = t } })
+    }
+
+    // MARK: - Body
+
     var body: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .bottom) {
-                // Bedrock — covers every pixel including status bar and
-                // home indicator zones so there is never a black strip anywhere.
-                Color.roonBase.ignoresSafeArea()
-
-                // Tab content — we ignoresSafeArea on the top edge so the
-                // NavigationStack doesn't add an inset gap above its content.
-                // Each tab's ScrollView handles its own top padding via
-                // .safeAreaInset or explicit padding so content stays below
-                // the status bar / Dynamic Island.
-                activeTabView
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .ignoresSafeArea(edges: .top)
-                    .environment(\.hyperionBottomOverlayHeight, bottomChromeHeight(geo: geo))
-
-                // Custom bottom chrome — extends physically into the
-                // home-indicator zone via ignoresSafeArea(.bottom).
-                VStack(spacing: 0) {
-                    Rectangle()
-                        .fill(Color.roonBorder)
-                        .frame(height: 0.5)
-
-                    if player.currentTrack != nil {
-                        MiniPlayerView(showingNowPlaying: $showingNowPlaying)
-                            .frame(height: miniPlayerHeight)
-                            .transition(.move(edge: .bottom).combined(with: .opacity))
-                    }
-
-                    tabBar
-                        .frame(height: tabBarHeight)
-
-                    // Explicitly fill the home-indicator inset with surface
-                    // colour so it's never black or mismatched.
-                    Color.roonSurface
-                        .frame(height: geo.safeAreaInsets.bottom)
-                }
-                .background(Color.roonSurface)
-                .ignoresSafeArea(edges: .bottom)
-
-                // Error banner — floats above everything
-                if let playerError = player.error {
-                    VStack(spacing: 10) {
-                        HStack(spacing: 10) {
-                            Image(systemName: "exclamationmark.circle.fill")
-                                .foregroundColor(.red)
-                                .font(.system(size: 16))
-                            Text(playerError)
-                                .font(.roonBody(13))
-                                .foregroundColor(.roonPrimary)
-                                .lineLimit(2)
-                            Spacer()
-                            Button(action: { player.error = nil }) {
-                                Image(systemName: "xmark")
-                                    .foregroundColor(.roonTertiary)
-                                    .font(.system(size: 12, weight: .semibold))
-                            }
-                        }
-                        .padding(12)
-                        .background(Color.red.opacity(0.12))
-                        .cornerRadius(8)
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, bottomChromeHeight(geo: geo) + 12)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                } else if let libError = library.error {
-                    VStack(spacing: 10) {
-                        HStack(spacing: 10) {
-                            Image(systemName: "exclamationmark.circle.fill")
-                                .foregroundColor(.red)
-                                .font(.system(size: 16))
-                            Text(libError)
-                                .font(.roonBody(13))
-                                .foregroundColor(.roonPrimary)
-                                .lineLimit(2)
-                            Spacer()
-                            Button(action: { library.error = nil }) {
-                                Image(systemName: "xmark")
-                                    .foregroundColor(.roonTertiary)
-                                    .font(.system(size: 12, weight: .semibold))
-                            }
-                        }
-                        .padding(12)
-                        .background(Color.red.opacity(0.12))
-                        .cornerRadius(8)
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, bottomChromeHeight(geo: geo) + 12)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
-
-                // Resume-session banner — floats above the mini-player.
-                if showResumeBanner {
-                    ResumeBannerView(
-                        trackTitle: resumeTrackTitle,
-                        onResume: {
-                            resumeBannerTask?.cancel()
-                            resumeBannerTask = nil
-                            showResumeBanner = false
-                            player.resume()
-                            showingNowPlaying = true
-                        },
-                        onDismiss: {
-                            resumeBannerTask?.cancel()
-                            resumeBannerTask = nil
-                            showResumeBanner = false
-                        }
-                    )
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                    .padding(.bottom, bottomChromeHeight(geo: geo) + 8)
-                    .padding(.horizontal, 16)
-                }
+        Group {
+            if sizeClass == .regular {
+                iPadLayout
+            } else {
+                compactLayout
             }
         }
-        // The outer GeometryReader must also ignore safe areas so it measures
-        // the full screen and the ZStack fills edge-to-edge.
-        .ignoresSafeArea()
         .fullScreenCover(isPresented: $showingNowPlaying) {
             NowPlayingView()
                 .environment(\.hyperionBottomOverlayHeight, 0)
@@ -211,25 +141,210 @@ struct ContentView: View {
         .animation(.easeInOut(duration: 0.2), value: player.currentTrack != nil)
     }
 
-    /// Height that scroll views should reserve at the bottom so content
-    /// isn't hidden behind the chrome (includes home-indicator inset).
-    private func bottomChromeHeight(geo: GeometryProxy) -> CGFloat {
+    // MARK: - Compact layout (iPhone / compact horizontal size class)
+
+    private var compactLayout: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .bottom) {
+                // Bedrock — covers every pixel including status bar and
+                // home indicator zones so there is never a black strip anywhere.
+                Color.roonBase.ignoresSafeArea()
+
+                // Tab content — we ignoresSafeArea on the top edge so the
+                // NavigationStack doesn't add an inset gap above its content.
+                // Each tab's ScrollView handles its own top padding via
+                // .safeAreaInset or explicit padding so content stays below
+                // the status bar / Dynamic Island.
+                activeTabView
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .ignoresSafeArea(edges: .top)
+                    .environment(\.hyperionBottomOverlayHeight, compactChromeHeight(geo: geo))
+
+                // Custom bottom chrome — extends physically into the
+                // home-indicator zone via ignoresSafeArea(.bottom).
+                VStack(spacing: 0) {
+                    Rectangle()
+                        .fill(Color.roonBorder)
+                        .frame(height: 0.5)
+
+                    if player.currentTrack != nil {
+                        MiniPlayerView(showingNowPlaying: $showingNowPlaying)
+                            .frame(height: miniPlayerHeight)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+
+                    tabBar
+                        .frame(height: tabBarHeight)
+
+                    // Explicitly fill the home-indicator inset with surface
+                    // colour so it's never black or mismatched.
+                    Color.roonSurface
+                        .frame(height: geo.safeAreaInsets.bottom)
+                }
+                .background(Color.roonSurface)
+                .ignoresSafeArea(edges: .bottom)
+
+                errorBannerOverlay(geo: geo, chromeHeight: compactChromeHeight(geo: geo))
+                resumeBannerOverlay(geo: geo, chromeHeight: compactChromeHeight(geo: geo))
+            }
+        }
+        // The outer GeometryReader must also ignore safe areas so it measures
+        // the full screen and the ZStack fills edge-to-edge.
+        .ignoresSafeArea()
+    }
+
+    // MARK: - iPad layout (regular horizontal size class)
+
+    private var iPadLayout: some View {
+        NavigationSplitView {
+            List(ContentView.Tab.allCases, id: \.self, selection: selectedTabOptional) { tab in
+                Label(tab.title, systemImage: selectedTab == tab ? tab.selectedIcon : tab.icon)
+                    .foregroundStyle(selectedTab == tab ? Color.roonAccent : Color.roonPrimary)
+                    .font(.roonBody(17, weight: selectedTab == tab ? .semibold : .regular))
+            }
+            .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
+            .background(Color.roonBase)
+            .navigationTitle(“Hyperion”)
+            .toolbarBackground(Color.roonBase, for: .navigationBar)
+            .toolbarColorScheme(.dark, for: .navigationBar)
+            .disabled(!isInitialized)
+        } detail: {
+            GeometryReader { geo in
+                ZStack(alignment: .bottom) {
+                    Color.roonBase.ignoresSafeArea()
+
+                    activeTabView
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .ignoresSafeArea(edges: .top)
+                        .environment(\.hyperionBottomOverlayHeight, iPadChromeHeight(geo: geo))
+
+                    VStack(spacing: 0) {
+                        Rectangle()
+                            .fill(Color.roonBorder)
+                            .frame(height: 0.5)
+
+                        if player.currentTrack != nil {
+                            MiniPlayerView(showingNowPlaying: $showingNowPlaying)
+                                .frame(height: miniPlayerHeight)
+                                .transition(.move(edge: .bottom).combined(with: .opacity))
+                        }
+
+                        Color.roonSurface
+                            .frame(height: geo.safeAreaInsets.bottom)
+                    }
+                    .background(Color.roonSurface)
+                    .ignoresSafeArea(edges: .bottom)
+
+                    errorBannerOverlay(geo: geo, chromeHeight: iPadChromeHeight(geo: geo))
+                    resumeBannerOverlay(geo: geo, chromeHeight: iPadChromeHeight(geo: geo))
+                }
+            }
+            .ignoresSafeArea()
+        }
+    }
+
+    // MARK: - Chrome height helpers
+
+    private func compactChromeHeight(geo: GeometryProxy) -> CGFloat {
         let miniH = player.currentTrack != nil ? miniPlayerHeight : 0
         return miniH + tabBarHeight + geo.safeAreaInsets.bottom
     }
 
+    private func iPadChromeHeight(geo: GeometryProxy) -> CGFloat {
+        let miniH = player.currentTrack != nil ? miniPlayerHeight : 0
+        return miniH + geo.safeAreaInsets.bottom
+    }
+
+    // MARK: - Overlay helpers
+
+    @ViewBuilder
+    private func errorBannerOverlay(geo: GeometryProxy, chromeHeight: CGFloat) -> some View {
+        if let playerError = player.error {
+            HStack(spacing: 10) {
+                Image(systemName: “exclamationmark.circle.fill”)
+                    .foregroundColor(.red)
+                    .font(.system(size: 16))
+                Text(playerError)
+                    .font(.roonBody(13))
+                    .foregroundColor(.roonPrimary)
+                    .lineLimit(2)
+                Spacer()
+                Button(action: { player.error = nil }) {
+                    Image(systemName: “xmark”)
+                        .foregroundColor(.roonTertiary)
+                        .font(.system(size: 12, weight: .semibold))
+                }
+            }
+            .padding(12)
+            .background(Color.red.opacity(0.12))
+            .cornerRadius(8)
+            .padding(.horizontal, 16)
+            .padding(.bottom, chromeHeight + 12)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+        } else if let libError = library.error {
+            HStack(spacing: 10) {
+                Image(systemName: “exclamationmark.circle.fill”)
+                    .foregroundColor(.red)
+                    .font(.system(size: 16))
+                Text(libError)
+                    .font(.roonBody(13))
+                    .foregroundColor(.roonPrimary)
+                    .lineLimit(2)
+                Spacer()
+                Button(action: { library.error = nil }) {
+                    Image(systemName: “xmark”)
+                        .foregroundColor(.roonTertiary)
+                        .font(.system(size: 12, weight: .semibold))
+                }
+            }
+            .padding(12)
+            .background(Color.red.opacity(0.12))
+            .cornerRadius(8)
+            .padding(.horizontal, 16)
+            .padding(.bottom, chromeHeight + 12)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
+    }
+
+    @ViewBuilder
+    private func resumeBannerOverlay(geo: GeometryProxy, chromeHeight: CGFloat) -> some View {
+        if showResumeBanner {
+            ResumeBannerView(
+                trackTitle: resumeTrackTitle,
+                onResume: {
+                    resumeBannerTask?.cancel()
+                    resumeBannerTask = nil
+                    showResumeBanner = false
+                    player.resume()
+                    showingNowPlaying = true
+                },
+                onDismiss: {
+                    resumeBannerTask?.cancel()
+                    resumeBannerTask = nil
+                    showResumeBanner = false
+                }
+            )
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+            .padding(.bottom, chromeHeight + 8)
+            .padding(.horizontal, 16)
+        }
+    }
+
+    // MARK: - Tab helpers
+
     private var tabBar: some View {
         HStack(spacing: 0) {
-            RoonTabButton(icon: "house",           selectedIcon: "house.fill",              tab: .home,    selected: $selectedTab)
-            RoonTabButton(icon: "magnifyingglass", selectedIcon: "magnifyingglass.circle.fill", tab: .search,  selected: $selectedTab)
-            RoonTabButton(icon: "books.vertical",  selectedIcon: "books.vertical.fill",     tab: .library, selected: $selectedTab)
+            RoonTabButton(icon: “house”,           selectedIcon: “house.fill”,              tab: .home,    selected: $selectedTab)
+            RoonTabButton(icon: “magnifyingglass”, selectedIcon: “magnifyingglass.circle.fill”, tab: .search,  selected: $selectedTab)
+            RoonTabButton(icon: “books.vertical”,  selectedIcon: “books.vertical.fill”,     tab: .library, selected: $selectedTab)
             // PASS 6 — selected Queue icon now switches to a filled rect-list
             // variant so the user gets the same visual feedback as the other
             // tabs. Previously both states used `list.bullet` so the active
             // state was indicated by colour only — failed accessibility's
             // recommendation to not rely on colour alone.
-            RoonTabButton(icon: "list.bullet",     selectedIcon: "list.bullet.rectangle.fill", tab: .queue,   selected: $selectedTab)
-            RoonTabButton(icon: "waveform",        selectedIcon: "waveform.circle.fill",        tab: .orpheus, selected: $selectedTab)
+            RoonTabButton(icon: “list.bullet”,     selectedIcon: “list.bullet.rectangle.fill”, tab: .queue,   selected: $selectedTab)
+            RoonTabButton(icon: “waveform”,        selectedIcon: “waveform.circle.fill”,        tab: .orpheus, selected: $selectedTab)
         }
         .disabled(!isInitialized)
     }
@@ -357,13 +472,21 @@ struct MiniPlayerView: View {
                     Haptics.medium()
                     player.togglePlayPause()
                 } label: {
-                    Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                        .font(.system(size: 22))
-                        .foregroundColor(.roonPrimary)
-                        .frame(width: 44, height: 44)
+                    ZStack {
+                        if player.isLoading {
+                            ProgressView()
+                                .tint(.roonPrimary)
+                                .scaleEffect(0.8)
+                        } else {
+                            Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                                .font(.system(size: 22))
+                                .foregroundColor(.roonPrimary)
+                        }
+                    }
+                    .frame(width: 44, height: 44)
                 }
                 .buttonStyle(.borderless)
-                .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
+                .accessibilityLabel(player.isLoading ? "Loading" : (player.isPlaying ? "Pause" : "Play"))
 
                 Button {
                     Haptics.light()
@@ -661,6 +784,7 @@ struct ArtworkView: View {
         .frame(width: size, height: size)
         .background(Color.roonElevated)
         .clipped()
+        .accessibilityHidden(true)
         .task(id: taskKey) { await loadArtwork(for: coverid) }
     }
 

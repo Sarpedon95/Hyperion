@@ -105,6 +105,7 @@ struct NowPlayingView: View {
     @State private var artworkOpacity: Double = 1.0
     @State private var artworkTransitioning: Bool = false
     @State private var artworkSwipeTask: Task<Void, Never>? = nil
+    @State private var showArtworkFullScreen: Bool = false
 
     @State private var ooWorkDetail: OOWorkDetailResponse? = nil
     @State private var showLyrics: Bool = false
@@ -128,7 +129,10 @@ struct NowPlayingView: View {
             lmsQuality:        player.lmsAudioQuality,
             orpheusState:      orpheus.signalPathState(
                 isPlaybackRoutedThroughOrpheus: player.isPlaybackRoutedThroughOrpheus
-            )
+            ),
+            decodedFormat:     player.orpheusDecodedFormat,
+            airPlayFallback:   player.orpheusFallbackReason?.contains("AirPlay") == true
+                                   && !player.isPlaybackRoutedThroughOrpheus
         )
     }
 
@@ -229,6 +233,9 @@ struct NowPlayingView: View {
             if let track = player.currentTrack {
                 LyricsView(track: track)
             }
+        }
+        .fullScreenCover(isPresented: $showArtworkFullScreen) {
+            ArtworkFullScreenView(coverid: player.currentTrack?.coverid)
         }
         .confirmationDialog("Now Playing", isPresented: $showMoreActions, titleVisibility: .visible) {
             Button("Queue") {
@@ -423,6 +430,7 @@ struct NowPlayingView: View {
         .opacity(artworkOpacity)
         .contentShape(Rectangle())
         .gesture(artworkSwipeGesture)
+        .onTapGesture { showArtworkFullScreen = true }
     }
 
     private var artworkSwipeGesture: some Gesture {
@@ -558,6 +566,15 @@ struct NowPlayingView: View {
                 player.seek(to: finalProgress * max(player.duration, 1))
             }
             .frame(height: 22)
+            .accessibilityLabel("Playback position")
+            .accessibilityValue("\(formatTime(player.currentTime)) of \(formatTime(player.duration))")
+            .accessibilityAdjustableAction { direction in
+                switch direction {
+                case .increment: player.seek(to: min(player.currentTime + 10, player.duration))
+                case .decrement: player.seek(to: max(player.currentTime - 10, 0))
+                @unknown default: break
+                }
+            }
 
             HStack {
                 let effectiveDuration = player.duration > 0
@@ -1244,6 +1261,138 @@ private struct InlineWorkGroupView: View {
         .background(Color.roonSurface)
         .clipShape(RoundedRectangle(cornerRadius: 10))
     }
+}
+
+// MARK: - Full-screen artwork viewer (pinch-to-zoom, drag-to-dismiss, share)
+
+private struct ArtworkFullScreenView: View {
+    let coverid: String?
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var scale: CGFloat = 1.0
+    @GestureState private var liveScale: CGFloat = 1.0
+    @State private var panOffset: CGSize = .zero
+    @State private var panStart: CGSize = .zero
+    @State private var dismissOffset: CGFloat = 0
+    @State private var showShare = false
+    @State private var shareImage: UIImage? = nil
+
+    private var effectiveScale: CGFloat { min(max(scale * liveScale, 1.0), 4.0) }
+    private var isZoomed: Bool { scale > 1.05 }
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+                .opacity(1.0 - Double(max(dismissOffset, 0)) / 350.0)
+
+            GeometryReader { geo in
+                ArtworkView(coverid: coverid, size: geo.size.width)
+                    .aspectRatio(1, contentMode: .fit)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .scaleEffect(effectiveScale)
+                    .offset(x: panOffset.width, y: panOffset.height + dismissOffset)
+                    .gesture(zoomGesture)
+                    .gesture(combinedDragGesture)
+                    .onTapGesture(count: 2) {
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
+                            if isZoomed { scale = 1.0; panOffset = .zero }
+                            else { scale = 2.0 }
+                        }
+                    }
+            }
+
+            VStack {
+                HStack(spacing: 8) {
+                    Spacer()
+                    Button {
+                        fetchAndShare()
+                    } label: {
+                        Image(systemName: "square.and.arrow.up")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundColor(.white)
+                            .frame(width: 44, height: 44)
+                            .background(Circle().fill(Color.black.opacity(0.5)))
+                    }
+                    .buttonStyle(.plain)
+                    Button { dismiss() } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundColor(.white)
+                            .frame(width: 44, height: 44)
+                            .background(Circle().fill(Color.black.opacity(0.5)))
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 60)
+                .opacity(1.0 - Double(max(dismissOffset, 0)) / 180.0)
+                Spacer()
+            }
+        }
+        .ignoresSafeArea()
+        .preferredColorScheme(.dark)
+        .sheet(isPresented: $showShare) {
+            if let img = shareImage { ShareSheet(activityItems: [img]) }
+        }
+    }
+
+    private var zoomGesture: some Gesture {
+        MagnificationGesture()
+            .updating($liveScale) { value, state, _ in state = value }
+            .onEnded { value in
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                    scale = min(max(scale * value, 1.0), 4.0)
+                    if scale <= 1.0 { scale = 1.0; panOffset = .zero }
+                }
+            }
+    }
+
+    private var combinedDragGesture: some Gesture {
+        DragGesture()
+            .onChanged { value in
+                if isZoomed {
+                    panOffset = CGSize(
+                        width: panStart.width + value.translation.width,
+                        height: panStart.height + value.translation.height
+                    )
+                } else if value.translation.height > 0 {
+                    dismissOffset = value.translation.height * 0.72
+                }
+            }
+            .onEnded { value in
+                if isZoomed {
+                    panStart = panOffset
+                } else {
+                    if value.translation.height > 80 || value.predictedEndTranslation.height > 150 {
+                        Haptics.light()
+                        dismiss()
+                    } else {
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.8)) {
+                            dismissOffset = 0
+                        }
+                    }
+                }
+            }
+    }
+
+    private func fetchAndShare() {
+        guard let cid = coverid, !cid.isEmpty else { return }
+        Task {
+            let img = await ArtworkCache.shared.loadImage(coverid: cid, targetPoints: 512, scale: 1)
+            await MainActor.run {
+                shareImage = img
+                if shareImage != nil { showShare = true }
+            }
+        }
+    }
+}
+
+private struct ShareSheet: UIViewControllerRepresentable {
+    let activityItems: [Any]
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
+    }
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
 
 // MARK: - Quality marker pill (legacy — kept for any callers outside NowPlayingView)

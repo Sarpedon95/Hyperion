@@ -33,6 +33,17 @@ final class LibraryViewModel: ObservableObject {
     private var genresLoadTask: Task<[Genre], Error>?
     private var songsLoadTask: Task<[Track], Error>?
 
+    // MARK: - Artist detail cache
+
+    struct ArtistDetailResult {
+        let albums: [Album]
+        let songs: [Track]
+    }
+    /// LRU-style cache capped at 10 artist detail results.
+    private var artistDetailCache: [(artistID: Int, result: ArtistDetailResult)] = []
+    /// In-flight coalescing: a second navigation to the same artist joins this task.
+    private var artistDetailTasks: [Int: Task<ArtistDetailResult, Error>] = [:]
+
     private enum WorksCacheKey: Hashable {
         case all
         case composer(Int)
@@ -255,12 +266,46 @@ final class LibraryViewModel: ObservableObject {
         }
     }
 
+    // MARK: - Artist detail (cached, coalesced)
+
+    /// Loads albums and songs for an artist, with in-flight coalescing and a
+    /// 10-entry LRU cache so repeated navigations are instant.
+    func loadArtistDetail(artistID: Int) async throws -> ArtistDetailResult {
+        // Cache hit — bump to front for LRU eviction.
+        if let idx = artistDetailCache.firstIndex(where: { $0.artistID == artistID }) {
+            let entry = artistDetailCache.remove(at: idx)
+            artistDetailCache.append(entry)
+            return entry.result
+        }
+        // In-flight coalescing — join the existing task rather than duplicating requests.
+        if let existing = artistDetailTasks[artistID] {
+            return try await existing.value
+        }
+
+        let task = Task<ArtistDetailResult, Error> { @MainActor in
+            async let albumsResult = LyrionAPI.shared.getAlbumsForArtist(artistID: artistID)
+            await self.loadSongs()
+            var loadedAlbums = (try? await albumsResult) ?? []
+            loadedAlbums.sort { $0.album.localizedCaseInsensitiveCompare($1.album) == .orderedAscending }
+            return ArtistDetailResult(albums: loadedAlbums, songs: self.songs)
+        }
+        artistDetailTasks[artistID] = task
+        defer { artistDetailTasks[artistID] = nil }
+
+        let result = try await task.value
+        // Evict oldest entry if cache is full.
+        if artistDetailCache.count >= 10 { artistDetailCache.removeFirst() }
+        artistDetailCache.append((artistID: artistID, result: result))
+        return result
+    }
+
     // MARK: - Songs
 
     func loadSongs() async {
         if !songs.isEmpty { return }
         if let existing = songsLoadTask {
-            do { songs = try await existing.value } catch { }
+            // Caller joining an in-flight load: wait for it, then ensure songs is populated.
+            _ = try? await existing.value
             return
         }
         isLoadingSongs = true
@@ -272,6 +317,10 @@ final class LibraryViewModel: ObservableObject {
                 try Task.checkCancellation()
                 let batch = try await LyrionAPI.shared.getAllSongs(start: start, count: pageSize)
                 all.append(contentsOf: batch)
+                // Publish the first page immediately so the UI shows something fast.
+                if start == 0 && self.songs.isEmpty {
+                    self.songs = all
+                }
                 if batch.count < pageSize { break }
                 start += pageSize
             }

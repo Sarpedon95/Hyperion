@@ -509,7 +509,9 @@ struct AudioSignalPath: Identifiable, Hashable {
         outputFormat: String,
         localVolume: Float,
         lmsQuality: LMSAudioQuality? = nil,
-        orpheusState: OrpheusSignalPathState? = nil
+        orpheusState: OrpheusSignalPathState? = nil,
+        decodedFormat: String = "",
+        airPlayFallback: Bool = false
     ) -> AudioSignalPath {
         var steps: [AudioPathStep] = []
         var usedFields: [String] = []
@@ -572,19 +574,26 @@ struct AudioSignalPath: Identifiable, Hashable {
         let streamExt = selectedStreamURL?.pathExtension.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
         let sourceExt = codecKnown ? normalizedCodec : ""
         let appearsTranscoded = codecKnown && !streamExt.isEmpty && sourceExt != streamExt && streamExt != "download"
+        let decodedFormatKnown = !decodedFormat.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !decodedFormat.hasPrefix("unknown")
         steps.append(AudioPathStep(
             id: "decode",
             icon: "arrowtriangle.right.fill",
             title: "Decode",
-            subtitle: "iOS AVPlayer decodes Hyperion’s selected stream",
+            subtitle: decodedFormatKnown
+                ? "AVAssetTrack: \(decodedFormat)"
+                : "iOS AVPlayer decodes Hyperion’s selected stream",
             status: .unknown,
-            statusLabel: "Not reported",
+            statusLabel: decodedFormatKnown ? "Detected" : "Not reported",
             confidence: .verified,
-            technicalValue: streamDescription,
+            technicalValue: decodedFormatKnown ? decodedFormat : streamDescription,
             explanation: "Hyperion creates an AVURLAsset/AVPlayerItem from this LMS stream URL. AVPlayer performs decoding locally; LMS decode/transcode state for this direct stream is not explicitly reported here.",
-            sourceOfTruth: "Hyperion playback code + selected stream URL",
-            usedFields: selectedStreamURL == nil ? [] : ["selectedStreamURL"],
-            missingFields: selectedStreamURL == nil ? ["selectedStreamURL"] : []
+            sourceOfTruth: decodedFormatKnown
+                ? "AVAssetTrack.formatDescriptions (Orpheus engine)"
+                : "Hyperion playback code + selected stream URL",
+            usedFields: [decodedFormatKnown ? "decodedFormat" : nil,
+                         selectedStreamURL == nil ? nil : "selectedStreamURL"].compactMap { $0 },
+            missingFields: decodedFormatKnown ? [] : (selectedStreamURL == nil ? ["selectedStreamURL"] : [])
         ))
 
         steps.append(AudioPathStep(
@@ -643,6 +652,24 @@ struct AudioSignalPath: Identifiable, Hashable {
         }
         let isOrpheusActive   = orpheusSteps.isOrpheusActive
         let isPureModeEnabled = orpheusSteps.isPureModeEnabled
+
+        if airPlayFallback {
+            steps.append(AudioPathStep(
+                id: "airplay-bypass",
+                icon: "airplayvideo",
+                title: "AirPlay output",
+                subtitle: "Orpheus DSP bypassed — AirPlay cannot route through AVAudioEngine",
+                status: .converted,
+                statusLabel: "DSP bypassed",
+                confidence: .verified,
+                technicalValue: "Orpheus → AVPlayer fallback",
+                explanation: "When AirPlay is active, Hyperion falls back from the Orpheus DSP chain to direct AVPlayer playback. EQ, crossfeed, headroom, and leveling are inactive on this route.",
+                sourceOfTruth: "AVAudioSession.routeChangeNotification / Hyperion fallback logic",
+                usedFields: ["AVAudioSession.currentRoute"],
+                missingFields: []
+            ))
+            whyNotBitPerfect.append("Orpheus DSP is configured but bypassed due to AirPlay output.")
+        }
 
         let volumePercent = Int((max(0, min(1, localVolume)) * 100).rounded())
         let hasLocalAttenuation = volumePercent < 100
@@ -720,7 +747,8 @@ struct AudioSignalPath: Identifiable, Hashable {
                           hasLocalAttenuation: hasLocalAttenuation,
                           orpheusProcessingAffectsPath: orpheusSteps.processingAffectsPath,
                           isOrpheusActive: isOrpheusActive,
-                          isPureModeEnabled: isPureModeEnabled)
+                          isPureModeEnabled: isPureModeEnabled,
+                          airPlayFallback: airPlayFallback)
         steps.append(AudioPathStep(
             id: "verification",
             icon: badge.label == "Bit-perfect" ? "checkmark.circle.fill" : "questionmark.circle",
@@ -875,10 +903,12 @@ struct AudioSignalPath: Identifiable, Hashable {
         hasLocalAttenuation: Bool,
         orpheusProcessingAffectsPath: Bool,
         isOrpheusActive: Bool,
-        isPureModeEnabled: Bool
+        isPureModeEnabled: Bool,
+        airPlayFallback: Bool = false
     ) -> (label: String, status: QualityStatus) {
         if sourceIsLossless == false { return ("Lossy source", .converted) }
         if appearsTranscoded { return ("Transcoded?", .converted) }
+        if airPlayFallback { return ("AirPlay · DSP bypass", .converted) }
         if isOrpheusActive {
             if isPureModeEnabled { return ("Orpheus · Pure", .unknown) }
             if orpheusProcessingAffectsPath { return ("Orpheus · DSP", .enhanced) }

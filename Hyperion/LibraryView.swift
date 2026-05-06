@@ -38,6 +38,13 @@ struct LibraryView: View {
 
                         Color.roonBorder.frame(height: 0.5).padding(.leading, 66)
 
+                        NavigationLink(destination: ServerPlaylistListView()) {
+                            LibraryMenuRow(icon: "server.rack",              label: "Server Playlists")
+                        }
+                        .buttonStyle(.plain)
+
+                        Color.roonBorder.frame(height: 0.5).padding(.leading, 66)
+
                         NavigationLink(destination: AlbumListView()) {
                             LibraryMenuRow(icon: "square.stack.fill",        label: "Albums")
                         }
@@ -82,6 +89,13 @@ struct LibraryView: View {
 
                         NavigationLink(destination: HistoryView()) {
                             LibraryMenuRow(icon: "chart.bar.fill",            label: "History")
+                        }
+                        .buttonStyle(.plain)
+
+                        Color.roonBorder.frame(height: 0.5).padding(.leading, 66)
+
+                        NavigationLink(destination: DownloadsView()) {
+                            LibraryMenuRow(icon: "arrow.down.circle.fill",   label: "Downloads")
                         }
                         .buttonStyle(.plain)
                     }
@@ -602,12 +616,15 @@ struct MovementRowView: View {
 
                 Spacer()
 
-                if !track.durationFormatted.isEmpty {
-                    Text(track.durationFormatted)
-                        .font(.roonMono(12))
-                        .foregroundColor(.roonTertiary)
-                        .padding(.trailing, 16)
+                HStack(spacing: 8) {
+                    DownloadButton(track: track)
+                    if !track.durationFormatted.isEmpty {
+                        Text(track.durationFormatted)
+                            .font(.roonMono(12))
+                            .foregroundColor(.roonTertiary)
+                    }
                 }
+                .padding(.trailing, 16)
             }
             .frame(minHeight: 52)
             .contentShape(Rectangle())
@@ -623,6 +640,21 @@ struct MovementRowView: View {
             Button("Add to Queue", systemImage: "text.badge.plus") {
                 PlayerViewModel.shared.addTracksToQueue([track])
             }
+            if DownloadManager.shared.isDownloaded(trackID: track.id) {
+                Button("Remove Download", systemImage: "trash", role: .destructive) {
+                    if let d = DownloadManager.shared.downloadedTracks.first(where: { $0.id == track.id }) {
+                        DownloadManager.shared.removeDownload(d)
+                    }
+                }
+            } else if DownloadManager.shared.downloads[track.id] != nil {
+                Button("Cancel Download", systemImage: "xmark.circle") {
+                    DownloadManager.shared.cancelDownload(for: track)
+                }
+            } else {
+                Button("Download", systemImage: "arrow.down.circle") {
+                    DownloadManager.shared.download(track)
+                }
+            }
         }
         .sheet(isPresented: $showingAddToPlaylist) {
             AddToPlaylistSheet(tracks: [track])
@@ -637,7 +669,10 @@ struct AlbumListView: View {
 
     @ObservedObject private var library = LibraryViewModel.shared
 
-    @State private var sortOrder: AlbumSortOrder = .album
+    @State private var sortOrder: AlbumSortOrder = {
+        let saved = UserDefaults.standard.string(forKey: "hyperion.library.albumSortOrder") ?? ""
+        return AlbumSortOrder(rawValue: saved) ?? .album
+    }()
     @State private var showSortPicker: Bool = false
     @State private var searchText: String = ""
     /// Tracks the measured scroll-view width so we can derive cellWidth without
@@ -775,6 +810,7 @@ struct AlbumListView: View {
                 Button(order.rawValue) {
                     guard order != sortOrder else { return }
                     sortOrder = order
+                    UserDefaults.standard.set(order.rawValue, forKey: "hyperion.library.albumSortOrder")
                     Task { await library.loadAlbums(reset: true, sort: order) }
                 }
             }
@@ -932,6 +968,8 @@ struct AlbumDetailView: View {
     @State private var loadError: String?      = nil
     @State private var selectedTab: AlbumTab   = .tracks
     @State private var showArtistDetail: Bool  = false
+    @State private var albumMetadata: MetadataResult? = nil
+    @State private var albumMetadataLoading: Bool = false
 
     private var albumArtist: Artist? {
         guard let name = album.artist ?? album.composer, !name.isEmpty else { return nil }
@@ -974,7 +1012,7 @@ struct AlbumDetailView: View {
                 case .tracks:
                     tracksContent
                 case .info:
-                    AlbumInfoPanel(album: album, workGroups: workGroups)
+                    AlbumInfoPanel(album: album, workGroups: workGroups, metadata: albumMetadata, metadataLoading: albumMetadataLoading)
                 case .credits:
                     creditsContent
                 }
@@ -994,6 +1032,8 @@ struct AlbumDetailView: View {
             isLoading = true
             loadError = nil
             workGroups = []
+            albumMetadata = nil
+            albumMetadataLoading = false
             defer { isLoading = false }
 
             do {
@@ -1005,6 +1045,17 @@ struct AlbumDetailView: View {
             } catch {
                 loadError = error.localizedDescription
             }
+
+            // Fetch enriched metadata after tracks load
+            let artistName = album.artist ?? album.composer ?? ""
+            guard !artistName.isEmpty else { return }
+            albumMetadataLoading = true
+            albumMetadata = await MetadataService.shared.fetch(
+                artist: artistName,
+                album: album.album,
+                track: nil
+            )
+            albumMetadataLoading = false
         }
     }
 
@@ -1189,6 +1240,9 @@ struct AlbumTabBar: View {
 struct AlbumInfoPanel: View {
     let album: Album
     let workGroups: [WorkGroup]
+    var metadata: MetadataResult? = nil
+    var metadataLoading: Bool = false
+    @State private var reviewExpanded: Bool = false
 
     private var totalDuration: Double {
         workGroups.reduce(0) { $0 + $1.totalDuration }
@@ -1262,6 +1316,73 @@ struct AlbumInfoPanel: View {
                     Color.roonBorder.frame(height: 0.5).padding(.leading, 20)
                     AlbumInfoRow(label: "Format", value: fmt)
                 }
+
+                // Metadata-enriched fields
+                if let year = metadata?.albumReleaseYear, !year.isEmpty {
+                    Color.roonBorder.frame(height: 0.5).padding(.leading, 20)
+                    AlbumInfoRow(label: "Release", value: year)
+                }
+                if let label = metadata?.albumLabel, !label.isEmpty {
+                    Color.roonBorder.frame(height: 0.5).padding(.leading, 20)
+                    AlbumInfoRow(label: "Label", value: label)
+                }
+                if let genre = metadata?.albumGenre, !genre.isEmpty {
+                    Color.roonBorder.frame(height: 0.5).padding(.leading, 20)
+                    AlbumInfoRow(label: "Genre", value: genre.capitalized)
+                }
+            }
+
+            // Tags from metadata
+            if metadataLoading {
+                HStack(spacing: 8) {
+                    ForEach(0..<4, id: \.self) { _ in
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(Color.roonElevated)
+                            .frame(width: 60, height: 24)
+                            .redacted(reason: .placeholder)
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 16)
+            } else if let tags = metadata?.tags, !tags.isEmpty {
+                MetadataTagsRow(tags: tags).padding(.top, 16)
+            }
+
+            // Album review
+            if let review = metadata?.albumReview, !review.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Album Notes")
+                        .font(.roonTitle(16))
+                        .foregroundColor(.roonPrimary)
+                        .padding(.horizontal, 20)
+                    Text(review)
+                        .font(.roonBody(13))
+                        .foregroundColor(.roonSecondary)
+                        .lineLimit(reviewExpanded ? nil : 4)
+                        .padding(.horizontal, 20)
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) { reviewExpanded.toggle() }
+                    } label: {
+                        Text(reviewExpanded ? "Show less" : "Read more")
+                            .font(.roonBody(12, weight: .semibold))
+                            .foregroundColor(.roonAccent)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 20)
+                }
+                .padding(.top, 16)
+            }
+
+            // Source badge
+            if let source = metadata?.source {
+                HStack {
+                    Spacer()
+                    Text("via \(source.displayName)")
+                        .font(.roonBody(10))
+                        .foregroundColor(.roonTertiary)
+                        .padding(.horizontal, 20)
+                }
+                .padding(.top, 8)
             }
 
             Spacer(minLength: 80)
@@ -1535,6 +1656,8 @@ struct SongRowView: View {
 
             Spacer()
 
+            DownloadButton(track: track)
+
             Text(track.durationFormatted)
                 .font(.roonMono(12))
                 .foregroundColor(.roonTertiary)
@@ -1565,6 +1688,21 @@ struct SongRowView: View {
             }
             Button("Add to Playlist", systemImage: "music.note.list") {
                 showingAddToPlaylist = true
+            }
+            if DownloadManager.shared.isDownloaded(trackID: track.id) {
+                Button("Remove Download", systemImage: "trash", role: .destructive) {
+                    if let d = DownloadManager.shared.downloadedTracks.first(where: { $0.id == track.id }) {
+                        DownloadManager.shared.removeDownload(d)
+                    }
+                }
+            } else if DownloadManager.shared.downloads[track.id] != nil {
+                Button("Cancel Download", systemImage: "xmark.circle") {
+                    DownloadManager.shared.cancelDownload(for: track)
+                }
+            } else {
+                Button("Download", systemImage: "arrow.down.circle") {
+                    DownloadManager.shared.download(track)
+                }
             }
         }
         .sheet(isPresented: $showingAddToPlaylist) {
@@ -1733,6 +1871,10 @@ struct ArtistDetailView: View {
     @State private var albums: [Album] = []
     @State private var localTracks: [Track] = []
     @State private var isLoading: Bool = true
+    @State private var displayedAlbumCount: Int = 12
+    @State private var metadata: MetadataResult? = nil
+    @State private var metadataLoading: Bool = false
+    @State private var bioExpanded: Bool = false
 
     private var tracksByArtist: [Track] {
         let folded = SearchTextNormalizer.folded(artist.name)
@@ -1807,23 +1949,67 @@ struct ArtistDetailView: View {
                 .padding(.horizontal, 20)
 
                 if isLoading {
-                    ProgressView().tint(.roonAccent)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 50)
+                    // Skeleton grid while albums load
+                    artistSectionTitle("Albums")
+                    LazyVGrid(
+                        columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)],
+                        spacing: 16
+                    ) {
+                        ForEach(0..<6, id: \.self) { _ in
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(Color.roonElevated)
+                                .aspectRatio(1, contentMode: .fit)
+                                .redacted(reason: .placeholder)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    // Skeleton song rows
+                    artistSectionTitle("Songs")
+                    LazyVStack(spacing: 0) {
+                        ForEach(0..<5, id: \.self) { _ in
+                            HStack(spacing: 12) {
+                                RoundedRectangle(cornerRadius: 4)
+                                    .fill(Color.roonElevated)
+                                    .frame(width: 44, height: 44)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    RoundedRectangle(cornerRadius: 3)
+                                        .fill(Color.roonElevated)
+                                        .frame(width: 160, height: 13)
+                                    RoundedRectangle(cornerRadius: 3)
+                                        .fill(Color.roonElevated.opacity(0.6))
+                                        .frame(width: 100, height: 11)
+                                }
+                                Spacer()
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
+                            .redacted(reason: .placeholder)
+                        }
+                    }
+                    .background(Color.roonSurface)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .padding(.horizontal, 16)
                 } else {
                     if !albums.isEmpty {
                         artistSectionTitle("Albums")
+                        let visibleAlbums = Array(albums.prefix(displayedAlbumCount))
                         LazyVGrid(
                             columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)],
                             spacing: 16
                         ) {
-                            ForEach(albums) { album in
+                            ForEach(visibleAlbums) { album in
                                 NavigationLink {
                                     AlbumDetailView(album: album)
                                 } label: {
                                     ArtistAlbumGridCard(album: album)
                                 }
                                 .buttonStyle(.plain)
+                            }
+                            // Load-more sentinel
+                            if albums.count > displayedAlbumCount {
+                                Color.clear
+                                    .frame(height: 1)
+                                    .onAppear { displayedAlbumCount += 12 }
                             }
                         }
                         .padding(.horizontal, 16)
@@ -1889,6 +2075,20 @@ struct ArtistDetailView: View {
                     }
                 }
 
+                // MARK: - Metadata enrichment
+                ArtistMetadataSection(
+                    metadata: metadata,
+                    isLoading: metadataLoading,
+                    bioExpanded: $bioExpanded,
+                    onArtistTap: { name in
+                        // Navigate to similar artist by constructing an Artist value
+                        // from the library if available, otherwise by name only.
+                        let target = library.artists.first { $0.name == name }
+                            ?? Artist(id: 0, name: name)
+                        // Push a new ArtistDetailView — caller handles navigation stack.
+                    }
+                )
+
                 Spacer(minLength: 24)
             }
         }
@@ -1902,13 +2102,23 @@ struct ArtistDetailView: View {
         .toolbarColorScheme(.dark, for: .navigationBar)
         .task(id: artist.id) {
             isLoading = true
+            displayedAlbumCount = 12
+            metadata = nil
+            metadataLoading = false
+            bioExpanded = false
             defer { isLoading = false }
-            async let albumsTask = LyrionAPI.shared.getAlbumsForArtist(artistID: artist.id)
-            await library.loadSongs()
-            var loadedAlbums = (try? await albumsTask) ?? []
-            loadedAlbums.sort { $0.album.localizedCaseInsensitiveCompare($1.album) == .orderedAscending }
-            albums = loadedAlbums
-            localTracks = library.songs
+            guard let result = try? await library.loadArtistDetail(artistID: artist.id) else { return }
+            albums      = result.albums
+            localTracks = result.songs
+            // Fetch enriched metadata after library data loads
+            let firstTrack = result.songs.first
+            metadataLoading = true
+            metadata = await MetadataService.shared.fetch(
+                artist: artist.name,
+                album: albums.first?.album,
+                track: firstTrack
+            )
+            metadataLoading = false
         }
     }
 
@@ -1941,6 +2151,152 @@ struct ArtistDetailView: View {
             .font(.roonTitle(20))
             .foregroundColor(.roonPrimary)
             .padding(.horizontal, 20)
+    }
+}
+
+// MARK: - Artist metadata enrichment section
+
+struct ArtistMetadataSection: View {
+    let metadata: MetadataResult?
+    let isLoading: Bool
+    @Binding var bioExpanded: Bool
+    let onArtistTap: (String) -> Void
+
+    var body: some View {
+        if isLoading {
+            // Skeleton placeholders
+            VStack(alignment: .leading, spacing: 16) {
+                Rectangle().fill(Color.roonElevated).frame(height: 14).cornerRadius(7)
+                    .padding(.horizontal, 20).redacted(reason: .placeholder)
+                Rectangle().fill(Color.roonElevated).frame(height: 14).cornerRadius(7)
+                    .padding(.horizontal, 20).frame(maxWidth: 260, alignment: .leading).redacted(reason: .placeholder)
+                Rectangle().fill(Color.roonElevated).frame(height: 14).cornerRadius(7)
+                    .padding(.horizontal, 20).frame(maxWidth: 200, alignment: .leading).redacted(reason: .placeholder)
+            }
+            .padding(.top, 8)
+        } else if let metadata {
+            VStack(alignment: .leading, spacing: 20) {
+                // Bio
+                if let bio = metadata.artistBio, !bio.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("About")
+                            .font(.roonTitle(18))
+                            .foregroundColor(.roonPrimary)
+                            .padding(.horizontal, 20)
+
+                        Text(bio)
+                            .font(.roonBody(14))
+                            .foregroundColor(.roonSecondary)
+                            .lineLimit(bioExpanded ? nil : 3)
+                            .padding(.horizontal, 20)
+
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) { bioExpanded.toggle() }
+                        } label: {
+                            Text(bioExpanded ? "Show less" : "Read more")
+                                .font(.roonBody(13, weight: .semibold))
+                                .foregroundColor(.roonAccent)
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.horizontal, 20)
+                    }
+                }
+
+                // Tags
+                if !metadata.tags.isEmpty {
+                    MetadataTagsRow(tags: metadata.tags)
+                }
+
+                // Similar artists
+                if !metadata.similarArtists.isEmpty {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Similar Artists")
+                            .font(.roonTitle(18))
+                            .foregroundColor(.roonPrimary)
+                            .padding(.horizontal, 20)
+
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 14) {
+                                ForEach(metadata.similarArtists) { similar in
+                                    Button {
+                                        onArtistTap(similar.name)
+                                    } label: {
+                                        SimilarArtistCard(similar: similar)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                            .padding(.horizontal, 20)
+                        }
+                    }
+                }
+
+                // Source badge
+                HStack {
+                    Spacer()
+                    Text("via \(metadata.source.displayName)")
+                        .font(.roonBody(10, weight: .medium))
+                        .foregroundColor(.roonTertiary)
+                        .padding(.horizontal, 20)
+                }
+            }
+        }
+    }
+}
+
+struct MetadataTagsRow: View {
+    let tags: [String]
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(tags, id: \.self) { tag in
+                    Text(tag.capitalized)
+                        .font(.roonBody(12, weight: .medium))
+                        .foregroundColor(.roonPrimary)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Color.roonElevated)
+                        .clipShape(Capsule())
+                        .overlay(Capsule().strokeBorder(Color.roonBorder, lineWidth: 1))
+                }
+            }
+            .padding(.horizontal, 20)
+        }
+    }
+}
+
+struct SimilarArtistCard: View {
+    let similar: SimilarArtist
+    @State private var image: UIImage? = nil
+
+    var body: some View {
+        VStack(spacing: 6) {
+            ZStack {
+                Circle().fill(Color.roonElevated).frame(width: 70, height: 70)
+                if let image {
+                    Image(uiImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: 70, height: 70)
+                        .clipShape(Circle())
+                } else {
+                    Text(NameFormatting.initials(similar.name))
+                        .font(.roonTitle(18))
+                        .foregroundColor(.roonAccent)
+                }
+            }
+            Text(similar.name)
+                .font(.roonBody(11, weight: .medium))
+                .foregroundColor(.roonSecondary)
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+                .frame(width: 70)
+        }
+        .task(id: similar.imageURL?.absoluteString) {
+            guard let url = similar.imageURL else { return }
+            image = await ArtworkCache.shared.loadImage(url: url, targetPoints: 70, scale: 2)
+        }
     }
 }
 

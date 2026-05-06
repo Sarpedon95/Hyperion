@@ -14,7 +14,12 @@ final class PlayerViewModel: ObservableObject {
     // isPaused is not @Published — no view observes it; it's an internal
     // sentinel distinguishing "paused" from "never started".
     private(set) var isPaused: Bool = false
-    @Published var currentTrack: Track? = nil
+    @Published var currentTrack: Track? = nil {
+        didSet {
+            guard let track = currentTrack, track.id != oldValue?.id else { return }
+            LyricsService.shared.prefetch(for: track)
+        }
+    }
     @Published var currentWorkGroup: WorkGroup? = nil
     @Published var progress: Double = 0
     @Published var currentTime: Double = 0
@@ -130,6 +135,8 @@ final class PlayerViewModel: ObservableObject {
     /// True only when audio is confirmed to be flowing through the Orpheus DSP chain.
     /// Set to true after the first PCM buffer plays (not just after load).
     @Published private(set) var isPlaybackRoutedThroughOrpheus: Bool = false
+    /// Convenience alias — true iff Orpheus is the active playback engine right now.
+    var isOrpheusActive: Bool { isPlaybackRoutedThroughOrpheus }
     private var orpheusEngine: OrpheusPlaybackEngine?
 
     // MARK: - Orpheus diagnostics (mirrors engine state for debug UI)
@@ -740,22 +747,29 @@ final class PlayerViewModel: ObservableObject {
 
             if shouldResume && options.contains(.shouldResume) {
                 // System grants permission. Reactivate audio session and resume.
-                ServerLogStore.shared.info("Audio session: Resuming after interruption")
+                // A 300 ms delay gives iOS time to fully release the call audio
+                // session before we try to reclaim it for music playback.
+                ServerLogStore.shared.info("Audio session: Resuming after interruption (300 ms delay)")
 
-                // Try to activate the audio session. If it fails, retry once after a brief delay.
                 if !activateAudioSession() {
                     ServerLogStore.shared.warn("Audio session reactivation failed, retrying after delay")
                     Task { @MainActor [weak self] in
                         try? await Task.sleep(nanoseconds: 500_000_000)
                         guard let self, !Task.isCancelled else { return }
                         if self.activateAudioSession() {
+                            try? await Task.sleep(nanoseconds: 300_000_000)
+                            guard !Task.isCancelled else { return }
                             self.resume()
                         } else {
                             ServerLogStore.shared.error("Audio session reactivation retry failed")
                         }
                     }
                 } else {
-                    resume()
+                    Task { @MainActor [weak self] in
+                        try? await Task.sleep(nanoseconds: 300_000_000)
+                        guard let self, !Task.isCancelled else { return }
+                        self.resume()
+                    }
                 }
             } else {
                 ServerLogStore.shared.debug("Audio session: System denied resume (shouldResume=\(shouldResume), options=\(options))")
@@ -774,7 +788,14 @@ final class PlayerViewModel: ObservableObject {
             return false
         }
 
-        if reasonRaw == Self.interruptionReasonAppWasSuspendedRawValue { return true }
+        // Only treat as a background transition if iOS explicitly flagged it as
+        // app-suspension AND the app is genuinely backgrounded. Without the
+        // applicationState check, a phone call arriving with the screen locked
+        // could be misclassified as a background transition and skip pausing.
+        if reasonRaw == Self.interruptionReasonAppWasSuspendedRawValue,
+           UIApplication.shared.applicationState != .active {
+            return true
+        }
 
         #if os(visionOS)
         if let reason = AVAudioSession.InterruptionReason(rawValue: reasonRaw),
@@ -831,6 +852,13 @@ final class PlayerViewModel: ObservableObject {
             _ = activateAudioSession()
             updateOutputFormat()
             refreshNowPlayingPlaybackState(force: true)
+            // Detect silent-but-playing state: device volume at 0 means audio is
+            // flowing but inaudible. Log for diagnostics; do not pause automatically
+            // (the user may intend to unmute).
+            let outputVol = AVAudioSession.sharedInstance().outputVolume
+            if outputVol < 0.01 {
+                ServerLogStore.shared.debug("Route change: outputVolume is \(outputVol) — audio may be silent")
+            }
 
         @unknown default:
             ServerLogStore.shared.debug("Unknown route change reason: \(reasonRaw)")
@@ -1414,6 +1442,18 @@ final class PlayerViewModel: ObservableObject {
         }
 
         let track      = queue[currentIndex]
+
+        // Skip unnecessary item recreation if the current item is already loaded
+        // and ready for this exact track. Recreating it tears down the buffer and
+        // produces a noticeable gap; a plain resume is all that's needed.
+        if let item = playerItem,
+           item.status == .readyToPlay,
+           player.currentItem === item,
+           currentTrack?.id == track.id {
+            if autoPlay && !isPlaying { resume() }
+            return
+        }
+
         let candidates = LyrionAPI.shared.streamURLs(for: track)
         guard !candidates.isEmpty else {
             isLoading = false
@@ -1535,6 +1575,11 @@ final class PlayerViewModel: ObservableObject {
             self.progress    = self.duration > 0 ? min(1, time / self.duration) : 0
             self.refreshNowPlayingPlaybackState()
             self.schedulePlaybackStateSave()
+            let remaining = self.duration > 0 ? self.duration - time : 0
+            if self.crossfadeDuration > 0 && remaining > 0
+               && remaining <= self.crossfadeDuration && !self.isCrossfadingOut {
+                self.startCrossfadeOut()
+            }
         }
         engine.onPlaybackEnded = { [weak self] in
             guard let self, playbackID == self.activePlaybackID else { return }
@@ -2333,6 +2378,16 @@ final class PlayerViewModel: ObservableObject {
                     beginBackgroundPlaybackTask(reason: "buffering")
                 }
                 refreshNowPlayingPlaybackState(force: true)
+                // 3 s watchdog: if still stuck waiting with a ready item, nudge the player.
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                    guard let self, !Task.isCancelled, playbackID == self.activePlaybackID else { return }
+                    guard self.player.timeControlStatus == .waitingToPlayAtSpecifiedRate else { return }
+                    guard self.playerItem?.status == .readyToPlay else { return }
+                    ServerLogStore.shared.warn("Playback stuck waiting 3 s — nudging player")
+                    _ = self.activateAudioSession()
+                    self.startPlayer(preferImmediateStart: true)
+                }
             }
 
         case .paused:
@@ -2402,13 +2457,14 @@ final class PlayerViewModel: ObservableObject {
                 // Reload from the start for repeat-one; simpler than seeking a finished asset.
                 playCurrentTrackOrpheus(autoPlay: true)
             } else {
+                let seekGeneration = activePlaybackID
                 player.seek(
                     to: .zero,
                     toleranceBefore: .zero,
                     toleranceAfter:  .zero
                 ) { [weak self] finished in
                     Task { @MainActor [weak self] in
-                        guard let self, finished else { return }
+                        guard let self, finished, seekGeneration == self.activePlaybackID else { return }
                         self.activateAudioSession()
                         self.startPlayer(preferImmediateStart: UIApplication.shared.applicationState != .active)
                         self.isPlaying = true
@@ -2432,7 +2488,15 @@ final class PlayerViewModel: ObservableObject {
                    let g = gaplessPreloadedItem,
                    queue.indices.contains(nextIdx),
                    g.trackID == queue[nextIdx].id {
-                    performGaplessAdvance(nextIndex: nextIdx)
+                    if g.item.status == .failed {
+                        // Preloaded item failed before use — clear it and start fresh.
+                        ServerLogStore.shared.warn("Gapless: preloaded item failed — falling back to nextTrack()")
+                        gaplessPreloadedItem = nil
+                        audioManager.removePreloadedItems()
+                        nextTrack()
+                    } else {
+                        performGaplessAdvance(nextIndex: nextIdx)
+                    }
                 } else {
                     nextTrack()
                 }
@@ -2615,12 +2679,14 @@ final class PlayerViewModel: ObservableObject {
             guard let self else { return }
             for _ in 0..<steps {
                 guard !Task.isCancelled else { return }
-                self.crossfadeVolume = max(0, self.crossfadeVolume - decrement)
-                self.player.volume   = max(0, min(1, self.volume)) * self.crossfadeVolume
+                self.crossfadeVolume     = max(0, self.crossfadeVolume - decrement)
+                self.player.volume       = max(0, min(1, self.volume)) * self.crossfadeVolume
+                self.orpheusEngine?.volume = self.crossfadeVolume
                 try? await Task.sleep(nanoseconds: 16_000_000)
             }
-            self.crossfadeVolume = 0
-            self.player.volume   = 0
+            self.crossfadeVolume     = 0
+            self.player.volume       = 0
+            self.orpheusEngine?.volume = 0
         }
     }
 
@@ -2630,24 +2696,28 @@ final class PlayerViewModel: ObservableObject {
         crossfadeTask?.cancel()
         isCrossfadingOut = false
         guard crossfadeDuration > 0 else {
-            crossfadeVolume  = 1
-            player.volume    = max(0, min(1, volume))
+            crossfadeVolume        = 1
+            player.volume          = max(0, min(1, volume))
+            orpheusEngine?.volume  = 1
             return
         }
-        crossfadeVolume  = 0
-        player.volume    = 0
+        crossfadeVolume        = 0
+        player.volume          = 0
+        orpheusEngine?.volume  = 0
         let steps        = max(1, Int(crossfadeDuration / 0.016))
         let increment    = Float(1.0) / Float(steps)
         crossfadeTask = Task { @MainActor [weak self] in
             guard let self else { return }
             for _ in 0..<steps {
                 guard !Task.isCancelled else { return }
-                self.crossfadeVolume = min(1, self.crossfadeVolume + increment)
-                self.player.volume   = max(0, min(1, self.volume)) * self.crossfadeVolume
+                self.crossfadeVolume     = min(1, self.crossfadeVolume + increment)
+                self.player.volume       = max(0, min(1, self.volume)) * self.crossfadeVolume
+                self.orpheusEngine?.volume = self.crossfadeVolume
                 try? await Task.sleep(nanoseconds: 16_000_000)
             }
-            self.crossfadeVolume = 1
-            self.player.volume   = max(0, min(1, self.volume))
+            self.crossfadeVolume     = 1
+            self.player.volume       = max(0, min(1, self.volume))
+            self.orpheusEngine?.volume = 1
         }
     }
 
@@ -2709,11 +2779,22 @@ final class PlayerViewModel: ObservableObject {
     private func installPendingSeekWatchdog() {
         pendingSeekWatchdogTask?.cancel()
         guard pendingSeekTime != nil else { return }
+        let capturedID   = activePlaybackID
+        let capturedPlay = isPlaying || isPaused
 
         pendingSeekWatchdogTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 5_000_000_000)
             guard !Task.isCancelled, let self, self.pendingSeekTime != nil else { return }
+            guard capturedID == self.activePlaybackID else { return }
             self.pendingSeekTime = nil
+            // If the item itself failed, escalate to the URL fallback chain rather
+            // than leaving the UI stuck in a loading state.
+            if self.playerItem?.status == .failed,
+               self.queue.indices.contains(self.currentIndex) {
+                ServerLogStore.shared.warn("Seek watchdog: item failed — triggering URL fallback")
+                let track = self.queue[self.currentIndex]
+                self.retryNextPlaybackURL(track: track, autoPlay: capturedPlay, playbackID: capturedID)
+            }
         }
     }
 
@@ -2725,7 +2806,8 @@ final class PlayerViewModel: ObservableObject {
     // MARK: - Now Playing Info
 
     private func updateNowPlayingInfo(track: Track?) {
-        NowPlayingWidgetStore.shared.update(track: track, isPlaying: isPlaying)
+        let artworkURL = track.flatMap { LyrionAPI.shared.artworkURL(coverid: $0.coverid) }
+        NowPlayingWidgetStore.shared.update(track: track, isPlaying: isPlaying, artworkURL: artworkURL)
         guard let track else {
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
             return

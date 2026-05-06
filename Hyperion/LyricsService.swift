@@ -68,9 +68,37 @@ final class LyricsService {
     /// Swap at startup if a licensed provider with a valid key is configured.
     var provider: any LyricsProvider = LRCLIBProvider()
 
+    // In-memory cache keyed by track ID — survives the session, avoids disk I/O on repeat visits.
+    private var memoryCache: [Int: LyricsResult] = [:]
+
     // MARK: - Public
 
-    /// Returns cached lyrics instantly, or fetches via the active provider.
+    /// Synchronous memory-cache probe — returns instantly if lyrics were already fetched.
+    func cachedResult(trackID: Int) -> LyricsResult? {
+        memoryCache[trackID]
+    }
+
+    /// Kick off a background fetch so lyrics are ready before the user opens the view.
+    /// Safe to call on every track change; skips work if the result is already in memory.
+    func prefetch(for track: Track) {
+        let tid = track.id
+        guard memoryCache[tid] == nil else { return }
+        let artist = track.composer ?? track.albumartist ?? track.trackartist ?? ""
+        let artistResolved = artist.isEmpty ? track.title : artist
+        let title  = (track.work?.isEmpty == false ? track.work : nil) ?? track.title
+        let album  = track.album ?? ""
+        Task {
+            _ = await self.lyrics(
+                artistName: artistResolved,
+                trackName:  title,
+                albumName:  album.isEmpty ? nil : album,
+                duration:   (track.duration ?? 0) > 0 ? track.duration : nil,
+                trackID:    tid
+            )
+        }
+    }
+
+    /// Returns cached lyrics instantly, or fetches via the active provider (5-second timeout).
     /// Negative results ("unavailable") are only cached after all provider
     /// fallback attempts have been exhausted.
     /// If `trackID` is provided and a pin exists for it, the pin takes priority.
@@ -81,8 +109,14 @@ final class LyricsService {
         duration:   TimeInterval?,
         trackID:    Int? = nil
     ) async -> LyricsResult {
+        if let tid = trackID, let hit = memoryCache[tid] {
+            lyricsLog("Memory hit — trackID \(tid)")
+            return hit
+        }
+
         if let tid = trackID, let pinned = loadPin(trackID: tid) {
             lyricsLog("Pin hit — trackID \(tid)")
+            memoryCache[tid] = pinned
             return pinned
         }
 
@@ -90,17 +124,37 @@ final class LyricsService {
 
         if let cached = loadFromCache(key: key) {
             lyricsLog("Cache hit — '\(trackName)' by '\(artistName)'")
+            if let tid = trackID { memoryCache[tid] = cached }
             return cached
         }
 
         lyricsLog("Fetching '\(trackName)' by '\(artistName)' via \(type(of: provider))")
-        let result = await provider.fetch(
-            artistName: artistName,
-            trackName:  trackName,
-            albumName:  albumName,
-            duration:   duration
-        )
+        let result: LyricsResult
+        do {
+            result = try await withThrowingTaskGroup(of: LyricsResult.self) { group in
+                group.addTask { [provider] in
+                    await provider.fetch(
+                        artistName: artistName,
+                        trackName:  trackName,
+                        albumName:  albumName,
+                        duration:   duration
+                    )
+                }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: 5_000_000_000)
+                    throw CancellationError()
+                }
+                let r = try await group.next() ?? .unavailable
+                group.cancelAll()
+                return r
+            }
+        } catch {
+            lyricsLog("Fetch timed out or failed — '\(trackName)'")
+            result = .unavailable
+        }
+
         saveToCache(result, key: key)
+        if let tid = trackID { memoryCache[tid] = result }
         return result
     }
 

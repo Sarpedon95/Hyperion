@@ -1,12 +1,29 @@
 import Foundation
 import SwiftUI
 
+// MARK: - Server playlist model (read-write against LMS)
+
+struct ServerPlaylist: Identifiable, Hashable {
+    let id: String          // LMS numeric ID stored as String for safety
+    let name: String
+    var tracks: [Track]
+    var trackCount: Int
+
+    var subtitle: String {
+        let n = tracks.isEmpty ? trackCount : tracks.count
+        return n == 1 ? "1 track" : "\(n) tracks"
+    }
+}
+
+// MARK: - Local playlist model
+
 struct LocalPlaylist: Identifiable, Codable, Hashable {
     let id: UUID
     var name: String
     var tracks: [Track]
     var createdAt: Date
     var updatedAt: Date
+    var serverPlaylistID: String? = nil
 
     var subtitle: String {
         let count = tracks.count
@@ -18,11 +35,18 @@ struct LocalPlaylist: Identifiable, Codable, Hashable {
 final class PlaylistStore: ObservableObject {
     static let shared = PlaylistStore()
 
+    // MARK: - Local playlists
     @Published private(set) var playlists: [LocalPlaylist] = []
 
     private let filename  = "hyperion_playlists.json"
     private let legacyKey = "hyperion.localPlaylists.v1"
     private var saveTask: Task<Void, Never>?
+
+    // MARK: - Server playlists
+    @Published private(set) var serverPlaylists: [ServerPlaylist] = []
+    @Published private(set) var isLoadingServerPlaylists: Bool = false
+    @Published var serverPlaylistError: String? = nil
+    private var serverSyncTask: Task<Void, Never>? = nil
 
     private init() {
         load()
@@ -124,6 +148,85 @@ final class PlaylistStore: ObservableObject {
             }
         }
     }
+
+    // MARK: - Server playlist operations
+
+    func syncServerPlaylists() {
+        serverSyncTask?.cancel()
+        serverSyncTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.isLoadingServerPlaylists = true
+            self.serverPlaylistError = nil
+            defer { self.isLoadingServerPlaylists = false }
+            do {
+                self.serverPlaylists = try await LyrionAPI.shared.getLMSPlaylists()
+            } catch is CancellationError {
+                // Cancelled — leave current list intact
+            } catch {
+                self.serverPlaylistError = error.localizedDescription
+            }
+        }
+    }
+
+    func fetchServerPlaylistTracks(_ playlist: ServerPlaylist) async {
+        guard let idx = serverPlaylists.firstIndex(where: { $0.id == playlist.id }) else { return }
+        do {
+            let tracks = try await LyrionAPI.shared.getLMSPlaylistTracks(playlistID: playlist.id)
+            serverPlaylists[idx].tracks = tracks
+            serverPlaylists[idx].trackCount = tracks.count
+        } catch {
+            // Silently ignore — the existing (possibly empty) list is still shown
+        }
+    }
+
+    @discardableResult
+    func createServerPlaylist(name: String) async throws -> ServerPlaylist {
+        let created = try await LyrionAPI.shared.createLMSPlaylist(name: name)
+        serverPlaylists.insert(created, at: 0)
+        return created
+    }
+
+    func addToServerPlaylist(_ playlist: ServerPlaylist, tracks: [Track]) async throws {
+        try await LyrionAPI.shared.addTracksToLMSPlaylist(
+            playlistID: playlist.id,
+            trackIDs: tracks.map(\.id)
+        )
+        if let idx = serverPlaylists.firstIndex(where: { $0.id == playlist.id }) {
+            serverPlaylists[idx].trackCount += tracks.count
+        }
+    }
+
+    func deleteServerPlaylist(_ playlist: ServerPlaylist) async throws {
+        try await LyrionAPI.shared.deleteLMSPlaylist(playlistID: playlist.id)
+        serverPlaylists.removeAll { $0.id == playlist.id }
+    }
+
+    // MARK: - Sync local playlist to LMS server
+
+    func syncToServer(_ playlist: LocalPlaylist) async throws {
+        guard let idx = playlists.firstIndex(where: { $0.id == playlist.id }) else { return }
+        if let serverID = playlist.serverPlaylistID {
+            // Playlist already synced — add any new tracks
+            try await LyrionAPI.shared.addTracksToLMSPlaylist(
+                playlistID: serverID,
+                trackIDs: playlist.tracks.map(\.id)
+            )
+        } else {
+            // Create new server playlist then populate it
+            let server = try await LyrionAPI.shared.createLMSPlaylist(name: playlist.name)
+            if !playlist.tracks.isEmpty {
+                try await LyrionAPI.shared.addTracksToLMSPlaylist(
+                    playlistID: server.id,
+                    trackIDs: playlist.tracks.map(\.id)
+                )
+            }
+            playlists[idx].serverPlaylistID = server.id
+            playlists[idx].updatedAt = Date()
+            scheduleSave()
+        }
+    }
+
+    // MARK: - Local playlist helpers
 
     private func sanitizedName(_ name: String, fallback: String) -> String {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)

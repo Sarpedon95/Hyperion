@@ -299,13 +299,9 @@ private struct PerformerRow: View {
                     .fill(Color.roonElevated)
                     .frame(width: 44, height: 44)
                 if let url = result.portrait.flatMap(URL.init) {
-                    AsyncImage(url: url) { img in
-                        img.resizable().aspectRatio(contentMode: .fill)
-                    } placeholder: {
-                        Color.clear
-                    }
-                    .frame(width: 44, height: 44)
-                    .clipShape(Circle())
+                    CachedRemoteImage(url: url, size: 44) { Color.clear }
+                        .frame(width: 44, height: 44)
+                        .clipShape(Circle())
                 } else {
                     Text(NameFormatting.initials(result.name))
                         .font(.roonTitle(14))
@@ -461,13 +457,11 @@ private struct OmnisearchResultRow: View {
                     .fill(Color.roonElevated)
                     .frame(width: 44, height: 44)
                 if let url = result.portrait.flatMap(URL.init) {
-                    AsyncImage(url: url) { img in
-                        img.resizable().aspectRatio(contentMode: .fill)
-                    } placeholder: { Color.clear }
-                    .frame(width: 44, height: 44)
-                    .clipShape(result.type == "composer"
-                        ? AnyShape(Circle())
-                        : AnyShape(RoundedRectangle(cornerRadius: 6)))
+                    CachedRemoteImage(url: url, size: 44) { Color.clear }
+                        .frame(width: 44, height: 44)
+                        .clipShape(result.type == "composer"
+                            ? AnyShape(Circle())
+                            : AnyShape(RoundedRectangle(cornerRadius: 6)))
                 } else {
                     Image(systemName: iconName)
                         .font(.system(size: 16))
@@ -516,17 +510,8 @@ struct ComposerGridCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            AsyncImage(url: portraitURL) { phase in
-                switch phase {
-                case .success(let img):
-                    img.resizable().aspectRatio(contentMode: .fill)
-                case .failure:
-                    placeholder
-                case .empty:
-                    Color.roonElevated.overlay(ProgressView().tint(.roonTertiary))
-                @unknown default:
-                    placeholder
-                }
+            CachedRemoteImage(url: portraitURL, size: 156) {
+                placeholder
             }
             .frame(height: 156)
             .clipped()
@@ -571,24 +556,16 @@ struct ClassicalComposerCard: View {
 
     var body: some View {
         VStack(spacing: 6) {
-            AsyncImage(url: portraitURL) { phase in
-                switch phase {
-                case .success(let img):
-                    img.resizable().aspectRatio(contentMode: .fill)
-                        .frame(width: 72, height: 72)
-                        .clipShape(Circle())
-                case .failure, .empty:
-                    ZStack {
-                        Circle().fill(Color.roonElevated).frame(width: 72, height: 72)
-                        Text(NameFormatting.initials(composer.complete_name))
-                            .font(.roonTitle(22))
-                            .foregroundColor(.roonAccent)
-                    }
-                @unknown default:
-                    Circle().fill(Color.roonElevated).frame(width: 72, height: 72)
+            CachedRemoteImage(url: portraitURL, size: 72) {
+                ZStack {
+                    Circle().fill(Color.roonElevated)
+                    Text(NameFormatting.initials(composer.complete_name))
+                        .font(.roonTitle(22))
+                        .foregroundColor(.roonAccent)
                 }
             }
             .frame(width: 72, height: 72)
+            .clipShape(Circle())
 
             Text(NameFormatting.lastName(composer.complete_name))
                 .font(.roonBody(11, weight: .medium))
@@ -602,6 +579,36 @@ struct ClassicalComposerCard: View {
     private var portraitURL: URL? {
         guard let p = composer.portrait, !p.isEmpty else { return nil }
         return URL(string: p)
+    }
+}
+
+// MARK: - Cached portrait image
+
+/// Wraps ArtworkCache for OpenOpus portrait URLs. Caches decoded UIImages in
+/// the shared NSCache so repeated scrolls don't re-download the same portrait.
+private struct CachedRemoteImage<Placeholder: View>: View {
+    let url: URL?
+    let size: CGFloat
+    @ViewBuilder let placeholder: () -> Placeholder
+    @State private var image: UIImage? = nil
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image).resizable().aspectRatio(contentMode: .fill)
+            } else {
+                placeholder()
+            }
+        }
+        .task(id: url?.absoluteString) {
+            image = nil
+            guard let url else { return }
+            image = await ArtworkCache.shared.loadImage(
+                url: url,
+                targetPoints: size,
+                scale: UIScreen.main.scale
+            )
+        }
     }
 }
 

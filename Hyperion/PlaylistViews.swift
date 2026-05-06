@@ -181,6 +181,8 @@ struct PlaylistDetailView: View {
     @State private var renameText = ""
     @State private var grouped: [WorkGroup] = []
     @Environment(\.editMode) private var editMode
+    @State private var isSyncing = false
+    @State private var syncToast: String? = nil
 
     private var playlist: LocalPlaylist? { store.playlist(id: playlistID) }
 
@@ -282,12 +284,48 @@ struct PlaylistDetailView: View {
                             Button("Shuffle", systemImage: "shuffle") {
                                 player.playTracks(playlist.tracks, shuffle: true)
                             }
+                            Button(
+                                playlist.serverPlaylistID != nil ? "Re-sync to Server" : "Sync to Server",
+                                systemImage: "arrow.triangle.2.circlepath"
+                            ) {
+                                guard !isSyncing else { return }
+                                isSyncing = true
+                                Task {
+                                    do {
+                                        try await store.syncToServer(playlist)
+                                        syncToast = "Synced to server"
+                                    } catch {
+                                        syncToast = "Sync failed"
+                                    }
+                                    isSyncing = false
+                                    try? await Task.sleep(nanoseconds: 2_500_000_000)
+                                    syncToast = nil
+                                }
+                            }
+                            .disabled(playlist.tracks.isEmpty || isSyncing)
                             Button("Delete", systemImage: "trash", role: .destructive) {
                                 showDeleteConfirm = true
                             }
                         } label: {
-                            Image(systemName: "ellipsis.circle")
+                            if isSyncing {
+                                ProgressView().tint(.roonAccent)
+                            } else {
+                                Image(systemName: "ellipsis.circle")
+                            }
                         }
+                    }
+                }
+                .overlay(alignment: .bottom) {
+                    if let toast = syncToast {
+                        Text(toast)
+                            .font(.roonBody(14, weight: .semibold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 20)
+                            .padding(.vertical, 10)
+                            .background(Capsule().fill(Color.roonSurface).shadow(radius: 8))
+                            .padding(.bottom, 24)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                            .animation(.spring(response: 0.3), value: toast)
                     }
                 }
                 .alert("Rename Playlist", isPresented: $showRenameAlert) {

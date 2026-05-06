@@ -53,17 +53,20 @@ extension Color {
 extension Font {
     /// Serif title font — track/work/composer headings.
     static func roonTitle(_ size: CGFloat, weight: Font.Weight = .bold) -> Font {
-        .system(size: size, weight: weight, design: .serif)
+        let scaled = UIFontMetrics(forTextStyle: .headline).scaledValue(for: size)
+        return .system(size: scaled, weight: weight, design: .serif)
     }
 
     /// Default body font — labels, descriptions, UI copy.
     static func roonBody(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        .system(size: size, weight: weight, design: .default)
+        let scaled = UIFontMetrics(forTextStyle: .body).scaledValue(for: size)
+        return .system(size: scaled, weight: weight, design: .default)
     }
 
     /// Monospaced font — time displays, track numbers, and compact controls.
     static func roonMono(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        .system(size: size, weight: weight, design: .monospaced)
+        let scaled = UIFontMetrics(forTextStyle: .body).scaledValue(for: size)
+        return .system(size: scaled, weight: weight, design: .monospaced)
     }
 }
 

@@ -5,6 +5,7 @@ struct HomeView: View {
     @ObservedObject private var library    = LibraryViewModel.shared
     @ObservedObject private var connection = ConnectionManager.shared
     @ObservedObject private var mixGen     = MixGenerator.shared
+    @ObservedObject private var audiomuse  = AudiomuseManager.shared
 
     @State private var showingSettings: Bool = false
     @State private var recommendedComposers: [OOComposer] = []
@@ -119,7 +120,9 @@ struct HomeView: View {
             .toolbarColorScheme(.dark, for: .navigationBar)
             .sheet(isPresented: $showingSettings) { SettingsView() }
             .refreshable {
-                await library.refresh()
+                async let libraryRefresh: Void = library.refresh()
+                mixGen.refreshIfNeeded()
+                await libraryRefresh
             }
             .task {
                 // ContentView.task already fires composers / recentAlbums /
@@ -241,20 +244,98 @@ struct HomeView: View {
 
     @ViewBuilder
     private var mixesSection: some View {
-        if !mixGen.mixes.isEmpty {
-            HomeSectionHeader(label: "FOR YOU", title: "Daily Mixes")
-                .padding(.horizontal, 16)
-                .padding(.bottom, 14)
+        let showAI        = audiomuse.isEnabled && audiomuse.audiomuseAvailable && !audiomuse.mixes.isEmpty
+        let aiGenerating  = audiomuse.isEnabled && audiomuse.audiomuseAvailable && audiomuse.mixes.isEmpty
+        let localMixes    = mixGen.mixes
+        let showLocal     = !showAI && !localMixes.isEmpty
+        let showSection   = showAI || showLocal || aiGenerating
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: 14) {
-                    ForEach(mixGen.mixes) { mix in
-                        MixCard(mix: mix)
+        if showSection {
+            HStack(alignment: .lastTextBaseline) {
+                HomeSectionHeader(label: "FOR YOU", title: "Daily Mixes")
+                Spacer()
+                if showAI {
+                    // Play all AI mixes button
+                    Button {
+                        let player = PlayerViewModel.shared
+                        let library = LibraryViewModel.shared
+                        let trackIDs = Set(audiomuse.mixes.flatMap(\.trackIDs))
+                        let tracks = library.songs.filter { trackIDs.contains($0.id) }.shuffled()
+                        guard !tracks.isEmpty else { return }
+                        player.playTracks(tracks)
+                        Haptics.medium()
+                    } label: {
+                        Label("Play All", systemImage: "play.fill")
+                            .font(.roonBody(11, weight: .semibold))
+                            .foregroundColor(.roonAccent)
                     }
+                    .buttonStyle(.plain)
+                    .padding(.trailing, 8)
+
+                    Text("AI")
+                        .font(.roonBody(10, weight: .semibold))
+                        .foregroundColor(.roonAccent)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.roonAccent.opacity(0.15))
+                        .clipShape(Capsule())
+                        .padding(.trailing, 16)
+                } else if showLocal {
+                    Button {
+                        let player = PlayerViewModel.shared
+                        let tracks = localMixes.flatMap { mix -> [Track] in
+                            let lib = LibraryViewModel.shared
+                            let albumSet = Set(mix.albumIDs)
+                            return lib.songs.filter { albumSet.contains($0.albumID ?? -1) }
+                        }.shuffled()
+                        guard !tracks.isEmpty else { return }
+                        player.playTracks(tracks)
+                        Haptics.medium()
+                    } label: {
+                        Label("Play All", systemImage: "play.fill")
+                            .font(.roonBody(11, weight: .semibold))
+                            .foregroundColor(.roonAccent)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.trailing, 16)
+                } else if audiomuse.isEnabled && !audiomuse.audiomuseAvailable {
+                    Text("AI unavailable")
+                        .font(.roonBody(10))
+                        .foregroundColor(.roonTertiary)
+                        .padding(.trailing, 16)
                 }
-                .padding(.horizontal, 16)
             }
-            .padding(.bottom, 32)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 14)
+
+            if aiGenerating {
+                // Shimmer placeholder while AI generates mixes
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(spacing: 14) {
+                        ForEach(0..<4, id: \.self) { _ in
+                            MixShimmerCard()
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                }
+                .padding(.bottom, 32)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(spacing: 14) {
+                        if showAI {
+                            ForEach(audiomuse.mixes) { mix in
+                                AudiomuseMixCard(mix: mix)
+                            }
+                        } else {
+                            ForEach(localMixes) { mix in
+                                MixCard(mix: mix)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                }
+                .padding(.bottom, 32)
+            }
         }
     }
 

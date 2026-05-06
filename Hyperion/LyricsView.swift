@@ -90,7 +90,7 @@ struct LyricsView: View {
                     }
                     .onChange(of: activeLineIndex) { _, newIndex in
                         guard newIndex < displayLines.count else { return }
-                        withAnimation(.spring(response: 0.45, dampingFraction: 0.88)) {
+                        withAnimation(.easeInOut(duration: 0.25)) {
                             proxy.scrollTo(displayLines[newIndex].id, anchor: .center)
                         }
                     }
@@ -329,7 +329,7 @@ struct LyricsView: View {
     // MARK: - Helpers
 
     private func lineIndex(for time: TimeInterval, in lines: [DisplayLine]) -> Int {
-        let adjusted = time - 0.3
+        let adjusted = time + 0.3
         var result = 0
         for (i, line) in lines.enumerated() {
             if line.time <= adjusted { result = i } else { break }
@@ -338,6 +338,12 @@ struct LyricsView: View {
     }
 
     private func loadLyrics() async {
+        // Serve from memory instantly if the track was prefetched on play start.
+        if let cached = LyricsService.shared.cachedResult(trackID: track.id) {
+            withAnimation(.easeIn(duration: 0.2)) { loadState = .loaded(cached) }
+            return
+        }
+
         withAnimation(.easeOut(duration: 0.15)) { loadState = .loading }
         activeLineIndex = 0
 
@@ -376,43 +382,37 @@ struct LyricsView: View {
     }
 }
 
-// MARK: - Interlude dots animation
+// MARK: - Interlude dots animation (TimelineView for 60fps smooth pulsing)
 
 private struct InterludeDots: View {
     let isActive: Bool
-    @State private var phase: Int = 0
 
     var body: some View {
-        HStack(spacing: 8) {
-            ForEach(0..<3) { i in
-                Circle()
-                    .fill(Color.white.opacity(dotOpacity(for: i)))
-                    .frame(width: isActive ? 8 : 5, height: isActive ? 8 : 5)
-                    .animation(.easeInOut(duration: 0.3).delay(Double(i) * 0.12), value: phase)
+        // .animation schedule drives at display refresh rate when active,
+        // .paused emits a single update so the view renders once while inactive.
+        TimelineView(isActive ? .animation : .paused) { context in
+            let t = context.date.timeIntervalSince1970
+            HStack(spacing: 8) {
+                ForEach(0..<3, id: \.self) { i in
+                    Circle()
+                        .fill(Color.white.opacity(dotOpacity(dot: i, time: t)))
+                        .frame(width: isActive ? 8 : 5, height: isActive ? 8 : 5)
+                }
             }
         }
-        .onAppear {
-            guard isActive else { return }
-            startPulse()
-        }
-        .onChange(of: isActive) { _, active in
-            if active { startPulse() }
-        }
     }
 
-    private func dotOpacity(for index: Int) -> Double {
+    // Each dot has a 0.4s peak window inside a 1.2s cycle.
+    // Returns 0.9 at peak, falling smoothly to 0.15 as another dot takes over.
+    private func dotOpacity(dot: Int, time: TimeInterval) -> Double {
         guard isActive else { return 0.15 }
-        let active = phase % 3
-        if index == active { return 0.9 }
-        if index == (active + 1) % 3 { return 0.45 }
-        return 0.15
-    }
-
-    private func startPulse() {
-        Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { timer in
-            guard isActive else { timer.invalidate(); return }
-            withAnimation { phase += 1 }
-        }
+        let cycle: Double = 1.2
+        let t = time.truncatingRemainder(dividingBy: cycle)
+        let peak = Double(dot) * 0.4
+        // Wrap-aware distance to peak
+        let diff = min(abs(t - peak), min(abs(t - peak + cycle), abs(t - peak - cycle)))
+        let raw = max(0.0, 1.0 - diff / 0.4)
+        return 0.15 + raw * 0.75
     }
 }
 
