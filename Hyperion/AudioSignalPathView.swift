@@ -166,7 +166,7 @@ struct AudioSignalPathView: View {
     private var footer: some View {
         VStack(alignment: .leading, spacing: 8) {
             Divider().background(Color.roonBorder)
-            Text("No “bit-perfect,” “lossless output,” “hi-res,” or “transcoded” claim is made unless the path has the data to support it. Missing LMS fields are shown as unknown instead of guessed.")
+            Text("No "bit-perfect," "lossless output," "hi-res," or "transcoded" claim is made unless the path has the data to support it. Missing LMS fields are shown as unknown instead of guessed.")
                 .font(.roonBody(11))
                 .foregroundColor(.roonTertiary)
                 .fixedSize(horizontal: false, vertical: true)

@@ -20,7 +20,7 @@ struct Track: Identifiable, Hashable, Codable {
     let isClassical: Int?
 
     // Audio metadata reported by LMS/Lyrion when requested with songinfo/status tags.
-    // These are optional on purpose: absence means “not reported,” not a fallback claim.
+    // These are optional on purpose: absence means "not reported," not a fallback claim.
     let audioType: String?
     let sampleRate: Int?
     let sampleSize: Int?
@@ -180,7 +180,7 @@ struct WorkGroup: Identifiable, Hashable, Codable {
         TimeFormatting.formatDuration(totalDuration)
     }
 
-    /// True when grouping fell back to “this album/playlist as one bucket”.
+    /// True when grouping fell back to "this album/playlist as one bucket".
     /// UI renders these as normal track lists so non-classical releases do not
     /// get fake work headers.
     var isFlatFallbackGroup: Bool {
@@ -499,7 +499,7 @@ struct AudioSignalPath: Identifiable, Hashable {
     }
 
     /// Build the real-time signal path from actual app/LMS/track/Orpheus state.
-    /// The model is conservative by design: it can explain “direct-looking” paths,
+    /// The model is conservative by design: it can explain "direct-looking" paths,
     /// but it does not upgrade them to bit-perfect/lossless unless every required
     /// processing and output fact is known.
     static func fromPlaybackState(
@@ -582,7 +582,7 @@ struct AudioSignalPath: Identifiable, Hashable {
             title: "Decode",
             subtitle: decodedFormatKnown
                 ? "AVAssetTrack: \(decodedFormat)"
-                : "iOS AVPlayer decodes Hyperion’s selected stream",
+                : "iOS AVPlayer decodes Hyperion's selected stream",
             status: .unknown,
             statusLabel: decodedFormatKnown ? "Detected" : "Not reported",
             confidence: .verified,
@@ -684,7 +684,7 @@ struct AudioSignalPath: Identifiable, Hashable {
             technicalValue: "\(volumePercent)%",
             explanation: hasLocalAttenuation
                 ? "Hyperion sets AVPlayer volume below full scale, so digital volume attenuation is happening before output."
-                : "Hyperion’s local AVPlayer volume is at full scale. This does not verify LMS/player hardware volume or OS output processing.",
+                : "Hyperion's local AVPlayer volume is at full scale. This does not verify LMS/player hardware volume or OS output processing.",
             sourceOfTruth: "Hyperion PlayerViewModel.volume / AVPlayer.volume",
             usedFields: ["localVolume"],
             missingFields: ["lms_player_volume", "hardware_volume"]
@@ -713,7 +713,7 @@ struct AudioSignalPath: Identifiable, Hashable {
                 statusLabel: lmsQuality.statusMatchedCurrentTrack == true ? "Reported" : "Diagnostic",
                 confidence: lmsQuality.statusMatchedCurrentTrack == true ? .reported : .unverified,
                 technicalValue: technical,
-                explanation: "This is LMS player status for diagnostics. Hyperion’s audible playback path is the selected AVPlayer stream, so an LMS player status row is not treated as proof of final output processing.",
+                explanation: "This is LMS player status for diagnostics. Hyperion's audible playback path is the selected AVPlayer stream, so an LMS player status row is not treated as proof of final output processing.",
                 sourceOfTruth: "LMS status response",
                 usedFields: ["player_name", "mode", "mixer volume"],
                 missingFields: technical == nil ? ["player_name", "mode", "mixer volume"] : []
@@ -802,7 +802,7 @@ struct AudioSignalPath: Identifiable, Hashable {
             )], false, false, false, [])
         }
 
-        let presetSuffix    = state.activePresetName.map { " — preset ‘\($0)’" } ?? ""
+        let presetSuffix    = state.activePresetName.map { " — preset '\($0)'" } ?? ""
         let isOrpheusActive = state.isPlaybackRoutedThroughOrpheus
         var notes: [String] = []
 
@@ -854,7 +854,7 @@ struct AudioSignalPath: Identifiable, Hashable {
                 status: .lossless,
                 statusLabel: "Bypassed",
                 confidence: .configured,
-                explanation: "Orpheus settings do not report active EQ, crossfeed, headroom, leveling, balance, or SRC preferences. This only covers Hyperion’s Orpheus settings, not LMS or OS processing.",
+                explanation: "Orpheus settings do not report active EQ, crossfeed, headroom, leveling, balance, or SRC preferences. This only covers Hyperion's Orpheus settings, not LMS or OS processing.",
                 sourceOfTruth: "OrpheusDSPEngine settings",
                 usedFields: ["orpheusSettings"]
             )], false, isOrpheusActive, false, notes)
@@ -875,7 +875,7 @@ struct AudioSignalPath: Identifiable, Hashable {
             confidence: state.isPlaybackRoutedThroughOrpheus ? .verified : .configured,
             explanation: state.isPlaybackRoutedThroughOrpheus
                 ? "These Orpheus DSP/EQ stages are active in the playback path."
-                : "These Orpheus settings are enabled/configured, but Hyperion’s current playback uses AVPlayer direct streaming and is not verified to pass through this AVAudioEngine chain.",
+                : "These Orpheus settings are enabled/configured, but Hyperion's current playback uses AVPlayer direct streaming and is not verified to pass through this AVAudioEngine chain.",
             sourceOfTruth: "OrpheusDSPEngine settings + AudioPlayerManager routing flag",
             usedFields: ["orpheusSettings", "isPlaybackRoutedThroughOrpheus"]
         )]

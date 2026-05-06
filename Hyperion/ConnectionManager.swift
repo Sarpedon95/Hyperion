@@ -126,7 +126,7 @@ final class ConnectionManager: ObservableObject {
         // Migration guard: older Hyperion builds had one `serverURL` setting.
         // The first remote pass put that legacy value only in Home, which meant
         // users whose single URL was a public IP / HTTPS proxy could pick
-        // “Remote Proxy” and get an empty Remote field.  Classify the legacy URL
+        // "Remote Proxy" and get an empty Remote field.  Classify the legacy URL
         // and seed the appropriate modern slot without overwriting explicit
         // settings the user has already entered.
         migrateLegacyServerURLIfNeeded(

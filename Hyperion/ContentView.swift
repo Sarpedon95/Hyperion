@@ -91,7 +91,7 @@ struct ContentView: View {
             // so API calls succeed immediately with the cached URL without waiting for
             // a full network probe. Start library warm-up immediately, but only await
             // connection resolution before the restore banner so a large library does
-            // not delay “Resume where you left off”.
+            // not delay "Resume where you left off".
             async let resolve: Void              = connection.resolveConnection()
             async let composersWarmup: Void      = library.loadComposers()
             async let recentAlbumsWarmup: Void   = library.loadRecentAlbums()
@@ -205,7 +205,7 @@ struct ContentView: View {
             .listStyle(.sidebar)
             .scrollContentBackground(.hidden)
             .background(Color.roonBase)
-            .navigationTitle(“Hyperion”)
+            .navigationTitle("Hyperion")
             .toolbarBackground(Color.roonBase, for: .navigationBar)
             .toolbarColorScheme(.dark, for: .navigationBar)
             .disabled(!isInitialized)
@@ -262,7 +262,7 @@ struct ContentView: View {
     private func errorBannerOverlay(geo: GeometryProxy, chromeHeight: CGFloat) -> some View {
         if let playerError = player.error {
             HStack(spacing: 10) {
-                Image(systemName: “exclamationmark.circle.fill”)
+                Image(systemName: "exclamationmark.circle.fill")
                     .foregroundColor(.red)
                     .font(.system(size: 16))
                 Text(playerError)
@@ -271,7 +271,7 @@ struct ContentView: View {
                     .lineLimit(2)
                 Spacer()
                 Button(action: { player.error = nil }) {
-                    Image(systemName: “xmark”)
+                    Image(systemName: "xmark")
                         .foregroundColor(.roonTertiary)
                         .font(.system(size: 12, weight: .semibold))
                 }
@@ -284,7 +284,7 @@ struct ContentView: View {
             .transition(.move(edge: .bottom).combined(with: .opacity))
         } else if let libError = library.error {
             HStack(spacing: 10) {
-                Image(systemName: “exclamationmark.circle.fill”)
+                Image(systemName: "exclamationmark.circle.fill")
                     .foregroundColor(.red)
                     .font(.system(size: 16))
                 Text(libError)
@@ -293,7 +293,7 @@ struct ContentView: View {
                     .lineLimit(2)
                 Spacer()
                 Button(action: { library.error = nil }) {
-                    Image(systemName: “xmark”)
+                    Image(systemName: "xmark")
                         .foregroundColor(.roonTertiary)
                         .font(.system(size: 12, weight: .semibold))
                 }
@@ -335,16 +335,16 @@ struct ContentView: View {
 
     private var tabBar: some View {
         HStack(spacing: 0) {
-            RoonTabButton(icon: “house”,           selectedIcon: “house.fill”,              tab: .home,    selected: $selectedTab)
-            RoonTabButton(icon: “magnifyingglass”, selectedIcon: “magnifyingglass.circle.fill”, tab: .search,  selected: $selectedTab)
-            RoonTabButton(icon: “books.vertical”,  selectedIcon: “books.vertical.fill”,     tab: .library, selected: $selectedTab)
+            RoonTabButton(icon: "house",           selectedIcon: "house.fill",              tab: .home,    selected: $selectedTab)
+            RoonTabButton(icon: "magnifyingglass", selectedIcon: "magnifyingglass.circle.fill", tab: .search,  selected: $selectedTab)
+            RoonTabButton(icon: "books.vertical",  selectedIcon: "books.vertical.fill",     tab: .library, selected: $selectedTab)
             // PASS 6 — selected Queue icon now switches to a filled rect-list
             // variant so the user gets the same visual feedback as the other
             // tabs. Previously both states used `list.bullet` so the active
             // state was indicated by colour only — failed accessibility's
             // recommendation to not rely on colour alone.
-            RoonTabButton(icon: “list.bullet”,     selectedIcon: “list.bullet.rectangle.fill”, tab: .queue,   selected: $selectedTab)
-            RoonTabButton(icon: “waveform”,        selectedIcon: “waveform.circle.fill”,        tab: .orpheus, selected: $selectedTab)
+            RoonTabButton(icon: "list.bullet",     selectedIcon: "list.bullet.rectangle.fill", tab: .queue,   selected: $selectedTab)
+            RoonTabButton(icon: "waveform",        selectedIcon: "waveform.circle.fill",        tab: .orpheus, selected: $selectedTab)
         }
         .disabled(!isInitialized)
     }
