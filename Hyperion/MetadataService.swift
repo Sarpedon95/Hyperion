@@ -85,18 +85,20 @@ final class MetadataService {
         return false
     }
 
-    // MARK: - Classical fetch (OpenOpus portrait + Last.fm bio)
+    // MARK: - Classical fetch (OpenOpus portrait + Last.fm bio + MusicBrainz tags)
 
     private func fetchClassical(artist: String, album: String?) async -> MetadataResult? {
         async let ooResult  = fetchOpenOpusPortrait(composer: artist)
         async let lfmResult = LastFmProvider.shared.fetch(artist: artist, album: album)
+        async let mbResult  = MusicBrainzProvider.shared.fetch(artist: artist, album: album)
 
-        let (portrait, lfm) = await (ooResult, lfmResult)
+        let (portrait, lfm, mb) = await (ooResult, lfmResult, mbResult)
 
         let imageURL = portrait ?? lfm?.artistImageURL
         let bio      = lfm?.artistBio
         let similar  = lfm?.similarArtists ?? []
-        let tags     = lfm?.tags           ?? []
+        var seen     = Set<String>()
+        let tags     = Array(((lfm?.tags ?? []) + (mb?.tags ?? [])).filter { seen.insert($0).inserted }.prefix(8))
 
         guard imageURL != nil || bio != nil || !tags.isEmpty else { return nil }
 
@@ -105,10 +107,10 @@ final class MetadataService {
             artistImageURL:   imageURL,
             similarArtists:   similar,
             tags:             tags,
-            albumReview:      lfm?.albumReview,
-            albumGenre:       lfm?.albumGenre,
-            albumReleaseYear: lfm?.albumReleaseYear,
-            albumLabel:       lfm?.albumLabel,
+            albumReview:      lfm?.albumReview      ?? mb?.albumReview,
+            albumGenre:       lfm?.albumGenre        ?? mb?.albumGenre,
+            albumReleaseYear: lfm?.albumReleaseYear  ?? mb?.albumReleaseYear,
+            albumLabel:       lfm?.albumLabel        ?? mb?.albumLabel,
             source:           .openOpus
         )
     }
@@ -125,19 +127,42 @@ final class MetadataService {
         return nil
     }
 
-    // MARK: - Non-classical fetch (MusicBrainz → Last.fm → Discogs)
+    // MARK: - Non-classical fetch (OpenOpus portrait + Last.fm bio + MusicBrainz tags, all concurrent)
+    //
+    // Previously sequential MB→LFM→Discogs: MB almost always returns tags, so it short-circuited
+    // Last.fm and neither bio nor image was ever populated. Now all three run in parallel and their
+    // results are merged. OpenOpus is included so classical composers get their portrait even when
+    // track metadata isn't available (isClassical can't fire on a nil track).
 
     private func fetchNonClassical(artist: String, album: String?) async -> MetadataResult? {
-        if let result = await MusicBrainzProvider.shared.fetch(artist: artist, album: album) {
-            return result
+        async let ooPortrait = fetchOpenOpusPortrait(composer: artist)
+        async let lfmTask    = LastFmProvider.shared.fetch(artist: artist, album: album)
+        async let mbTask     = MusicBrainzProvider.shared.fetch(artist: artist, album: album)
+
+        let (portrait, lfm, mb) = await (ooPortrait, lfmTask, mbTask)
+
+        let imageURL = portrait ?? lfm?.artistImageURL
+        let bio      = lfm?.artistBio
+        let similar  = lfm?.similarArtists ?? []
+        var seen     = Set<String>()
+        let tags     = Array(((lfm?.tags ?? []) + (mb?.tags ?? [])).filter { seen.insert($0).inserted }.prefix(8))
+
+        guard imageURL != nil || bio != nil || !similar.isEmpty || !tags.isEmpty else {
+            return await DiscogsProvider.shared.fetch(artist: artist, album: album)
         }
-        if let result = await LastFmProvider.shared.fetch(artist: artist, album: album) {
-            return result
-        }
-        if let result = await DiscogsProvider.shared.fetch(artist: artist, album: album) {
-            return result
-        }
-        return nil
+
+        let source: MetadataSource = portrait != nil ? .openOpus : (bio != nil ? .lastFm : .musicBrainz)
+        return MetadataResult(
+            artistBio:        bio,
+            artistImageURL:   imageURL,
+            similarArtists:   similar,
+            tags:             tags,
+            albumReview:      lfm?.albumReview      ?? mb?.albumReview,
+            albumGenre:       lfm?.albumGenre        ?? mb?.albumGenre,
+            albumReleaseYear: lfm?.albumReleaseYear  ?? mb?.albumReleaseYear,
+            albumLabel:       lfm?.albumLabel        ?? mb?.albumLabel,
+            source:           source
+        )
     }
 
     // MARK: - Cache

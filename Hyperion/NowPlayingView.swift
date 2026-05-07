@@ -150,7 +150,11 @@ struct NowPlayingView: View {
                 .opacity(isDraggingDown ? max(0.45, 1.0 - dragOffset / 260) : 1.0)
 
             VStack(spacing: 0) {
-                headerBar.frame(height: 44).padding(.top, 8)
+                headerBar
+                    .frame(height: 44)
+                    .padding(.top, UIApplication.shared.connectedScenes
+                        .compactMap { $0 as? UIWindowScene }
+                        .first?.windows.first?.safeAreaInsets.top ?? 50)
                 Color.clear.frame(height: 8)
                 if !showInlineLyrics {
                     artworkSection(side: min(UIScreen.main.bounds.width - 48, UIScreen.main.bounds.height * 0.35))
@@ -169,6 +173,7 @@ struct NowPlayingView: View {
                 bottomToolbar.frame(height: 60)
             }
             .frame(maxWidth: .infinity)
+            .ignoresSafeArea(.all, edges: .top)
             .simultaneousGesture(swipeDownToDismissGesture)
             .offset(y: dragOffset)
             .animation(isDraggingDown ? .none : .spring(response: 0.34, dampingFraction: 0.84), value: dragOffset)
