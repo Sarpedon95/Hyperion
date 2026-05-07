@@ -406,7 +406,7 @@ struct NowPlayingView: View {
         }
         .frame(width: side, height: side)
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .shadow(color: .black.opacity(0.55), radius: 28, x: 0, y: 12)
+        .shadow(color: .black.opacity(0.35), radius: 16, x: 0, y: 8)
         .offset(x: artworkDragOffset)
         .opacity(artworkOpacity)
         .contentShape(RoundedRectangle(cornerRadius: 16))
@@ -478,11 +478,11 @@ struct NowPlayingView: View {
                 }
             } label: {
                 Text(player.currentTrack?.title ?? "")
-                    .font(.system(size: 28, weight: .bold, design: .default))
+                    .font(.system(size: 24, weight: .bold, design: .default))
                     .foregroundColor(.roonPrimary)
                     .multilineTextAlignment(.center)
                     .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .minimumScaleFactor(0.7)
                     .frame(maxWidth: .infinity, alignment: .center)
             }
             .buttonStyle(.plain)
