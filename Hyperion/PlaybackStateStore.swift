@@ -57,8 +57,22 @@ final class PlaybackStateStore {
     // MARK: - Public API
 
     func loadSnapshot() -> Snapshot? {
-        guard let data = UserDefaults.standard.data(forKey: storageKey) else { return nil }
-        return try? decoder.decode(Snapshot.self, from: data)
+        // Try file store first (new path), fall back to UserDefaults for one-time migration.
+        let url = snapshotFileURL
+        if let data = try? Data(contentsOf: url) {
+            return try? decoder.decode(Snapshot.self, from: data)
+        }
+        // One-time migration from UserDefaults
+        if let data = UserDefaults.standard.data(forKey: storageKey),
+           let snap = try? decoder.decode(Snapshot.self, from: data) {
+            // Write to file so future reads don't touch UserDefaults
+            if let encoded = try? encoder.encode(snap) {
+                try? encoded.write(to: url, options: .atomicWrite)
+            }
+            UserDefaults.standard.removeObject(forKey: storageKey)
+            return snap
+        }
+        return nil
     }
 
     func saveNow(
@@ -116,7 +130,8 @@ final class PlaybackStateStore {
     func clear() {
         saveTask?.cancel()
         saveTask = nil
-        UserDefaults.standard.removeObject(forKey: storageKey)
+        try? FileManager.default.removeItem(at: snapshotFileURL)
+        UserDefaults.standard.removeObject(forKey: storageKey) // clean up legacy key too
     }
 
     /// Drops any pending debounced save without writing.
@@ -138,7 +153,7 @@ final class PlaybackStateStore {
         currentWorkGroupID: Int?
     ) {
         guard !queue.isEmpty else {
-            UserDefaults.standard.removeObject(forKey: storageKey)
+            try? FileManager.default.removeItem(at: snapshotFileURL)
             return
         }
         let snapshot = Snapshot(
@@ -152,9 +167,17 @@ final class PlaybackStateStore {
             savedAt: Date()
         )
         guard let data = try? encoder.encode(snapshot) else { return }
-        UserDefaults.standard.set(data, forKey: storageKey)
+        try? data.write(to: snapshotFileURL, options: .atomicWrite)
     }
 
+    /// File URL for the current server's snapshot.
+    private var snapshotFileURL: URL {
+        let server = LyrionAPI.shared.baseURL.isEmpty ? "default" : LyrionAPI.shared.baseURL
+        let encoded = server.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "default"
+        return AppFiles.url(for: "hyperion_queue_\(encoded).json")
+    }
+
+    /// Legacy UserDefaults key (used only during one-time migration read).
     private var storageKey: String {
         let server = LyrionAPI.shared.baseURL.isEmpty ? "default" : LyrionAPI.shared.baseURL
         let encoded = server.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "default"

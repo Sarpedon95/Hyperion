@@ -114,6 +114,8 @@ struct OOWorkDetailView: View {
 
     // MARK: - Recordings section
 
+    @State private var showComparator = false
+
     @ViewBuilder
     private var recordingsSection: some View {
         let indexed  = linker.candidates(forWorkID: work.id)
@@ -138,8 +140,22 @@ struct OOWorkDetailView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 3))
                 }
                 Spacer()
+                if display.count > 1 {
+                    Button {
+                        Haptics.light()
+                        showComparator = true
+                    } label: {
+                        Label("Compare", systemImage: "arrow.left.arrow.right")
+                            .font(.roonBody(12, weight: .semibold))
+                            .foregroundColor(.roonAccent)
+                    }
+                    .buttonStyle(.plain)
+                }
             }
             .padding(.horizontal, 16)
+            .sheet(isPresented: $showComparator) {
+                RecordingComparatorSheet(work: work, candidates: display)
+            }
 
             if vm.isSearchingLibrary {
                 HStack(spacing: 10) {

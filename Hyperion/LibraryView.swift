@@ -94,6 +94,27 @@ struct LibraryView: View {
 
                         Color.roonBorder.frame(height: 0.5).padding(.leading, 66)
 
+                        NavigationLink(destination: StatsView()) {
+                            LibraryMenuRow(icon: "chart.xyaxis.line",         label: "Listening Stats")
+                        }
+                        .buttonStyle(.plain)
+
+                        Color.roonBorder.frame(height: 0.5).padding(.leading, 66)
+
+                        NavigationLink(destination: JournalView()) {
+                            LibraryMenuRow(icon: "book.closed.fill",           label: "Listening Journal")
+                        }
+                        .buttonStyle(.plain)
+
+                        Color.roonBorder.frame(height: 0.5).padding(.leading, 66)
+
+                        NavigationLink(destination: OfflineLibraryView()) {
+                            LibraryMenuRow(icon: "arrow.down.circle.fill",    label: "Offline Library")
+                        }
+                        .buttonStyle(.plain)
+
+                        Color.roonBorder.frame(height: 0.5).padding(.leading, 66)
+
                         NavigationLink(destination: DownloadsView()) {
                             LibraryMenuRow(icon: "arrow.down.circle.fill",   label: "Downloads")
                         }
@@ -481,49 +502,49 @@ struct CenteredArtworkHeader: View {
     var body: some View {
         VStack(spacing: 0) {
             GeometryReader { geo in
-                let side = min(geo.size.width * 0.72, 320.0)
+                let side = min(geo.size.width * 0.42, 220.0)
                 HStack {
                     Spacer(minLength: 0)
                     ArtworkView(coverid: coverid, size: side)
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                        .shadow(color: .black.opacity(0.5), radius: 20, y: 8)
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .shadow(color: .black.opacity(0.55), radius: 24, x: 0, y: 10)
                     Spacer(minLength: 0)
                 }
                 .frame(width: geo.size.width, height: geo.size.height)
             }
             .aspectRatio(1, contentMode: .fit)
-            .padding(.horizontal, 44)
-            .padding(.top, 20)
+            .padding(.horizontal, 80)
+            .padding(.top, 24)
             .padding(.bottom, 20)
 
             Text(title)
-                .font(.roonTitle(22))
+                .font(.system(size: 22, weight: .bold, design: .default))
                 .foregroundColor(.roonPrimary)
                 .multilineTextAlignment(.center)
                 .lineLimit(4)
-                .padding(.horizontal, 20)
+                .padding(.horizontal, 24)
                 .padding(.bottom, 6)
 
             if let subtitle, !subtitle.isEmpty {
                 if let subtitleAction {
                     Button(action: subtitleAction) {
                         Text(subtitle)
-                            .font(.roonBody(15))
+                            .font(.roonBody(15, weight: .medium))
                             .foregroundColor(.roonAccent)
                             .multilineTextAlignment(.center)
                             .lineLimit(2)
-                            .padding(.horizontal, 20)
-                            .padding(.bottom, year != nil ? 2 : 6)
+                            .padding(.horizontal, 24)
+                            .padding(.bottom, year != nil ? 2 : 8)
                     }
                     .buttonStyle(.plain)
                 } else {
                     Text(subtitle)
-                        .font(.roonBody(15))
-                        .foregroundColor(.roonSecondary)
+                        .font(.roonBody(15, weight: .medium))
+                        .foregroundColor(.roonAccent)
                         .multilineTextAlignment(.center)
                         .lineLimit(2)
-                        .padding(.horizontal, 20)
-                        .padding(.bottom, year != nil ? 2 : 6)
+                        .padding(.horizontal, 24)
+                        .padding(.bottom, year != nil ? 2 : 8)
                 }
             }
 
@@ -531,7 +552,7 @@ struct CenteredArtworkHeader: View {
                 Text("\(year)")
                     .font(.roonBody(13))
                     .foregroundColor(.roonTertiary)
-                    .padding(.bottom, 6)
+                    .padding(.bottom, 8)
             }
         }
     }
@@ -574,90 +595,122 @@ struct MovementRowView: View {
     var showPerformer: Bool = false
     let onTap: () -> Void
     @ObservedObject private var likedTracks = LikedTracksStore.shared
+    @ObservedObject private var player = PlayerViewModel.shared
     @State private var showingAddToPlaylist = false
+    @State private var showingTrackActions = false
+    @State private var navigateToAlbum: Album? = nil
+    @State private var navigateToArtist: Artist? = nil
 
     var body: some View {
         Button(action: onTap) {
-            HStack(spacing: 14) {
-                Group {
-                    if isActive {
+            HStack(spacing: 12) {
+                // Active waveform indicator — small, left-aligned
+                if isActive {
+                    Group {
                         if #available(iOS 17.0, *) {
                             Image(systemName: "waveform")
                                 .symbolEffect(.variableColor.iterative, isActive: true)
-                                .font(.system(size: 14))
-                                .foregroundColor(.roonAccent)
                         } else {
                             Image(systemName: "waveform")
-                                .font(.system(size: 14))
-                                .foregroundColor(.roonAccent)
                         }
-                    } else {
-                        Text("\(index + 1)")
-                            .font(.roonMono(13))
-                            .foregroundColor(.roonTertiary)
                     }
+                    .font(.system(size: 12))
+                    .foregroundColor(.roonAccent)
+                    .frame(width: 16)
+                    .padding(.leading, 16)
+                } else {
+                    Color.clear
+                        .frame(width: 16)
+                        .padding(.leading, 16)
                 }
-                .frame(width: 24, alignment: .center)
-                .padding(.leading, 16)
 
+                // Title + performed by
                 VStack(alignment: .leading, spacing: 2) {
                     Text(track.title)
-                        .font(.roonBody(15, weight: isActive ? .semibold : .regular))
+                        .font(.roonBody(16, weight: .medium))
                         .foregroundColor(isActive ? .roonAccent : .roonPrimary)
                         .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
-                    if showPerformer, let performer = track.trackartist ?? track.albumartist, !performer.isEmpty {
-                        Text(performer)
-                            .font(.roonBody(12))
+
+                    let performer = track.trackartist ?? track.albumartist
+                    if let performer, !performer.isEmpty {
+                        Text("Performed by \(performer)")
+                            .font(.roonBody(13, weight: .regular))
                             .foregroundColor(.roonSecondary)
                             .lineLimit(1)
                     }
                 }
 
-                Spacer()
+                Spacer(minLength: 4)
 
-                HStack(spacing: 8) {
-                    DownloadButton(track: track)
-                    if !track.durationFormatted.isEmpty {
-                        Text(track.durationFormatted)
-                            .font(.roonMono(12))
-                            .foregroundColor(.roonTertiary)
-                    }
+                // "…" context button
+                Button {
+                    Haptics.light()
+                    showingTrackActions = true
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundColor(.roonTertiary)
+                        .frame(width: 36, height: 44)
+                        .contentShape(Rectangle())
                 }
-                .padding(.trailing, 16)
+                .buttonStyle(.plain)
+                .padding(.trailing, 8)
             }
-            .frame(minHeight: 52)
+            .frame(minHeight: 56)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .contextMenu {
-            Button(likedTracks.isLiked(track) ? "Unlike" : "Like", systemImage: likedTracks.isLiked(track) ? "heart.slash" : "heart") {
-                likedTracks.toggle(track)
+        .confirmationDialog(track.title, isPresented: $showingTrackActions, titleVisibility: .visible) {
+            Button("Play Now") {
+                onTap()
             }
-            Button("Add to Playlist", systemImage: "music.note.list") {
-                showingAddToPlaylist = true
+            Button("Play Next") {
+                PlayerViewModel.shared.playNext([track])
             }
-            Button("Add to Queue", systemImage: "text.badge.plus") {
+            Button("Add to Queue") {
                 PlayerViewModel.shared.addTracksToQueue([track])
             }
+            Button("Add to Playlist") {
+                showingAddToPlaylist = true
+            }
             if DownloadManager.shared.isDownloaded(trackID: track.id) {
-                Button("Remove Download", systemImage: "trash", role: .destructive) {
+                Button("Remove Download", role: .destructive) {
                     if let d = DownloadManager.shared.downloadedTracks.first(where: { $0.id == track.id }) {
                         DownloadManager.shared.removeDownload(d)
                     }
                 }
-            } else if DownloadManager.shared.downloads[track.id] != nil {
-                Button("Cancel Download", systemImage: "xmark.circle") {
-                    DownloadManager.shared.cancelDownload(for: track)
-                }
             } else {
-                Button("Download", systemImage: "arrow.down.circle") {
+                Button("Download") {
                     DownloadManager.shared.download(track)
                 }
             }
+            Button(likedTracks.isLiked(track) ? "Unlike" : "Like") {
+                likedTracks.toggle(track)
+            }
+            if let albumID = track.albumID,
+               let album = LibraryViewModel.shared.albums.first(where: { $0.id == albumID }) {
+                Button("Go to Album") { navigateToAlbum = album }
+            }
+            let artistName = track.trackartist ?? track.albumartist ?? ""
+            if !artistName.isEmpty {
+                Button("Go to Artist") {
+                    navigateToArtist = LibraryViewModel.shared.artists.first { $0.name == artistName }
+                        ?? Artist(id: 0, name: artistName)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
         }
         .sheet(isPresented: $showingAddToPlaylist) {
             AddToPlaylistSheet(tracks: [track])
+                .environment(\.hyperionBottomOverlayHeight, 0)
+        }
+        .sheet(item: $navigateToAlbum) { album in
+            NavigationStack { AlbumDetailView(album: album) }
+                .environment(\.hyperionBottomOverlayHeight, 0)
+        }
+        .sheet(item: $navigateToArtist) { artist in
+            NavigationStack { ArtistDetailView(artist: artist) }
                 .environment(\.hyperionBottomOverlayHeight, 0)
         }
     }
@@ -680,6 +733,11 @@ struct AlbumListView: View {
     /// and multi-window iPad). Updated by onGeometryChange on iOS 17+.
     @State private var containerWidth: CGFloat = 390
 
+    // Active filters
+    @State private var filterClassicalOnly: Bool = false
+    @State private var filterDecade: Int? = nil      // e.g. 1990 means 1990–1999
+    @State private var showDecadePicker: Bool = false
+
     private let columns = [
         GridItem(.flexible(), spacing: 16),
         GridItem(.flexible(), spacing: 16)
@@ -691,50 +749,90 @@ struct AlbumListView: View {
 
     @State private var searchNeedle: SearchTextNormalizer.Needle = .empty
 
-    // Client-side search filter on already-loaded albums.
-    // Server search is handled by SearchView; this is just a quick local filter.
-    private var displayedAlbums: [Album] {
-        guard !searchNeedle.isEmpty else { return library.albums }
-        return library.albums.filter {
-            searchNeedle.matches($0.album) ||
-            searchNeedle.matches($0.artist ?? "") ||
-            searchNeedle.matches($0.composer ?? "")
-        }
+    private var availableDecades: [Int] {
+        let years = library.albums.compactMap(\.year).filter { $0 > 1000 }
+        let decades = Set(years.map { ($0 / 10) * 10 })
+        return decades.sorted()
     }
+
+    private var displayedAlbums: [Album] {
+        var albums = library.albums
+        if !searchNeedle.isEmpty {
+            albums = albums.filter {
+                searchNeedle.matches($0.album) ||
+                searchNeedle.matches($0.artist ?? "") ||
+                searchNeedle.matches($0.composer ?? "")
+            }
+        }
+        if filterClassicalOnly {
+            albums = albums.filter { ($0.isClassical ?? 0) != 0 }
+        }
+        if let decade = filterDecade {
+            albums = albums.filter {
+                guard let y = $0.year, y > 0 else { return false }
+                return (y / 10) * 10 == decade
+            }
+        }
+        return albums
+    }
+
+    private var hasActiveFilter: Bool { filterClassicalOnly || filterDecade != nil }
 
     var body: some View {
         ScrollView {
             // Filter/sort toolbar
-            HStack(spacing: 12) {
-                // Sort picker button
-                Button {
-                    Haptics.light()
-                    showSortPicker = true
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "arrow.up.arrow.down")
-                            .font(.system(size: 12, weight: .semibold))
-                        Text(sortOrder.rawValue)
-                            .font(.roonBody(13, weight: .semibold))
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    // Sort picker
+                    filterChip(
+                        label: sortOrder.rawValue,
+                        icon: "arrow.up.arrow.down",
+                        active: false
+                    ) { showSortPicker = true }
+
+                    // Classical filter
+                    filterChip(
+                        label: "Classical",
+                        icon: "music.quarternote.3",
+                        active: filterClassicalOnly
+                    ) {
+                        filterClassicalOnly.toggle()
+                        Haptics.light()
                     }
-                    .foregroundColor(.roonPrimary)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .background(Color.roonSurface)
-                    .clipShape(Capsule())
-                    .overlay(Capsule().strokeBorder(Color.roonBorder, lineWidth: 1))
-                }
-                .buttonStyle(.plain)
 
-                Spacer()
+                    // Decade filter
+                    filterChip(
+                        label: filterDecade.map { "\($0)s" } ?? "Decade",
+                        icon: "calendar",
+                        active: filterDecade != nil
+                    ) { showDecadePicker = true }
 
-                if library.isLoadingAlbums && library.albums.isEmpty {
-                    ProgressView()
-                        .tint(.roonAccent)
-                        .scaleEffect(0.8)
+                    // Clear filters
+                    if hasActiveFilter {
+                        Button {
+                            Haptics.light()
+                            filterClassicalOnly = false
+                            filterDecade = nil
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 15))
+                                .foregroundColor(.roonTertiary)
+                        }
+                        .buttonStyle(.plain)
+                        .transition(.scale.combined(with: .opacity))
+                    }
+
+                    Spacer(minLength: 8)
+
+                    if library.isLoadingAlbums && library.albums.isEmpty {
+                        ProgressView()
+                            .tint(.roonAccent)
+                            .scaleEffect(0.8)
+                    }
                 }
+                .padding(.horizontal, 16)
+                .animation(.easeInOut(duration: 0.2), value: hasActiveFilter)
             }
-            .padding(.horizontal, 16)
             .padding(.top, 12)
             .padding(.bottom, 8)
 
@@ -816,12 +914,46 @@ struct AlbumListView: View {
             }
             Button("Cancel", role: .cancel) {}
         }
+        .confirmationDialog("Filter by Decade", isPresented: $showDecadePicker, titleVisibility: .visible) {
+            if filterDecade != nil {
+                Button("All Decades") {
+                    Haptics.light()
+                    filterDecade = nil
+                }
+            }
+            ForEach(availableDecades, id: \.self) { decade in
+                Button("\(decade)s") {
+                    Haptics.light()
+                    filterDecade = decade
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        }
         .task {
             if library.albums.isEmpty { await library.loadAlbums(sort: sortOrder) }
         }
         .refreshable {
             await library.loadAlbums(reset: true, sort: sortOrder)
         }
+    }
+
+    @ViewBuilder
+    private func filterChip(label: String, icon: String, active: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: icon)
+                    .font(.system(size: 11, weight: .semibold))
+                Text(label)
+                    .font(.roonBody(13, weight: .semibold))
+            }
+            .foregroundColor(active ? .white : .roonPrimary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(active ? Color.roonAccent : Color.roonSurface)
+            .clipShape(Capsule())
+            .overlay(Capsule().strokeBorder(active ? Color.clear : Color.roonBorder, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -1144,7 +1276,8 @@ struct AlbumDetailView: View {
     }
 
     private var albumPlaybackButtons: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 12) {
+            // Play Now — muted indigo/purple pill (Roon Arc style)
             Button {
                 Haptics.medium()
                 guard !workGroups.isEmpty else { return }
@@ -1152,38 +1285,23 @@ struct AlbumDetailView: View {
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "play.fill")
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.system(size: 14, weight: .semibold))
                     Text("Play Now")
-                        .font(.roonBody(16, weight: .semibold))
+                        .font(.roonBody(15, weight: .semibold))
                 }
                 .foregroundColor(.white)
                 .frame(maxWidth: .infinity)
-                .frame(height: 50)
-                .background(Color.roonAccent)
-                .clipShape(RoundedRectangle(cornerRadius: 25))
+                .frame(height: 46)
+                .background(Color(hex: "#5B4FCF"))
+                .clipShape(Capsule())
             }
             .buttonStyle(.plain)
             .disabled(workGroups.isEmpty)
 
-            Button {
-                Haptics.light()
-                guard !workGroups.isEmpty else { return }
-                player.playAlbum(workGroups)
-                player.isRadioEnabled = true
-            } label: {
-                ZStack {
-                    Circle()
-                        .stroke(Color.roonBorder, lineWidth: 1.5)
-                        .frame(width: 50, height: 50)
-                    Image(systemName: "dot.radiowaves.left.and.right")
-                        .font(.system(size: 18))
-                        .foregroundColor(.roonSecondary)
-                }
-            }
-            .buttonStyle(.plain)
-            .disabled(workGroups.isEmpty)
-            .accessibilityLabel("Start Radio")
+            // Like / heart circle
+            AlbumLikeButton(workGroups: workGroups)
 
+            // Add to queue circle
             Button {
                 Haptics.light()
                 player.addWorkGroupsToQueue(workGroups)
@@ -1191,9 +1309,9 @@ struct AlbumDetailView: View {
                 ZStack {
                     Circle()
                         .stroke(Color.roonBorder, lineWidth: 1.5)
-                        .frame(width: 50, height: 50)
+                        .frame(width: 46, height: 46)
                     Image(systemName: "plus")
-                        .font(.system(size: 20, weight: .semibold))
+                        .font(.system(size: 18, weight: .semibold))
                         .foregroundColor(.roonSecondary)
                 }
             }
@@ -1215,23 +1333,63 @@ struct AlbumTabBar: View {
                     Haptics.light()
                     withAnimation(.easeInOut(duration: 0.18)) { selected = tab }
                 } label: {
-                    VStack(spacing: 6) {
+                    VStack(spacing: 8) {
                         Text(tab.rawValue)
-                            .font(.roonBody(13, weight: selected == tab ? .semibold : .regular))
+                            .font(.system(size: 12, weight: selected == tab ? .semibold : .medium,
+                                          design: .default))
                             .foregroundColor(selected == tab ? .roonPrimary : .roonTertiary)
-                            .kerning(0.6)
+                            .kerning(1.0)
+                            .textCase(.uppercase)
 
-                        // Underline indicator
-                        Rectangle()
+                        // Short coral underline on selected tab only
+                        Capsule()
                             .fill(selected == tab ? Color.roonAccent : Color.clear)
-                            .frame(height: 2)
-                            .clipShape(Capsule())
+                            .frame(width: selected == tab ? 24 : 0, height: 2)
+                            .animation(.easeInOut(duration: 0.18), value: selected)
                     }
+                    .frame(height: 44)
                 }
                 .buttonStyle(.plain)
                 .frame(maxWidth: .infinity)
             }
         }
+    }
+}
+
+// MARK: - Album like button (hearts all tracks in the album)
+
+private struct AlbumLikeButton: View {
+    let workGroups: [WorkGroup]
+    @ObservedObject private var likedTracks = LikedTracksStore.shared
+
+    private var allTracks: [Track] { workGroups.flatMap(\.tracks) }
+
+    private var isAllLiked: Bool {
+        !allTracks.isEmpty && allTracks.allSatisfy { likedTracks.isLiked($0) }
+    }
+
+    var body: some View {
+        Button {
+            Haptics.light()
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.6)) {
+                if isAllLiked {
+                    allTracks.forEach { likedTracks.unlike($0) }
+                } else {
+                    allTracks.forEach { if !likedTracks.isLiked($0) { likedTracks.like($0) } }
+                }
+            }
+        } label: {
+            ZStack {
+                Circle()
+                    .stroke(Color.roonBorder, lineWidth: 1.5)
+                    .frame(width: 46, height: 46)
+                Image(systemName: isAllLiked ? "heart.fill" : "heart")
+                    .font(.system(size: 18))
+                    .foregroundColor(isAllLiked ? .red : .roonSecondary)
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(allTracks.isEmpty)
     }
 }
 
@@ -1446,6 +1604,7 @@ struct WorkGroupSectionView: View {
     @ObservedObject private var player = PlayerViewModel.shared
     @State private var isCollapsed: Bool = false
     @State private var showingAddToPlaylist: Bool = false
+    @State private var showingWorkCorrection: Bool = false
 
     private var sourceLabel: String {
         if group.tracks.contains(where: { ($0.work ?? "").isEmpty == false }) {
@@ -1456,34 +1615,48 @@ struct WorkGroupSectionView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Section header
-            HStack(alignment: .top, spacing: 14) {
-                ArtworkView(coverid: group.coverid, size: 52)
-                    .clipShape(RoundedRectangle(cornerRadius: 4))
-                    .padding(.leading, 16)
-                    .padding(.vertical, 14)
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(group.workTitle)
-                        .font(.roonBody(15, weight: .semibold))
-                        .foregroundColor(.roonPrimary)
-                        .lineLimit(2)
-                    if let composer = group.composer, !composer.isEmpty {
-                        Text(composer)
-                            .font(.roonBody(13))
-                            .foregroundColor(.roonSecondary)
+            // Section header — Roon Arc classical style: bold title + year + performer line
+            HStack(alignment: .top, spacing: 0) {
+                VStack(alignment: .leading, spacing: 4) {
+                    // Work title + year inline
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(group.workTitle)
+                            .font(.system(size: 17, weight: .bold, design: .default))
+                            .foregroundColor(.roonPrimary)
+                            .lineLimit(3)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if let year = group.tracks.compactMap(\.year).first, year > 0 {
+                            Text("\(year)")
+                                .font(.roonBody(13))
+                                .foregroundColor(.roonTertiary)
+                                .lineLimit(1)
+                        }
                     }
+
+                    // Composer / performer summary line
+                    let performerLine: String = {
+                        var parts: [String] = []
+                        if let c = group.composer?.trimmingCharacters(in: .whitespaces), !c.isEmpty {
+                            parts.append(c)
+                        }
+                        if let ta = group.tracks.first?.trackartist?.trimmingCharacters(in: .whitespaces),
+                           !ta.isEmpty, ta != group.composer {
+                            parts.append(ta)
+                        }
+                        return parts.joined(separator: " · ")
+                    }()
+                    if !performerLine.isEmpty {
+                        Text(performerLine)
+                            .font(.roonBody(12))
+                            .foregroundColor(.roonSecondary)
+                            .lineLimit(2)
+                    }
+
                     Text(group.totalDurationFormatted)
                         .font(.roonMono(11))
                         .foregroundColor(.roonTertiary)
-                        .padding(.top, 2)
-
-                    Text(sourceLabel)
-                        .font(.roonBody(10, weight: .semibold))
-                        .foregroundColor(.roonTertiary)
-                        .kerning(0.8)
-                        .padding(.top, 2)
                 }
+                .padding(.leading, 16)
                 .padding(.vertical, 14)
 
                 Spacer()
@@ -1493,7 +1666,7 @@ struct WorkGroupSectionView: View {
                     withAnimation(.easeInOut(duration: 0.18)) { isCollapsed.toggle() }
                 } label: {
                     Image(systemName: isCollapsed ? "chevron.down" : "chevron.up")
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.system(size: 12, weight: .semibold))
                         .foregroundColor(.roonTertiary)
                         .frame(width: 36, height: 36)
                 }
@@ -1513,11 +1686,15 @@ struct WorkGroupSectionView: View {
                 Button(isCollapsed ? "Expand" : "Collapse", systemImage: isCollapsed ? "chevron.down" : "chevron.up") {
                     isCollapsed.toggle()
                 }
+                Divider()
+                Button("Fix Work Link…", systemImage: "link.badge.plus") {
+                    showingWorkCorrection = true
+                }
             }
 
             Color.roonBorder.frame(height: 0.5).padding(.leading, 16)
 
-            // Tracks
+            // Movement rows — indented 16pt from left (Roon Arc classical layout)
             if !isCollapsed {
                 ForEach(Array(group.tracks.enumerated()), id: \.element.id) { index, track in
                     MovementRowView(
@@ -1529,8 +1706,9 @@ struct WorkGroupSectionView: View {
                         Haptics.light()
                         player.playWork(group, startingAt: index)
                     }
+                    .padding(.leading, 16)
                     if index < group.tracks.count - 1 {
-                        Color.roonBorder.frame(height: 0.5).padding(.leading, 54)
+                        Color.roonBorder.frame(height: 0.5).padding(.leading, 48)
                     }
                 }
             }
@@ -1541,10 +1719,29 @@ struct WorkGroupSectionView: View {
             AddToPlaylistSheet(tracks: group.tracks)
                 .environment(\.hyperionBottomOverlayHeight, 0)
         }
+        .sheet(isPresented: $showingWorkCorrection) {
+            WorkCorrectionSheet(group: group)
+                .environment(\.hyperionBottomOverlayHeight, 0)
+        }
     }
 }
 
 // MARK: - Song list
+
+enum SongSortOrder: String, CaseIterable, Identifiable {
+    case title     = "Title"
+    case artist    = "Artist"
+    case album     = "Album"
+    case duration  = "Duration"
+    var id: String { rawValue }
+}
+
+enum FormatFilter: String, CaseIterable, Identifiable {
+    case all     = "All"
+    case lossless = "Lossless"
+    case lossy    = "Lossy"
+    var id: String { rawValue }
+}
 
 struct SongListView: View {
 
@@ -1552,19 +1749,64 @@ struct SongListView: View {
     @ObservedObject private var player  = PlayerViewModel.shared
     @State private var searchText: String = ""
     @State private var searchNeedle: SearchTextNormalizer.Needle = .empty
+    @State private var sortOrder: SongSortOrder = .title
+    @State private var formatFilter: FormatFilter = .all
+    @State private var showSortPicker: Bool = false
+    @State private var showFormatPicker: Bool = false
 
     private var filtered: [Track] {
-        guard !searchNeedle.isEmpty else { return library.songs }
-        return library.songs.filter {
-            searchNeedle.matches($0.title) ||
-            searchNeedle.matches($0.albumartist ?? "") ||
-            searchNeedle.matches($0.trackartist ?? "") ||
-            searchNeedle.matches($0.album ?? "")
+        var tracks = library.songs
+        if !searchNeedle.isEmpty {
+            tracks = tracks.filter {
+                searchNeedle.matches($0.title) ||
+                searchNeedle.matches($0.albumartist ?? "") ||
+                searchNeedle.matches($0.trackartist ?? "") ||
+                searchNeedle.matches($0.album ?? "")
+            }
         }
+        switch formatFilter {
+        case .lossless: tracks = tracks.filter { $0.lossless == true }
+        case .lossy:    tracks = tracks.filter { $0.lossless != true }
+        case .all:      break
+        }
+        switch sortOrder {
+        case .title:    tracks.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        case .artist:   tracks.sort { ($0.trackartist ?? $0.albumartist ?? "").localizedCaseInsensitiveCompare($1.trackartist ?? $1.albumartist ?? "") == .orderedAscending }
+        case .album:    tracks.sort { ($0.album ?? "").localizedCaseInsensitiveCompare($1.album ?? "") == .orderedAscending }
+        case .duration: tracks.sort { ($0.duration ?? 0) < ($1.duration ?? 0) }
+        }
+        return tracks
     }
+
+    private var hasActiveFilter: Bool { formatFilter != .all }
 
     var body: some View {
         List {
+            Section {
+                // Filter bar
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        songFilterChip(label: sortOrder.rawValue, icon: "arrow.up.arrow.down", active: false) { showSortPicker = true }
+                        songFilterChip(label: formatFilter == .all ? "Format" : formatFilter.rawValue,
+                                       icon: "waveform", active: formatFilter != .all) { showFormatPicker = true }
+                        if hasActiveFilter {
+                            Button {
+                                Haptics.light()
+                                formatFilter = .all
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.system(size: 15))
+                                    .foregroundColor(.roonTertiary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+
             ForEach(filtered) { track in
                 Button {
                     Haptics.light()
@@ -1588,6 +1830,21 @@ struct SongListView: View {
         .toolbarBackground(Color.roonBase, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
         .toolbarColorScheme(.dark, for: .navigationBar)
+        .confirmationDialog("Sort Songs", isPresented: $showSortPicker, titleVisibility: .visible) {
+            ForEach(SongSortOrder.allCases) { order in
+                Button(order.rawValue) { sortOrder = order }
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+        .confirmationDialog("Filter by Format", isPresented: $showFormatPicker, titleVisibility: .visible) {
+            ForEach(FormatFilter.allCases) { f in
+                Button(f.rawValue) {
+                    Haptics.light()
+                    formatFilter = f
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        }
         .overlay {
             if library.isLoadingSongs && library.songs.isEmpty {
                 ProgressView().tint(.roonAccent)
@@ -1606,6 +1863,25 @@ struct SongListView: View {
             if library.songs.isEmpty { await library.loadSongs() }
         }
     }
+
+    @ViewBuilder
+    private func songFilterChip(label: String, icon: String, active: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: icon)
+                    .font(.system(size: 11, weight: .semibold))
+                Text(label)
+                    .font(.roonBody(13, weight: .semibold))
+            }
+            .foregroundColor(active ? .white : .roonPrimary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(active ? Color.roonAccent : Color.roonSurface)
+            .clipShape(Capsule())
+            .overlay(Capsule().strokeBorder(active ? Color.clear : Color.roonBorder, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+    }
 }
 
 struct SongRowView: View {
@@ -1615,6 +1891,7 @@ struct SongRowView: View {
     @State private var showingAddToPlaylist = false
     @State private var navigateToAlbum: Album? = nil
     @State private var navigateToArtist: Artist? = nil
+    @State private var showShareSheet = false
 
     var body: some View {
         HStack(spacing: 14) {
@@ -1689,6 +1966,9 @@ struct SongRowView: View {
             Button("Add to Playlist", systemImage: "music.note.list") {
                 showingAddToPlaylist = true
             }
+            Button("Share", systemImage: "square.and.arrow.up") {
+                showShareSheet = true
+            }
             if DownloadManager.shared.isDownloaded(trackID: track.id) {
                 Button("Remove Download", systemImage: "trash", role: .destructive) {
                     if let d = DownloadManager.shared.downloadedTracks.first(where: { $0.id == track.id }) {
@@ -1709,13 +1989,15 @@ struct SongRowView: View {
             AddToPlaylistSheet(tracks: [track])
                 .environment(\.hyperionBottomOverlayHeight, 0)
         }
-        .sheet(item: $navigateToAlbum) { album in
-            NavigationStack { AlbumDetailView(album: album) }
-                .environment(\.hyperionBottomOverlayHeight, 0)
+        .navigationDestination(item: $navigateToAlbum) { album in
+            AlbumDetailView(album: album)
         }
-        .sheet(item: $navigateToArtist) { artist in
-            NavigationStack { ArtistDetailView(artist: artist) }
-                .environment(\.hyperionBottomOverlayHeight, 0)
+        .navigationDestination(item: $navigateToArtist) { artist in
+            ArtistDetailView(artist: artist)
+        }
+        .sheet(isPresented: $showShareSheet) {
+            ShareSheet(items: [HyperionShare.nowPlayingText(track: track)])
+                .ignoresSafeArea()
         }
     }
 }
@@ -1875,6 +2157,7 @@ struct ArtistDetailView: View {
     @State private var metadata: MetadataResult? = nil
     @State private var metadataLoading: Bool = false
     @State private var bioExpanded: Bool = false
+    @State private var navigateToSimilarArtist: Artist? = nil
 
     private var tracksByArtist: [Track] {
         let folded = SearchTextNormalizer.folded(artist.name)
@@ -2081,11 +2364,8 @@ struct ArtistDetailView: View {
                     isLoading: metadataLoading,
                     bioExpanded: $bioExpanded,
                     onArtistTap: { name in
-                        // Navigate to similar artist by constructing an Artist value
-                        // from the library if available, otherwise by name only.
-                        let target = library.artists.first { $0.name == name }
+                        navigateToSimilarArtist = library.artists.first { $0.name == name }
                             ?? Artist(id: 0, name: name)
-                        // Push a new ArtistDetailView — caller handles navigation stack.
                     }
                 )
 
@@ -2100,6 +2380,9 @@ struct ArtistDetailView: View {
         .toolbarBackground(Color.roonBase, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
         .toolbarColorScheme(.dark, for: .navigationBar)
+        .navigationDestination(item: $navigateToSimilarArtist) { similar in
+            ArtistDetailView(artist: similar)
+        }
         .task(id: artist.id) {
             isLoading = true
             displayedAlbumCount = 12
@@ -2123,27 +2406,62 @@ struct ArtistDetailView: View {
     }
 
     private var artistHeader: some View {
-        VStack(spacing: 12) {
-            ZStack {
-                Circle()
-                    .fill(Color.roonElevated)
-                    .frame(width: 110, height: 110)
-                Text(NameFormatting.initials(artist.name))
-                    .font(.roonTitle(34))
-                    .foregroundColor(.roonAccent)
+        ZStack(alignment: .bottom) {
+            // Blurred hero backdrop — uses metadata portrait or first album art
+            Group {
+                if let portraitURL = metadata?.artistImageURL {
+                    AsyncArtistHeroImage(url: portraitURL)
+                } else if let coverid = albums.first?.artwork_track_id {
+                    ArtworkView(coverid: coverid, size: 280)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 280)
+                        .clipped()
+                } else {
+                    Color.roonElevated.frame(height: 200)
+                }
             }
-            Text(artist.name)
-                .font(.roonTitle(30))
-                .foregroundColor(.roonPrimary)
-                .multilineTextAlignment(.center)
-                .lineLimit(3)
-            Text("\(albums.count) albums • \(tracksByArtist.count) local tracks")
-                .font(.roonBody(13))
-                .foregroundColor(.roonSecondary)
+            .overlay(
+                LinearGradient(
+                    gradient: Gradient(colors: [Color.roonBase.opacity(0), Color.roonBase]),
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
+
+            // Foreground: avatar + name
+            VStack(spacing: 10) {
+                ZStack {
+                    Circle()
+                        .fill(Color.roonSurface.opacity(0.85))
+                        .frame(width: 100, height: 100)
+                        .shadow(color: .black.opacity(0.5), radius: 12, y: 4)
+                    if let portraitURL = metadata?.artistImageURL {
+                        AsyncArtistHeroImage(url: portraitURL)
+                            .frame(width: 100, height: 100)
+                            .clipShape(Circle())
+                    } else {
+                        Text(NameFormatting.initials(artist.name))
+                            .font(.roonTitle(32))
+                            .foregroundColor(.roonAccent)
+                    }
+                }
+                Text(artist.name)
+                    .font(.roonTitle(30))
+                    .foregroundColor(.roonPrimary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(3)
+                    .shadow(color: .black.opacity(0.6), radius: 4, y: 2)
+                if !isLoading {
+                    Text("\(albums.count) albums • \(tracksByArtist.count) tracks")
+                        .font(.roonBody(13))
+                        .foregroundColor(.roonSecondary)
+                }
+            }
+            .padding(.bottom, 20)
+            .padding(.horizontal, 20)
         }
         .frame(maxWidth: .infinity)
-        .padding(.top, 24)
-        .padding(.horizontal, 20)
+        .frame(minHeight: 240)
     }
 
     private func artistSectionTitle(_ title: String) -> some View {
@@ -2418,6 +2736,28 @@ struct GenreAlbumListView: View {
             defer { isLoading = false }
             albums = (try? await LyrionAPI.shared.getAlbumsForGenre(genreID: genre.id)) ?? []
             albums.sort { $0.album.localizedCaseInsensitiveCompare($1.album) == .orderedAscending }
+        }
+    }
+}
+
+// MARK: - Artist hero image loader
+
+private struct AsyncArtistHeroImage: View {
+    let url: URL
+    @State private var image: UIImage? = nil
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                Color.roonElevated
+            }
+        }
+        .task(id: url.absoluteString) {
+            image = await ArtworkCache.shared.loadImage(url: url, targetPoints: 300, scale: 2)
         }
     }
 }

@@ -27,6 +27,9 @@ struct OrpheusView: View {
                     presetsRow
                         .padding(.bottom, 24)
 
+                    headphoneProfilesSection
+                        .padding(.bottom, 24)
+
                     LazyVGrid(columns: columns, spacing: 14) {
                         mainEQCard
                         headphoneEQCard
@@ -182,6 +185,96 @@ struct OrpheusView: View {
                     .padding(.horizontal, 16)
                 }
             }
+        }
+    }
+
+    // MARK: - Headphone profiles
+
+    @State private var showingAddProfile = false
+    @State private var profileDeviceName = ""
+    @State private var profilePresetID: UUID? = nil
+
+    private var headphoneProfilesSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("HEADPHONE PROFILES")
+                    .font(.roonBody(11, weight: .semibold))
+                    .foregroundColor(.roonTertiary)
+                    .kerning(1.2)
+                Spacer()
+                Button {
+                    profileDeviceName = dsp.connectedBluetoothDeviceName ?? ""
+                    profilePresetID   = dsp.activePresetID
+                    showingAddProfile = true
+                } label: {
+                    Image(systemName: "plus.circle")
+                        .foregroundColor(.roonAccent)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 16)
+
+            if dsp.presets.filter({ ($0.deviceName ?? "").isEmpty == false }).isEmpty {
+                Text("No profiles yet — connect a headphone and tap +")
+                    .font(.roonBody(12))
+                    .foregroundColor(.roonTertiary)
+                    .padding(.horizontal, 16)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(dsp.presets.filter { ($0.deviceName ?? "").isEmpty == false }) { preset in
+                        HStack(spacing: 12) {
+                            Image(systemName: "headphones.circle.fill")
+                                .font(.system(size: 20))
+                                .foregroundColor(.roonAccent)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(preset.deviceName ?? "")
+                                    .font(.roonBody(14, weight: .medium))
+                                    .foregroundColor(.roonPrimary)
+                                    .lineLimit(1)
+                                Text("→ \(preset.name)")
+                                    .font(.roonBody(12))
+                                    .foregroundColor(.roonSecondary)
+                                    .lineLimit(1)
+                            }
+                            Spacer()
+                            if dsp.connectedBluetoothDeviceName?.lowercased().contains(preset.deviceName?.lowercased() ?? "") == true {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundColor(.roonAccent)
+                                    .font(.system(size: 14))
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .background(Color.roonSurface)
+                        .swipeActions(edge: .trailing) {
+                            Button(role: .destructive) {
+                                dsp.setDeviceName(nil, for: preset.id)
+                            } label: {
+                                Label("Remove", systemImage: "trash")
+                            }
+                        }
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .padding(.horizontal, 16)
+            }
+
+            if let name = dsp.connectedBluetoothDeviceName {
+                Text("Connected: \(name)")
+                    .font(.roonBody(11))
+                    .foregroundColor(.roonAccent)
+                    .padding(.horizontal, 16)
+            }
+        }
+        .confirmationDialog("Add Headphone Profile", isPresented: $showingAddProfile, titleVisibility: .visible) {
+            ForEach(dsp.presets) { preset in
+                Button(preset.name) {
+                    dsp.setDeviceName(profileDeviceName.isEmpty ? nil : profileDeviceName, for: preset.id)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Which preset should load when \"\(profileDeviceName.isEmpty ? "this device" : profileDeviceName)\" connects?")
         }
     }
 

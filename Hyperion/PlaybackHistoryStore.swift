@@ -11,14 +11,53 @@ final class PlaybackHistoryStore: ObservableObject {
         let playedAt: Date
     }
 
+    struct TrackPlayRecord: Codable, Identifiable {
+        var id: Int { trackID }
+        let trackID: Int
+        let title: String
+        let artist: String
+        let album: String
+        let coverid: String?
+        var playCount: Int
+        var lastPlayedAt: Date
+    }
+
     private struct HistoryPayload: Codable {
         var entries: [AlbumEntry]
         var artistCounts: [String: Int]
         var genreCounts:  [String: Int]
+        var trackRecords: [Int: TrackPlayRecord]
+        var dailySeconds: [String: Double]
+        var hourBuckets:  [Int: Double]    // hour 0–23 → cumulative seconds
+
+        init(entries: [AlbumEntry], artistCounts: [String: Int], genreCounts: [String: Int],
+             trackRecords: [Int: TrackPlayRecord], dailySeconds: [String: Double], hourBuckets: [Int: Double]) {
+            self.entries      = entries
+            self.artistCounts = artistCounts
+            self.genreCounts  = genreCounts
+            self.trackRecords = trackRecords
+            self.dailySeconds = dailySeconds
+            self.hourBuckets  = hourBuckets
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            entries      = try c.decode([AlbumEntry].self, forKey: .entries)
+            artistCounts = try c.decode([String: Int].self, forKey: .artistCounts)
+            genreCounts  = try c.decode([String: Int].self, forKey: .genreCounts)
+            trackRecords = (try? c.decode([Int: TrackPlayRecord].self, forKey: .trackRecords)) ?? [:]
+            dailySeconds = (try? c.decode([String: Double].self, forKey: .dailySeconds)) ?? [:]
+            hourBuckets  = (try? c.decode([Int: Double].self, forKey: .hourBuckets)) ?? [:]
+        }
     }
 
     @Published private(set) var artistPlayCounts: [String: Int] = [:]
     @Published private(set) var genrePlayCounts:  [String: Int] = [:]
+    @Published private(set) var trackPlayRecords: [Int: TrackPlayRecord] = [:]
+    /// ISO date string (yyyy-MM-dd) → seconds listened that day.
+    @Published private(set) var dailySeconds: [String: Double] = [:]
+    /// Hour-of-day (0–23) → cumulative seconds listened.
+    @Published private(set) var hourBuckets:  [Int: Double] = [:]
 
     private let encoder: JSONEncoder = {
         let e = JSONEncoder()
@@ -34,10 +73,17 @@ final class PlaybackHistoryStore: ObservableObject {
     private let maxStoredAlbums = 60
     private var cachedEntries: [AlbumEntry]?
 
+    static let dayKey: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; f.locale = Locale(identifier: "en_US_POSIX"); return f
+    }()
+
     private init() {
         let p = loadPayload()
         artistPlayCounts = p.artistCounts
         genrePlayCounts  = p.genreCounts
+        trackPlayRecords = p.trackRecords
+        dailySeconds     = p.dailySeconds
+        hourBuckets      = p.hourBuckets
         cachedEntries    = p.entries
     }
 
@@ -70,13 +116,54 @@ final class PlaybackHistoryStore: ObservableObject {
             }
         }
 
+        // Daily listening time (heatmap)
+        let secs = track.duration ?? 0
+        if secs > 0 {
+            let dayStr = Self.dayKey.string(from: playedAt)
+            dailySeconds[dayStr, default: 0] += secs
+            let hour = Calendar.current.component(.hour, from: playedAt)
+            hourBuckets[hour, default: 0] += secs
+        }
+
+        // Per-track play count
+        let artistName = (track.trackartist ?? track.albumartist ?? track.composer ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if var rec = trackPlayRecords[track.id] {
+            rec.playCount += 1
+            rec.lastPlayedAt = playedAt
+            trackPlayRecords[track.id] = rec
+        } else {
+            trackPlayRecords[track.id] = TrackPlayRecord(
+                trackID:      track.id,
+                title:        track.title,
+                artist:       artistName,
+                album:        track.album ?? "",
+                coverid:      track.coverid,
+                playCount:    1,
+                lastPlayedAt: playedAt
+            )
+        }
+
         savePayload()
+    }
+
+    func mostPlayedTracks(limit: Int = 20) -> [TrackPlayRecord] {
+        Array(trackPlayRecords.values
+            .sorted { $0.playCount > $1.playCount }
+            .prefix(limit))
+    }
+
+    func playCount(for trackID: Int) -> Int {
+        trackPlayRecords[trackID]?.playCount ?? 0
     }
 
     func clear() {
         cachedEntries    = nil
         artistPlayCounts = [:]
         genrePlayCounts  = [:]
+        trackPlayRecords = [:]
+        dailySeconds     = [:]
+        hourBuckets      = [:]
         try? FileManager.default.removeItem(at: fileURL())
     }
 
@@ -125,7 +212,8 @@ final class PlaybackHistoryStore: ObservableObject {
         if !FileManager.default.fileExists(atPath: url.path),
            let data = UserDefaults.standard.data(forKey: legacyKey),
            let oldEntries = try? decoder.decode([AlbumEntry].self, from: data) {
-            let payload = HistoryPayload(entries: oldEntries, artistCounts: [:], genreCounts: [:])
+            let payload = HistoryPayload(entries: oldEntries, artistCounts: [:], genreCounts: [:],
+                                         trackRecords: [:], dailySeconds: [:], hourBuckets: [:])
             if let d = try? encoder.encode(payload) { try? d.write(to: url, options: .atomicWrite) }
             UserDefaults.standard.removeObject(forKey: legacyKey)
             return payload
@@ -133,21 +221,27 @@ final class PlaybackHistoryStore: ObservableObject {
 
         guard let data = try? Data(contentsOf: url),
               let payload = try? decoder.decode(HistoryPayload.self, from: data) else {
-            return HistoryPayload(entries: [], artistCounts: [:], genreCounts: [:])
+            return HistoryPayload(entries: [], artistCounts: [:], genreCounts: [:],
+                                   trackRecords: [:], dailySeconds: [:], hourBuckets: [:])
         }
-        let sorted = HistoryPayload(
+        return HistoryPayload(
             entries:      payload.entries.sorted { $0.playedAt > $1.playedAt },
             artistCounts: payload.artistCounts,
-            genreCounts:  payload.genreCounts
+            genreCounts:  payload.genreCounts,
+            trackRecords: payload.trackRecords,
+            dailySeconds: payload.dailySeconds,
+            hourBuckets:  payload.hourBuckets
         )
-        return sorted
     }
 
     private func savePayload() {
         let payload = HistoryPayload(
             entries:      cachedEntries ?? [],
             artistCounts: artistPlayCounts,
-            genreCounts:  genrePlayCounts
+            genreCounts:  genrePlayCounts,
+            trackRecords: trackPlayRecords,
+            dailySeconds: dailySeconds,
+            hourBuckets:  hourBuckets
         )
         guard let data = try? encoder.encode(payload) else { return }
         try? data.write(to: fileURL(), options: .atomicWrite)

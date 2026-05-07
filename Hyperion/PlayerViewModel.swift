@@ -106,6 +106,9 @@ final class PlayerViewModel: ObservableObject {
     private var wasPlayingBeforeInterruption = false
     private var pendingSeekWatchdogTask: Task<Void, Never>?
     private var playbackStartupWatchdogTask: Task<Void, Never>?
+    private var orpheusLoadTask: Task<Void, Never>?
+    private var playbackToggleDebounceTask: Task<Void, Never>?
+    private var isTransitioningPlayback = false
 
     // MARK: - Radio mode
 
@@ -1071,6 +1074,7 @@ final class PlayerViewModel: ObservableObject {
         }
         isPlaying = false
         isPaused  = true
+        isTransitioningPlayback = false
         // End background task but keep audio session active for resumed playback
         endBackgroundPlaybackTask()
         // Update lock screen immediately
@@ -1141,7 +1145,16 @@ final class PlayerViewModel: ObservableObject {
         MPNowPlayingInfoCenter.default().playbackState = .playing
     }
 
-    func togglePlayPause() { isPlaying ? pause() : resume() }
+    func togglePlayPause() {
+        guard !isTransitioningPlayback else { return }
+        isTransitioningPlayback = true
+        if isPlaying { pause() } else { resume() }
+        playbackToggleDebounceTask?.cancel()
+        playbackToggleDebounceTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            self.isTransitioningPlayback = false
+        }
+    }
 
     func nextTrack() {
         guard !queue.isEmpty else { return }
@@ -1556,6 +1569,8 @@ final class PlayerViewModel: ObservableObject {
             beginBackgroundPlaybackTask(reason: "orpheus-load-stream")
         }
 
+        orpheusLoadTask?.cancel()
+        orpheusLoadTask = nil
         orpheusEngine?.stop()
         let engine = OrpheusPlaybackEngine(manager: audioManager)
         orpheusEngine = engine
@@ -1612,13 +1627,17 @@ final class PlayerViewModel: ObservableObject {
         engine.onNearEnd = { [weak self] in
             guard let self, playbackID == self.activePlaybackID else { return }
             self.prefetchNextTrackAsset()
+            if self.crossfadeDuration > 0, !self.isCrossfadingOut {
+                self.startCrossfadeOut()
+            }
         }
 
         let headers = LyrionAPI.shared.httpHeaders(
             accept: "audio/flac,audio/mpeg,audio/mp4,audio/aac,audio/wav,audio/*,*/*"
         )
 
-        Task { @MainActor [weak self] in
+        orpheusLoadTask?.cancel()
+        orpheusLoadTask = Task { @MainActor [weak self] in
             guard let self, self.orpheusEngine === engine, playbackID == self.activePlaybackID else { return }
             do {
                 try await engine.load(url: candidates[0], headers: headers, startTime: startTime)
@@ -2379,7 +2398,8 @@ final class PlayerViewModel: ObservableObject {
                 }
                 refreshNowPlayingPlaybackState(force: true)
                 // 3 s watchdog: if still stuck waiting with a ready item, nudge the player.
-                Task { @MainActor [weak self] in
+                playbackStartupWatchdogTask?.cancel()
+                playbackStartupWatchdogTask = Task { @MainActor [weak self] in
                     try? await Task.sleep(nanoseconds: 3_000_000_000)
                     guard let self, !Task.isCancelled, playbackID == self.activePlaybackID else { return }
                     guard self.player.timeControlStatus == .waitingToPlayAtSpecifiedRate else { return }
@@ -2387,6 +2407,7 @@ final class PlayerViewModel: ObservableObject {
                     ServerLogStore.shared.warn("Playback stuck waiting 3 s — nudging player")
                     _ = self.activateAudioSession()
                     self.startPlayer(preferImmediateStart: true)
+                    self.playbackStartupWatchdogTask = nil
                 }
             }
 

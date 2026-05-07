@@ -95,6 +95,29 @@ final class DownloadManager: NSObject, ObservableObject {
 
     func cancelDownload(for track: Track) { cancelDownload(trackID: track.id) }
 
+    /// Download every track in an album that isn't already downloaded or in-progress.
+    func downloadAlbum(_ tracks: [Track]) {
+        for track in tracks {
+            guard downloads[track.id] == nil, !isDownloaded(trackID: track.id) else { continue }
+            download(track)
+        }
+    }
+
+    /// Download every track in a local playlist.
+    func downloadPlaylist(_ playlist: LocalPlaylist) {
+        downloadAlbum(playlist.tracks)
+    }
+
+    /// True when every track in the list is downloaded.
+    func isAlbumDownloaded(_ tracks: [Track]) -> Bool {
+        !tracks.isEmpty && tracks.allSatisfy { isDownloaded(trackID: $0.id) }
+    }
+
+    /// Count of already-downloaded tracks out of the supplied list.
+    func downloadedCount(in tracks: [Track]) -> Int {
+        tracks.filter { isDownloaded(trackID: $0.id) }.count
+    }
+
     func removeDownload(_ downloaded: DownloadedTrack) {
         let fileURL = Self.downloadsDir.appendingPathComponent(downloaded.localFilename)
         try? FileManager.default.removeItem(at: fileURL)

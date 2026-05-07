@@ -402,6 +402,12 @@ struct PlaylistDetailView: View {
                 .buttonStyle(.plain)
                 .disabled(playlist.tracks.isEmpty)
             }
+
+            if !playlist.tracks.isEmpty {
+                PlaylistDownloadButton(playlist: playlist)
+                    .font(.roonBody(14))
+                    .foregroundColor(.roonSecondary)
+            }
         }
         .padding(.vertical, 14)
     }

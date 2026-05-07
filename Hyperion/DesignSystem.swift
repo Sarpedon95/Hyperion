@@ -14,12 +14,13 @@ extension Color {
     static let roonBorder   = Color(white: 1, opacity: 0.07)
     static let roonDivider  = Color(white: 1, opacity: 0.11)
 
-    // Accent — ARC uses muted olive-green
-    static let roonAccent   = Color(hex: "#8db84a")
+    // Accent — Roon Arc coral/red
+    static let roonAccent   = Color(hex: "#C0392B")
 
     // Quality indicators
-    static let roonQualityGreen  = Color(red: 0.20, green: 0.85, blue: 0.40)
-    static let roonQualityPurple = Color(hex: "#8db84a")
+    static let roonQualityGreen  = Color(hex: "#4CAF50")   // lossless / hi-res
+    static let roonQualityAmber  = Color(hex: "#F59E0B")   // lossy / transcoded
+    static let roonQualityPurple = Color(hex: "#F59E0B")   // legacy alias → amber
 
     // Text hierarchy
     static let roonPrimary   = Color.white
@@ -49,24 +50,31 @@ extension Color {
 }
 
 // MARK: - Typography tokens
+//
+// All three helpers use the SwiftUI-native `relativeTo:` TextStyle so the
+// system scales them correctly with the user's preferred text size.  The
+// `size` parameter is the *design-time* point size at the default
+// (Large/xLarge) Dynamic Type category — the OS widens or narrows from there.
+//
+// Mapping rationale:
+//   roonTitle  → .headline  (prominent headings; scales moderately)
+//   roonBody   → .body      (general content text; standard scaling curve)
+//   roonMono   → .caption1  (compact info; smaller scaling step)
 
 extension Font {
     /// Serif title font — track/work/composer headings.
     static func roonTitle(_ size: CGFloat, weight: Font.Weight = .bold) -> Font {
-        let scaled = UIFontMetrics(forTextStyle: .headline).scaledValue(for: size)
-        return .system(size: scaled, weight: weight, design: .serif)
+        .system(size: size, weight: weight, design: .serif, relativeTo: .headline)
     }
 
     /// Default body font — labels, descriptions, UI copy.
     static func roonBody(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        let scaled = UIFontMetrics(forTextStyle: .body).scaledValue(for: size)
-        return .system(size: scaled, weight: weight, design: .default)
+        .system(size: size, weight: weight, design: .default, relativeTo: .body)
     }
 
     /// Monospaced font — time displays, track numbers, and compact controls.
     static func roonMono(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        let scaled = UIFontMetrics(forTextStyle: .body).scaledValue(for: size)
-        return .system(size: scaled, weight: weight, design: .monospaced)
+        .system(size: size, weight: weight, design: .monospaced, relativeTo: .caption1)
     }
 }
 

@@ -16,11 +16,13 @@ final class LyrionAPI {
     private let session: URLSession = {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest  = 15
-        config.timeoutIntervalForResource = 30
+        // 60 s allows large library page fetches (thousands of tracks) to complete.
+        config.timeoutIntervalForResource = 60
         config.httpMaximumConnectionsPerHost = 4
         // Fail quickly for bad/offline LMS hosts. The connection manager owns
         // reachability/retry; waiting here makes visible UI requests feel hung.
         config.waitsForConnectivity = false
+        // Always bypass local cache for JSON-RPC — LMS state changes frequently.
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         return URLSession(configuration: config)
     }()

@@ -529,12 +529,43 @@ final class OrpheusDSPEngine: NSObject, ObservableObject {
         }
     }
 
-    // MARK: - Bluetooth scan for device name auto-switch
+    // MARK: - Bluetooth / route-change auto-switch
+
+    /// Preset ID that was active before a Bluetooth auto-switch; restored on disconnect.
+    private var preAutoSwitchPresetID: UUID? = nil
 
     private func startBluetoothScan() {
         centralManager = CBCentralManager(delegate: self, queue: nil, options: [
             CBCentralManagerOptionShowPowerAlertKey: false
         ])
+        // Also subscribe to AVAudioSession route changes (more reliable for BT audio).
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(audioRouteDidChange(_:)),
+            name: AVAudioSession.routeChangeNotification,
+            object: nil
+        )
+    }
+
+    @objc private nonisolated func audioRouteDidChange(_ note: Notification) {
+        let session = AVAudioSession.sharedInstance()
+        let outputs = session.currentRoute.outputs
+        let newName = outputs.first(where: {
+            $0.portType == .bluetoothA2DP || $0.portType == .bluetoothHFP || $0.portType == .bluetoothLE
+        })?.portName
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            if let name = newName, !name.isEmpty {
+                if self.connectedBluetoothDeviceName != name {
+                    self.connectedBluetoothDeviceName = name
+                    self.autoSwitchPresetIfNeeded(for: name)
+                }
+            } else {
+                self.restorePreAutoSwitchPreset()
+                self.connectedBluetoothDeviceName = nil
+            }
+        }
     }
 
     func autoSwitchPresetIfNeeded(for deviceName: String) {
@@ -543,7 +574,29 @@ final class OrpheusDSPEngine: NSObject, ObservableObject {
             return deviceName.lowercased().contains(pdn.lowercased()) ||
                    pdn.lowercased().contains(deviceName.lowercased())
         }) else { return }
+        // Save the current preset ID so we can restore it on disconnect.
+        preAutoSwitchPresetID = activePresetID
         loadPreset(match)
+        ServerLogStore.shared.info("Orpheus: auto-switched to preset \"\(match.name)\" for \"\(deviceName)\"")
+    }
+
+    private func restorePreAutoSwitchPreset() {
+        guard let restoreID = preAutoSwitchPresetID,
+              let preset = presets.first(where: { $0.id == restoreID }) else {
+            preAutoSwitchPresetID = nil
+            return
+        }
+        preAutoSwitchPresetID = nil
+        loadPreset(preset)
+        ServerLogStore.shared.info("Orpheus: restored preset \"\(preset.name)\" after Bluetooth disconnect")
+    }
+
+    /// Assign the device-name substring for an existing preset (used from Headphone Profiles UI).
+    func setDeviceName(_ name: String?, for presetID: UUID) {
+        guard let idx = presets.firstIndex(where: { $0.id == presetID }) else { return }
+        let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        presets[idx].deviceName = trimmed.isEmpty ? nil : trimmed
+        saveSettingsNow()
     }
 }
 
@@ -572,6 +625,7 @@ extension OrpheusDSPEngine: CBCentralManagerDelegate {
         error: Error?
     ) {
         Task { @MainActor [weak self] in
+            self?.restorePreAutoSwitchPreset()
             self?.connectedBluetoothDeviceName = nil
         }
     }

@@ -112,6 +112,10 @@ struct NowPlayingView: View {
 
     @State private var navigateToArtist: Artist? = nil
     @State private var navigateToAlbum: Album? = nil
+    @State private var showShareSheet: Bool = false
+    @State private var showJournalSheet: Bool = false
+    @State private var journalTrack: Track? = nil
+    @State private var showOrpheus: Bool = false
 
     private var qualityPillInfo: (label: String, dotColor: Color, shouldPulse: Bool) {
         let path = signalPath
@@ -136,19 +140,6 @@ struct NowPlayingView: View {
         )
     }
 
-    private var shouldShowQueuePosition: Bool {
-        player.queue.count > 1 && player.currentIndex >= 0 && player.currentIndex < player.queue.count
-    }
-
-    private var queuePositionText: String {
-        let pos = player.currentIndex + 1
-        let tot = player.queue.count
-        let isSingleWork = player.queueWorkGroups.count == 1
-            && player.currentWorkGroup != nil
-            && player.currentTrack?.work != nil
-            && player.queueWorkGroups.first?.tracks.count == tot
-        return isSingleWork ? "Movement \(pos) of \(tot)" : "\(pos) of \(tot)"
-    }
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -161,7 +152,7 @@ struct NowPlayingView: View {
                 let safeTop = geo.safeAreaInsets.top
                 let safeBottom = geo.safeAreaInsets.bottom
                 let usableHeight = max(geo.size.height - safeTop - safeBottom, 480)
-                let artworkSide = geo.size.width  // ARC: full-width artwork
+                let artworkSide = geo.size.width - 48  // 24pt padding each side
 
                 VStack(spacing: 0) {
                     headerBar
@@ -169,21 +160,19 @@ struct NowPlayingView: View {
                         .padding(.top, safeTop + 6)
                         .padding(.bottom, 4)
 
+                    FocusModeBanner()
+                        .animation(.spring(response: 0.3), value: FocusMode.shared.isActive)
+
                     ScrollView(showsIndicators: false) {
                         VStack(spacing: 0) {
                             artworkSection(side: artworkSide)
-                                .padding(.horizontal, -16) // break out of parent padding for edge-to-edge
-                                .padding(.top, 0)
-                                .padding(.bottom, 0)
-
-                            if shouldShowQueuePosition {
-                                queuePositionLabel
-                                    .padding(.bottom, 10)
-                            }
+                                .padding(.horizontal, 8)
+                                .padding(.top, 8)
+                                .padding(.bottom, 20)
 
                             trackInfo
                                 .padding(.horizontal, 8)
-                                .padding(.top, 16)
+                                .padding(.top, 0)
                                 .padding(.bottom, 16)
 
                             if let detail = ooWorkDetail {
@@ -198,10 +187,15 @@ struct NowPlayingView: View {
                                 .padding(.bottom, 20)
 
                             transportControls
-                                .padding(.bottom, 30)
+                                .padding(.bottom, 28)
 
                             bottomToolbar
-                                .padding(.bottom, max(safeBottom, 20))
+                                .padding(.bottom, 16)
+
+                            if let track = player.currentTrack {
+                                InlineLyricsSection(track: track)
+                                    .padding(.bottom, max(safeBottom, 24))
+                            }
                         }
                         .padding(.horizontal, 16)
                         .frame(
@@ -223,7 +217,6 @@ struct NowPlayingView: View {
             }
         }
         .overlay(alignment: .topTrailing) { debugOverlay }
-        .gesture(swipeDownToDismissGesture)
         .preferredColorScheme(.dark)
         .statusBarHidden(false)
         .sheet(isPresented: $showSignalPath) {
@@ -238,15 +231,17 @@ struct NowPlayingView: View {
             ArtworkFullScreenView(coverid: player.currentTrack?.coverid)
         }
         .confirmationDialog("Now Playing", isPresented: $showMoreActions, titleVisibility: .visible) {
-            Button("Queue") {
+            Button("Sleep Timer") {
                 Haptics.light()
-                withAnimation { showQueuePanel = true }
+                showSleepTimer = true
             }
-            if let track = player.currentTrack {
-                Button("Play Next") {
-                    Haptics.light()
-                    player.playNext([track])
-                }
+            Button(player.isRadioEnabled ? "Radio Off" : "Radio On") {
+                Haptics.light()
+                player.isRadioEnabled.toggle()
+            }
+            Button(FocusMode.shared.isActive ? "Deactivate Focus Mode" : "Focus Mode") {
+                Haptics.medium()
+                FocusMode.shared.toggle(currentTrack: player.currentTrack)
             }
             Button("Lyrics") {
                 Haptics.light()
@@ -257,17 +252,14 @@ struct NowPlayingView: View {
                 showSignalPath = true
             }
             if let track = player.currentTrack {
+                Button("Play Next") {
+                    Haptics.light()
+                    player.playNext([track])
+                }
                 Button("Add to Playlist") {
                     Haptics.light()
                     showAddToPlaylist = true
                 }
-                Button(likedTracks.isLiked(player.currentTrack) ? "Unlike" : "Like") {
-                    likedTracks.toggle(track)
-                }
-            }
-            Button(player.isPlaying ? "Pause" : "Play") {
-                Haptics.medium()
-                player.togglePlayPause()
             }
             Button("Cancel", role: .cancel) { }
         }
@@ -317,6 +309,26 @@ struct NowPlayingView: View {
                 }
             }
         }
+        .sheet(isPresented: $showShareSheet) {
+            if let track = player.currentTrack {
+                ShareSheet(items: [HyperionShare.nowPlayingText(track: track)])
+                    .ignoresSafeArea()
+            }
+        }
+        .sheet(isPresented: $showJournalSheet) {
+            if let track = journalTrack {
+                JournalEntrySheet(track: track)
+            }
+        }
+        .onChange(of: player.currentTrack?.id) { oldID, newID in
+            // Offer the journal when the track advances, if the user enabled prompts.
+            guard UserDefaults.standard.bool(forKey: "hyperion.journal.promptEnabled"),
+                  let oldID, oldID != newID, !showJournalSheet else { return }
+            if let finished = player.queue.first(where: { $0.id == oldID }) {
+                journalTrack    = finished
+                showJournalSheet = true
+            }
+        }
         .sheet(item: $navigateToArtist) { artist in
             NavigationStack {
                 ArtistDetailView(artist: artist)
@@ -328,6 +340,10 @@ struct NowPlayingView: View {
                 AlbumDetailView(album: album)
             }
             .environment(\.hyperionBottomOverlayHeight, 0)
+        }
+        .sheet(isPresented: $showOrpheus) {
+            OrpheusView()
+                .environment(\.hyperionBottomOverlayHeight, 0)
         }
     }
 
@@ -362,8 +378,7 @@ struct NowPlayingView: View {
 
     @ViewBuilder
     private var backgroundLayer: some View {
-        // ARC-style: deep olive-green background, always
-        Color(hex: "#1a1e14")
+        FlatTintBackground(coverid: player.currentTrack?.coverid ?? "")
     }
 
     private var backgroundChrome: some View {
@@ -415,9 +430,8 @@ struct NowPlayingView: View {
     // MARK: - Artwork
 
     private func artworkSection(side: CGFloat) -> some View {
-        // ARC-style: full-width, no rounded corners, no shadow
         ZStack {
-            Color.black
+            Color.black.opacity(0.4)
             ArtworkView(
                 coverid: player.currentTrack?.coverid,
                 size: side,
@@ -425,10 +439,11 @@ struct NowPlayingView: View {
             )
         }
         .frame(width: side, height: side)
-        .clipped()
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .shadow(color: .black.opacity(0.55), radius: 28, x: 0, y: 12)
         .offset(x: artworkDragOffset)
         .opacity(artworkOpacity)
-        .contentShape(Rectangle())
+        .contentShape(RoundedRectangle(cornerRadius: 16))
         .gesture(artworkSwipeGesture)
         .onTapGesture { showArtworkFullScreen = true }
     }
@@ -486,28 +501,26 @@ struct NowPlayingView: View {
         }
     }
 
-    // MARK: - Queue position label
-
-    private var queuePositionLabel: some View {
-        Text(queuePositionText)
-            .font(.roonBody(11, weight: .medium))
-            .foregroundColor(.roonTertiary)
-            .kerning(0.3)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 8)
-    }
-
     // MARK: - Track info
 
     private var trackInfo: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(player.currentTrack?.title ?? "")
-                .font(.system(size: 22, weight: .bold, design: .default))
-                .foregroundColor(.roonPrimary)
-                .multilineTextAlignment(.leading)
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
+        VStack(alignment: .center, spacing: 6) {
+            Button {
+                if let album = resolvedAlbum() {
+                    Haptics.light()
+                    navigateToAlbum = album
+                }
+            } label: {
+                Text(player.currentTrack?.title ?? "")
+                    .font(.system(size: 28, weight: .bold, design: .default))
+                    .foregroundColor(.roonPrimary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .center)
+            }
+            .buttonStyle(.plain)
+            .disabled(resolvedAlbum() == nil)
 
             let artistLine = player.currentTrack?.composer
                 ?? player.currentTrack?.albumartist
@@ -515,33 +528,20 @@ struct NowPlayingView: View {
                 ?? ""
             if !artistLine.isEmpty {
                 Button {
+                    Haptics.light()
                     navigateToArtist = resolvedArtist(named: artistLine)
                 } label: {
                     Text(artistLine)
-                        .font(.system(size: 15, weight: .regular, design: .default))
-                        .foregroundColor(.roonAccent)
-                        .multilineTextAlignment(.leading)
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .buttonStyle(.plain)
-            }
-
-            if let albumName = player.currentTrack?.album, !albumName.isEmpty {
-                Button {
-                    if let album = resolvedAlbum() { navigateToAlbum = album }
-                } label: {
-                    Text(albumName)
-                        .font(.system(size: 13, weight: .regular, design: .default))
+                        .font(.system(size: 16, weight: .regular, design: .default))
                         .foregroundColor(.roonSecondary)
-                        .multilineTextAlignment(.leading)
+                        .multilineTextAlignment(.center)
                         .lineLimit(1)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(maxWidth: .infinity, alignment: .center)
                 }
                 .buttonStyle(.plain)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity)
     }
 
     private func resolvedArtist(named name: String) -> Artist {
@@ -550,51 +550,91 @@ struct NowPlayingView: View {
     }
 
     private func resolvedAlbum() -> Album? {
-        guard let albumID = player.currentTrack?.albumID else { return nil }
-        return LibraryViewModel.shared.albums.first { $0.id == albumID }
+        guard let track = player.currentTrack else { return nil }
+        // Try the in-memory library first (fast path).
+        if let albumID = track.albumID,
+           let found = LibraryViewModel.shared.albums.first(where: { $0.id == albumID }) {
+            return found
+        }
+        // Fallback: construct a lightweight Album from track metadata so the
+        // album screen still opens even when the library hasn't been fully loaded.
+        guard let albumName = track.album, !albumName.isEmpty else { return nil }
+        return Album(
+            id:               track.albumID ?? 0,
+            album:            albumName,
+            artist:           track.albumartist ?? track.trackartist,
+            year:             track.year,
+            artwork_track_id: track.coverid,
+            composer:         track.composer,
+            isClassical:      track.isClassical
+        )
     }
 
     // MARK: - Progress
 
     private var progressSection: some View {
         VStack(spacing: 8) {
-            ProgressBarView(
-                progress:     player.progress,
-                isDragging:   $isDraggingProgress,
-                dragProgress: $dragProgress
-            ) { finalProgress in
-                player.seek(to: finalProgress * max(player.duration, 1))
-            }
-            .frame(height: 22)
-            .accessibilityLabel("Playback position")
-            .accessibilityValue("\(formatTime(player.currentTime)) of \(formatTime(player.duration))")
-            .accessibilityAdjustableAction { direction in
-                switch direction {
-                case .increment: player.seek(to: min(player.currentTime + 10, player.duration))
-                case .decrement: player.seek(to: max(player.currentTime - 10, 0))
-                @unknown default: break
+            // Use the segmented scrubber when the current track is part of a
+            // multi-movement work and the queue contains all those movements.
+            if let group = player.currentWorkGroup,
+               group.tracks.count > 1,
+               let currentID = player.currentTrack?.id,
+               group.tracks.contains(where: { $0.id == currentID }) {
+                SegmentedScrubberView(
+                    group:           group,
+                    currentTrackID:  currentID,
+                    progress:        player.progress,
+                    currentTime:     player.currentTime,
+                    duration:        player.duration > 0 ? player.duration : (player.currentTrack?.duration ?? 0),
+                    isDragging:      $isDraggingProgress,
+                    dragProgress:    $dragProgress,
+                    queue:           player.queue
+                ) { fraction in
+                    player.seek(to: fraction * max(player.duration, 1))
+                } onJumpToMovement: { queueIndex in
+                    Haptics.light()
+                    player.playTrack(at: queueIndex)
                 }
-            }
+            } else {
+                ProgressBarView(
+                    progress:     player.progress,
+                    isDragging:   $isDraggingProgress,
+                    dragProgress: $dragProgress
+                ) { finalProgress in
+                    player.seek(to: finalProgress * max(player.duration, 1))
+                }
+                .frame(height: 22)
+                .accessibilityLabel("Playback position")
+                .accessibilityValue("\(formatTime(player.currentTime)) of \(formatTime(player.duration))")
+                .accessibilityAdjustableAction { direction in
+                    switch direction {
+                    case .increment: player.seek(to: min(player.currentTime + 10, player.duration))
+                    case .decrement: player.seek(to: max(player.currentTime - 10, 0))
+                    @unknown default: break
+                    }
+                }
 
-            HStack {
-                let effectiveDuration = player.duration > 0
-                    ? player.duration
-                    : (player.currentTrack?.duration ?? 0)
-                let displayTime = isDraggingProgress
-                    ? dragProgress * effectiveDuration
-                    : player.currentTime
+                HStack {
+                    let effectiveDuration = player.duration > 0
+                        ? player.duration
+                        : (player.currentTrack?.duration ?? 0)
+                    let displayTime = isDraggingProgress
+                        ? dragProgress * effectiveDuration
+                        : player.currentTime
+                    let remaining = max(0, effectiveDuration - displayTime)
 
-                Text(formatTime(displayTime))
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.78))
-                    .monospacedDigit()
+                    Text(formatTime(displayTime))
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.55))
+                        .monospacedDigit()
 
-                Spacer()
+                    Spacer()
 
-                Text(formatTime(effectiveDuration))
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.78))
-                    .monospacedDigit()
+                    Text("-\(formatTime(remaining))")
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.55))
+                        .monospacedDigit()
+                }
             }
         }
     }
@@ -603,49 +643,7 @@ struct NowPlayingView: View {
 
     private var transportControls: some View {
         HStack(spacing: 0) {
-            SmallTransportButton(
-                systemName: "shuffle",
-                isActive: player.isShuffle,
-                accessibilityLabel: player.isShuffle ? "Shuffle on" : "Shuffle off"
-            ) {
-                Haptics.light()
-                player.toggleShuffle()
-            }
-
-            Spacer(minLength: 0)
-
-            MainTransportButton(systemName: "backward.fill", size: 28, accessibilityLabel: "Previous track") {
-                Haptics.light()
-                player.previousTrack()
-            }
-
-            Spacer(minLength: 0)
-
-            Button {
-                Haptics.medium()
-                player.togglePlayPause()
-            } label: {
-                Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 44, weight: .medium))
-                    .foregroundColor(.roonPrimary)
-                    .frame(width: 92, height: 92)
-                    .contentShape(Rectangle())
-                    .offset(x: player.isPlaying ? 0 : 2)
-            }
-            .buttonStyle(.plain)
-            .scaleEffect(player.isPlaying ? 1.0 : 0.98)
-            .animation(.spring(response: 0.28, dampingFraction: 0.76), value: player.isPlaying)
-            .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
-
-            Spacer(minLength: 0)
-
-            MainTransportButton(systemName: "forward.fill", size: 28, accessibilityLabel: "Next track") {
-                Haptics.light()
-                player.nextTrack()
-            }
-
-            Spacer(minLength: 0)
-
+            // Repeat — flanking control, 20pt
             SmallTransportButton(
                 systemName: repeatIcon,
                 isActive: player.repeatMode > 0,
@@ -653,6 +651,53 @@ struct NowPlayingView: View {
             ) {
                 Haptics.light()
                 player.cycleRepeat()
+            }
+
+            Spacer(minLength: 0)
+
+            // Previous track — skip button
+            MainTransportButton(systemName: "backward.end.fill", size: 24, accessibilityLabel: "Previous track") {
+                Haptics.light()
+                player.previousTrack()
+            }
+
+            Spacer(minLength: 0)
+
+            // Play / Pause — large center button
+            Button {
+                Haptics.medium()
+                player.togglePlayPause()
+            } label: {
+                Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: 36, weight: .medium))
+                    .foregroundColor(.roonPrimary)
+                    .frame(width: 76, height: 76)
+                    .contentShape(Rectangle())
+                    .offset(x: player.isPlaying ? 0 : 2)
+            }
+            .buttonStyle(.plain)
+            .scaleEffect(player.isPlaying ? 1.0 : 0.97)
+            .animation(.spring(response: 0.28, dampingFraction: 0.76), value: player.isPlaying)
+            .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
+
+            Spacer(minLength: 0)
+
+            // Next track — skip button
+            MainTransportButton(systemName: "forward.end.fill", size: 24, accessibilityLabel: "Next track") {
+                Haptics.light()
+                player.nextTrack()
+            }
+
+            Spacer(minLength: 0)
+
+            // Shuffle — flanking control, 20pt
+            SmallTransportButton(
+                systemName: "shuffle",
+                isActive: player.isShuffle,
+                accessibilityLabel: player.isShuffle ? "Shuffle on" : "Shuffle off"
+            ) {
+                Haptics.light()
+                player.toggleShuffle()
             }
         }
     }
@@ -669,20 +714,22 @@ struct NowPlayingView: View {
         }
     }
 
-    // MARK: - Bottom toolbar
+    // MARK: - Bottom toolbar (5 buttons: queue · heart · share · DSP · more)
 
     private var bottomToolbar: some View {
         HStack(spacing: 0) {
-            BottomToolbarButton(systemName: "list.bullet.below.rectangle", accessibilityLabel: "Queue") {
+            // Queue
+            BottomToolbarButton(systemName: "line.3.horizontal", accessibilityLabel: "Queue") {
                 Haptics.light()
                 withAnimation { showQueuePanel = true }
             }
 
             Spacer(minLength: 0)
 
+            // Like / heart
             BottomToolbarButton(
                 systemName: likedTracks.isLiked(player.currentTrack) ? "heart.fill" : "heart",
-                tint: likedTracks.isLiked(player.currentTrack) ? .red : .white.opacity(0.36),
+                tint: likedTracks.isLiked(player.currentTrack) ? .red : .roonSecondary,
                 accessibilityLabel: likedTracks.isLiked(player.currentTrack) ? "Unlike" : "Like"
             ) {
                 Haptics.light()
@@ -695,43 +742,27 @@ struct NowPlayingView: View {
 
             Spacer(minLength: 0)
 
-            // Sleep timer button — badge shows remaining minutes when active
-            ZStack(alignment: .topTrailing) {
-                BottomToolbarButton(
-                    systemName: "moon.zzz.fill",
-                    tint: sleepTimer.isActive ? .roonAccent : .white.opacity(0.36),
-                    accessibilityLabel: sleepTimer.isActive ? "Sleep timer active" : "Sleep timer"
-                ) {
-                    Haptics.light()
-                    showSleepTimer = true
-                }
-                if sleepTimer.isActive, case .minutes = sleepTimer.mode {
-                    let mins = max(1, Int(sleepTimer.timeRemaining / 60) + (sleepTimer.timeRemaining.truncatingRemainder(dividingBy: 60) > 0 ? 1 : 0))
-                    Text("\(mins)")
-                        .font(.roonMono(8, weight: .semibold))
-                        .foregroundColor(Color.roonBase)
-                        .padding(.horizontal, 3)
-                        .padding(.vertical, 1)
-                        .background(Color.roonAccent)
-                        .clipShape(Capsule())
-                        .offset(x: 6, y: -2)
-                }
+            // Share
+            BottomToolbarButton(systemName: "square.and.arrow.up", accessibilityLabel: "Share") {
+                Haptics.light()
+                showShareSheet = true
             }
 
             Spacer(minLength: 0)
 
-            // Radio mode toggle
+            // DSP / EQ
             BottomToolbarButton(
-                systemName: "dot.radiowaves.left.and.right",
-                tint: player.isRadioEnabled ? .roonAccent : .white.opacity(0.36),
-                accessibilityLabel: player.isRadioEnabled ? "Radio on" : "Radio off"
+                systemName: "dial.medium",
+                tint: .roonSecondary,
+                accessibilityLabel: "DSP"
             ) {
                 Haptics.light()
-                player.isRadioEnabled.toggle()
+                showOrpheus = true
             }
 
             Spacer(minLength: 0)
 
+            // More (ellipsis) — includes sleep timer, radio, signal path, focus mode
             BottomToolbarButton(systemName: "ellipsis", accessibilityLabel: "More options") {
                 Haptics.light()
                 showMoreActions = true
@@ -1070,22 +1101,22 @@ struct ProgressBarView: View {
             let displayProgress = isDragging ? dragProgress : progress
             let clampedDisplay = max(0, min(1, displayProgress))
             let filledWidth = width * clampedDisplay
-            let thumbOffset = max(0, min(width - 18, filledWidth - 9))
+            let thumbOffset = max(0, min(width - 16, filledWidth - 8))
 
             ZStack(alignment: .leading) {
                 Capsule()
-                    .fill(Color.white.opacity(0.22))
-                    .frame(height: 4)
+                    .fill(Color.white.opacity(0.18))
+                    .frame(height: 3)
                     .frame(maxWidth: .infinity)
 
                 Capsule()
                     .fill(Color.white.opacity(0.96))
-                    .frame(width: max(0, filledWidth), height: 4)
+                    .frame(width: max(0, filledWidth), height: 3)
 
                 Circle()
                     .fill(Color.white)
-                    .frame(width: 18, height: 18)
-                    .shadow(color: .black.opacity(0.30), radius: 5)
+                    .frame(width: 16, height: 16)
+                    .shadow(color: .black.opacity(0.35), radius: 4)
                     .offset(x: thumbOffset)
                     .scaleEffect(isDragging ? 1.18 : 1.0)
                     .animation(.spring(response: 0.2), value: isDragging)
@@ -1417,5 +1448,330 @@ struct QualityMarkerView: View {
 
     private var dotColor: Color {
         format?.dotColor ?? Color.roonTertiary
+    }
+}
+
+// MARK: - Movement-level segmented scrubber
+
+/// Replaces the standard progress bar when the current track belongs to a
+/// multi-movement work. Each segment represents one movement, width
+/// proportional to its duration. The active segment is draggable for
+/// within-movement scrubbing; tapping another segment jumps to it.
+struct SegmentedScrubberView: View {
+    let group: WorkGroup
+    let currentTrackID: Int
+    let progress: Double        // 0–1 within the current movement
+    let currentTime: Double     // seconds elapsed in current movement
+    let duration: Double        // duration of current movement
+    @Binding var isDragging: Bool
+    @Binding var dragProgress: Double
+    let queue: [Track]
+    let onSeekInMovement: (Double) -> Void
+    let onJumpToMovement: (Int) -> Void
+
+    init(group: WorkGroup,
+         currentTrackID: Int,
+         progress: Double,
+         currentTime: Double,
+         duration: Double,
+         isDragging: Binding<Bool>,
+         dragProgress: Binding<Double>,
+         queue: [Track],
+         onSeekInMovement: @escaping (Double) -> Void,
+         onJumpToMovement: @escaping (Int) -> Void) {
+        self.group = group
+        self.currentTrackID = currentTrackID
+        self.progress = progress
+        self.currentTime = currentTime
+        self.duration = duration
+        self._isDragging = isDragging
+        self._dragProgress = dragProgress
+        self.queue = queue
+        self.onSeekInMovement = onSeekInMovement
+        self.onJumpToMovement = onJumpToMovement
+    }
+
+    private var totalDuration: Double {
+        group.tracks.compactMap(\.duration).reduce(0, +)
+    }
+
+    private var currentMovementIndex: Int {
+        group.tracks.firstIndex(where: { $0.id == currentTrackID }) ?? 0
+    }
+
+    private var currentMovement: Track? {
+        group.tracks.first(where: { $0.id == currentTrackID })
+    }
+
+    private func queueIndex(for track: Track) -> Int? {
+        queue.firstIndex(where: { $0.id == track.id })
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // Movement name
+            if let movement = currentMovement {
+                Text(movement.title)
+                    .font(.system(size: 11, weight: .semibold, design: .serif))
+                    .foregroundColor(.white.opacity(0.70))
+                    .lineLimit(1)
+                    .transition(.opacity)
+                    .id(movement.id)
+            }
+
+            // Segmented bar
+            GeometryReader { geo in
+                let total = max(totalDuration, 1)
+                let gap: CGFloat = 3
+                let gapTotal = gap * CGFloat(group.tracks.count - 1)
+                let barWidth = max(0, geo.size.width - gapTotal)
+
+                HStack(spacing: gap) {
+                    ForEach(Array(group.tracks.enumerated()), id: \.element.id) { idx, track in
+                        let movDur = max(track.duration ?? 1, 1)
+                        let segWidth = max(4, barWidth * CGFloat(movDur / total))
+                        let isCurrent = track.id == currentTrackID
+                        let isPast = idx < currentMovementIndex
+
+                        SegmentView(
+                            width:      segWidth,
+                            isCurrent:  isCurrent,
+                            isPast:     isPast,
+                            progress:   isCurrent ? (isDragging ? dragProgress : progress) : (isPast ? 1.0 : 0.0),
+                            isDragging: isCurrent ? isDragging : false
+                        )
+                        .frame(width: segWidth, height: 22)
+                        .contentShape(Rectangle())
+                        .gesture(
+                            isCurrent
+                            ? AnyGesture(DragGesture(minimumDistance: 0)
+                                .onChanged { v in
+                                    if !isDragging { Haptics.light() }
+                                    isDragging   = true
+                                    dragProgress = max(0, min(1, v.location.x / segWidth))
+                                }
+                                .onEnded { _ in
+                                    onSeekInMovement(dragProgress)
+                                    isDragging = false
+                                })
+                            : AnyGesture(TapGesture()
+                                .onEnded {
+                                    if let qi = queueIndex(for: track) {
+                                        onJumpToMovement(qi)
+                                    }
+                                })
+                        )
+                    }
+                }
+            }
+            .frame(height: 22)
+
+            // Time labels
+            HStack {
+                let displayTime = isDragging ? dragProgress * max(duration, 1) : currentTime
+                Text(formatMovTime(displayTime))
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.65))
+                    .monospacedDigit()
+
+                Spacer()
+
+                // Show mvt remaining / total work
+                let movRemaining = max(0, duration - (isDragging ? dragProgress * max(duration, 1) : currentTime))
+                Text("-\(formatMovTime(movRemaining))  /  \(formatMovTime(totalDuration))")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.65))
+                    .monospacedDigit()
+            }
+        }
+    }
+
+    private func formatMovTime(_ t: Double) -> String {
+        TimeFormatting.formatDuration(t, placeholder: "—")
+    }
+}
+
+// MARK: - Inline synced lyrics (embedded below transport controls)
+
+private struct InlineLyricsSection: View {
+    let track: Track
+    @ObservedObject private var player = PlayerViewModel.shared
+
+    struct ILDLine: Identifiable {
+        let id: UUID
+        let text: String
+        let time: TimeInterval
+        let isInterlude: Bool
+    }
+
+    @State private var displayLines: [ILDLine] = []
+    @State private var plainText: String? = nil
+    @State private var activeIndex: Int = 0
+
+    var body: some View {
+        Group {
+            if !displayLines.isEmpty {
+                syncedView
+                    .frame(height: 200)
+            } else if let plain = plainText, !plain.isEmpty {
+                Text(plain)
+                    .font(.system(size: 13, weight: .regular))
+                    .foregroundColor(.white.opacity(0.32))
+                    .multilineTextAlignment(.center)
+                    .lineLimit(3)
+                    .padding(.horizontal, 24)
+                    .frame(maxWidth: .infinity)
+            }
+            // unavailable → zero height, no space taken
+        }
+        .task(id: track.id) { await load() }
+        .onChange(of: player.currentTime) { _, t in updateActive(t) }
+    }
+
+    @ViewBuilder
+    private var syncedView: some View {
+        ScrollViewReader { proxy in
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 0) {
+                    Color.clear.frame(height: 64)
+                    ForEach(Array(displayLines.enumerated()), id: \.element.id) { idx, line in
+                        let dist = abs(idx - activeIndex)
+                        let isActive = dist == 0
+                        let opacity: Double = isActive ? 1.0 : dist == 1 ? 0.42 : dist == 2 ? 0.22 : 0.10
+                        Text(line.text)
+                            .font(isActive
+                                  ? .system(size: 15, weight: .semibold)
+                                  : .system(size: 14, weight: .regular))
+                            .foregroundColor(.white.opacity(opacity))
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 28)
+                            .padding(.vertical, isActive ? 7 : 4)
+                            .frame(maxWidth: .infinity)
+                            .id(line.id)
+                            .animation(.easeOut(duration: 0.18), value: activeIndex)
+                            .onTapGesture {
+                                guard !line.isInterlude else { return }
+                                player.seek(to: line.time)
+                            }
+                    }
+                    Color.clear.frame(height: 64)
+                }
+            }
+            .onChange(of: activeIndex) { _, idx in
+                guard idx < displayLines.count else { return }
+                withAnimation(.easeInOut(duration: 0.28)) {
+                    proxy.scrollTo(displayLines[idx].id, anchor: .center)
+                }
+            }
+            .onAppear {
+                updateActive(player.currentTime)
+                if activeIndex < displayLines.count {
+                    proxy.scrollTo(displayLines[activeIndex].id, anchor: .center)
+                }
+            }
+        }
+        .mask(
+            LinearGradient(stops: [
+                .init(color: .clear, location: 0.0),
+                .init(color: .black, location: 0.13),
+                .init(color: .black, location: 0.87),
+                .init(color: .clear, location: 1.0)
+            ], startPoint: .top, endPoint: .bottom)
+        )
+        .allowsHitTesting(true)
+    }
+
+    private func updateActive(_ time: TimeInterval) {
+        let adj = time + 0.3
+        var result = 0
+        for (i, line) in displayLines.enumerated() {
+            if line.time <= adj { result = i } else { break }
+        }
+        if result != activeIndex { activeIndex = result }
+    }
+
+    private func load() async {
+        displayLines = []
+        plainText    = nil
+        activeIndex  = 0
+
+        let cached = LyricsService.shared.cachedResult(trackID: track.id)
+        let result: LyricsResult
+        if let cached {
+            result = cached
+        } else {
+            let artist = track.composer ?? track.albumartist ?? track.trackartist ?? ""
+            let title  = track.work?.isEmpty == false ? track.work! : track.title
+            result = await LyricsService.shared.lyrics(
+                artistName: artist.isEmpty ? (track.albumartist ?? track.title) : artist,
+                trackName:  title,
+                albumName:  (track.album?.isEmpty == false) ? track.album : nil,
+                duration:   (track.duration ?? 0) > 0 ? track.duration : nil,
+                trackID:    track.id
+            )
+        }
+
+        switch result {
+        case .synced(let lines):
+            let built = buildDisplayLines(lines)
+            withAnimation(.easeIn(duration: 0.2)) { displayLines = built }
+        case .plain(let text):
+            withAnimation { plainText = text }
+        default:
+            break
+        }
+    }
+
+    private func buildDisplayLines(_ lines: [LyricsLine]) -> [ILDLine] {
+        var result: [ILDLine] = []
+        for (i, line) in lines.enumerated() {
+            if i > 0 {
+                let gap = line.time - lines[i - 1].time
+                if gap > 8 {
+                    result.append(ILDLine(id: UUID(), text: "• • •",
+                                          time: lines[i - 1].time + gap / 2, isInterlude: true))
+                }
+            }
+            let text = line.text.trimmingCharacters(in: .whitespaces)
+            result.append(ILDLine(id: line.id, text: text.isEmpty ? "•" : text,
+                                  time: line.time, isInterlude: false))
+        }
+        return result
+    }
+}
+
+private struct SegmentView: View {
+    let width: CGFloat
+    let isCurrent: Bool
+    let isPast: Bool
+    let progress: Double
+    let isDragging: Bool
+
+    var body: some View {
+        ZStack(alignment: .leading) {
+            // Track (background)
+            Capsule()
+                .fill(Color.white.opacity(0.18))
+                .frame(height: isCurrent ? 4 : 3)
+
+            // Fill
+            Capsule()
+                .fill(Color.white.opacity(isPast ? 0.55 : (isCurrent ? 0.95 : 0.20)))
+                .frame(width: max(0, width * CGFloat(progress)), height: isCurrent ? 4 : 3)
+
+            // Thumb on active segment
+            if isCurrent {
+                let thumbOffset = max(0, min(width - 16, width * CGFloat(progress) - 8))
+                Circle()
+                    .fill(Color.white)
+                    .frame(width: 16, height: 16)
+                    .shadow(color: .black.opacity(0.25), radius: 4)
+                    .offset(x: thumbOffset)
+                    .scaleEffect(isDragging ? 1.2 : 1.0)
+                    .animation(.spring(response: 0.2), value: isDragging)
+            }
+        }
+        .frame(height: 22)
+        .clipShape(Capsule())
     }
 }

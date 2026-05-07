@@ -1037,9 +1037,36 @@ struct SettingsView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 } header: { Text("PLAYBACK") } footer: {
-                    Text("Crossfade does not apply to the Orpheus DSP engine path.")
+                    Text("Crossfade applies to both the Orpheus DSP engine and AVPlayer paths.")
                         .font(.roonBody(12)).foregroundColor(.roonTertiary)
                 }
+                .listRowBackground(Color.roonSurface)
+
+                Section {
+                    Toggle(isOn: Binding(
+                        get: { UserDefaults.standard.bool(forKey: "hyperion.journal.promptEnabled") },
+                        set: { UserDefaults.standard.set($0, forKey: "hyperion.journal.promptEnabled") }
+                    )) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Journal Prompts").foregroundColor(.roonPrimary)
+                            Text("Ask to add a note after each track")
+                                .font(.roonBody(12)).foregroundColor(.roonSecondary)
+                        }
+                    }
+                    .tint(.roonAccent)
+                } header: { Text("LISTENING JOURNAL") }
+                .listRowBackground(Color.roonSurface)
+
+                Section {
+                    NavigationLink(destination: ListeningProfileOnboarding()) {
+                        HStack {
+                            Text("Retune Profile").foregroundColor(.roonPrimary)
+                            Spacer()
+                            Text(UserDefaults.standard.string(forKey: "hyperion.profile.context") ?? "Not set")
+                                .font(.roonBody(13)).foregroundColor(.roonSecondary)
+                        }
+                    }
+                } header: { Text("LISTENING PROFILE") }
                 .listRowBackground(Color.roonSurface)
 
                 Section {

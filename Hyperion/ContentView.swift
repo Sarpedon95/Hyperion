@@ -24,6 +24,7 @@ struct ContentView: View {
     @State private var resumeBannerTask: Task<Void, Never>?
     /// Track whether initial data load has completed to prevent rapid tab switching during initialization.
     @State private var isInitialized: Bool = false
+    @State private var showOnboarding: Bool = !UserDefaults.standard.bool(forKey: "hyperion.onboarding.complete")
 
     enum Tab: CaseIterable {
         case home, search, library, queue, orpheus
@@ -79,6 +80,10 @@ struct ContentView: View {
         .fullScreenCover(isPresented: $showingNowPlaying) {
             NowPlayingView()
                 .environment(\.hyperionBottomOverlayHeight, 0)
+        }
+        .sheet(isPresented: $showOnboarding) {
+            ListeningProfileOnboarding()
+                .interactiveDismissDisabled(false)
         }
         .task {
             // Mark the tab bar interactive immediately — each tab shows its own
@@ -427,12 +432,12 @@ struct MiniPlayerView: View {
                         .id(player.currentTrack?.id ?? -1)
                 }
             }
-            .frame(height: 2)
+            .frame(height: 1.5)
 
             HStack(spacing: 12) {
                 HStack(spacing: 12) {
-                    ArtworkView(coverid: player.currentTrack?.coverid, size: 44)
-                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                    ArtworkView(coverid: player.currentTrack?.coverid, size: 40)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
                         .padding(.leading, 12)
 
                     VStack(alignment: .leading, spacing: 2) {
@@ -440,8 +445,6 @@ struct MiniPlayerView: View {
                             .font(.roonBody(14, weight: .semibold))
                             .foregroundColor(.roonPrimary)
                             .lineLimit(1)
-                            // POLISH: slide-in when the track changes so text
-                            // transitions smoothly rather than snapping.
                             .transition(.push(from: .trailing))
                             .id(player.currentTrack?.id)
                         Text(player.currentTrack?.composer ?? player.currentTrack?.albumartist ?? "")
@@ -457,18 +460,6 @@ struct MiniPlayerView: View {
                 .onTapGesture { showingNowPlaying = true }
 
                 Button {
-                    Haptics.light()
-                    player.previousTrack()
-                } label: {
-                    Image(systemName: "backward.fill")
-                        .font(.system(size: 17))
-                        .foregroundColor(.roonSecondary)
-                        .frame(width: 36, height: 44)
-                }
-                .buttonStyle(.borderless)
-                .accessibilityLabel("Previous track")
-
-                Button {
                     Haptics.medium()
                     player.togglePlayPause()
                 } label: {
@@ -478,8 +469,8 @@ struct MiniPlayerView: View {
                                 .tint(.roonPrimary)
                                 .scaleEffect(0.8)
                         } else {
-                            Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                                .font(.system(size: 22))
+                            Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                                .font(.system(size: 32))
                                 .foregroundColor(.roonPrimary)
                         }
                     }
@@ -487,19 +478,7 @@ struct MiniPlayerView: View {
                 }
                 .buttonStyle(.borderless)
                 .accessibilityLabel(player.isLoading ? "Loading" : (player.isPlaying ? "Pause" : "Play"))
-
-                Button {
-                    Haptics.light()
-                    player.nextTrack()
-                } label: {
-                    Image(systemName: "forward.fill")
-                        .font(.system(size: 17))
-                        .foregroundColor(.roonSecondary)
-                        .frame(width: 36, height: 44)
-                }
-                .buttonStyle(.borderless)
-                .accessibilityLabel("Next track")
-                .padding(.trailing, 8)
+                .padding(.trailing, 12)
             }
             .frame(height: 62)
         }

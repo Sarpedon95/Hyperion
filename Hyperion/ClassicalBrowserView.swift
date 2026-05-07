@@ -8,15 +8,17 @@ struct ClassicalBrowserView: View {
     @State private var selectedTab: ClassicalTab = .composers
 
     enum ClassicalTab: String, CaseIterable {
-        case composers  = "Composers"
-        case works      = "Works"
-        case performers = "Performers"
-        case search     = "Search"
+        case composers   = "Composers"
+        case works       = "Works"
+        case conductors  = "Conductors"
+        case performers  = "Performers"
+        case search      = "Search"
 
         var icon: String {
             switch self {
             case .composers:  return "person.3"
             case .works:      return "music.quarternote.3"
+            case .conductors: return "wand.and.stars"
             case .performers: return "person.wave.2"
             case .search:     return "magnifyingglass"
             }
@@ -34,6 +36,8 @@ struct ClassicalBrowserView: View {
                     ComposersTab(vm: vm)
                 case .works:
                     WorksTab()
+                case .conductors:
+                    ConductorsBrowserTab()
                 case .performers:
                     PerformersTab()
                 case .search:
@@ -700,5 +704,167 @@ final class ClassicalBrowserViewModel: ObservableObject {
         isLoading = true
         composers = (try? await OpenOpusService.shared.composersByLetter(letter)) ?? []
         isLoading = false
+    }
+}
+
+// MARK: - Conductors & Ensembles Browser
+
+private struct ConductorsBrowserTab: View {
+    @ObservedObject private var library = LibraryViewModel.shared
+    @State private var conductors: [(name: String, albums: [Album])] = []
+    @State private var ensembles: [(name: String, albums: [Album])] = []
+    @State private var isLoading = false
+    @State private var selectedSegment = 0
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Picker("", selection: $selectedSegment) {
+                Text("Conductors").tag(0)
+                Text("Ensembles").tag(1)
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+
+            if isLoading {
+                Spacer()
+                ProgressView().tint(.roonAccent)
+                Spacer()
+            } else {
+                let items = selectedSegment == 0 ? conductors : ensembles
+                if items.isEmpty {
+                    Spacer()
+                    VStack(spacing: 12) {
+                        Image(systemName: selectedSegment == 0 ? "wand.and.stars" : "music.quarternote.3")
+                            .font(.system(size: 40)).foregroundColor(.roonTertiary)
+                        Text(selectedSegment == 0 ? "No conductors found" : "No ensembles found")
+                            .font(.roonTitle(17)).foregroundColor(.roonSecondary)
+                        Text("Tag your classical tracks with conductor/ensemble names in LMS for them to appear here.")
+                            .font(.roonBody(13)).foregroundColor(.roonTertiary)
+                            .multilineTextAlignment(.center).padding(.horizontal, 32)
+                    }
+                    Spacer()
+                } else {
+                    List {
+                        ForEach(items, id: \.name) { entry in
+                            NavigationLink(destination: ConductorDetailView(name: entry.name, albums: entry.albums)) {
+                                HStack(spacing: 12) {
+                                    ZStack {
+                                        RoundedRectangle(cornerRadius: 8)
+                                            .fill(Color.roonElevated)
+                                            .frame(width: 44, height: 44)
+                                        Image(systemName: selectedSegment == 0 ? "wand.and.stars" : "music.quarternote.3")
+                                            .foregroundColor(.roonAccent)
+                                    }
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(entry.name)
+                                            .font(.roonBody(14, weight: .medium))
+                                            .foregroundColor(.roonPrimary).lineLimit(1)
+                                        Text("\(entry.albums.count) recording\(entry.albums.count == 1 ? "" : "s")")
+                                            .font(.roonBody(12)).foregroundColor(.roonSecondary)
+                                    }
+                                }
+                            }
+                            .listRowBackground(Color.roonSurface)
+                            .listRowSeparatorTint(Color.roonBorder)
+                        }
+                    }
+                    .listStyle(.plain)
+                    .scrollContentBackground(.hidden)
+                }
+            }
+        }
+        .background(Color.roonBase)
+        .task { await loadData() }
+    }
+
+    private func loadData() async {
+        guard conductors.isEmpty, ensembles.isEmpty else { return }
+        isLoading = true
+        let tracks = library.songs.isEmpty ? [] : library.songs
+        let classicalTracks = tracks.filter { ($0.isClassical ?? 0) != 0 }
+
+        // Parse conductor from trackartist field (LMS puts conductor in "artist" for classical)
+        var conductorMap: [String: Set<Int>] = [:]
+        var ensembleMap:  [String: Set<Int>] = [:]
+        let orchestraKeywords = ["orchestra", "philharmonic", "symphony", "chamber",
+                                  "ensemble", "quartet", "trio", "choir", "chorale", "band"]
+
+        for track in classicalTracks {
+            let artists = [track.trackartist, track.albumartist]
+                .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            for artist in artists {
+                let lower = artist.lowercased()
+                if orchestraKeywords.contains(where: { lower.contains($0) }) {
+                    if let aid = track.albumID { ensembleMap[artist, default: []].insert(aid) }
+                } else if !artist.isEmpty && artist != track.composer ?? "" {
+                    if let aid = track.albumID { conductorMap[artist, default: []].insert(aid) }
+                }
+            }
+        }
+
+        // Build Album objects from album IDs using loaded library data
+        let albumIndex = Dictionary(grouping: classicalTracks.compactMap { t -> Album? in
+            guard let aid = t.albumID, let title = t.album, !title.isEmpty else { return nil }
+            return Album(id: aid, album: title, artist: t.albumartist ?? t.trackartist,
+                         year: t.year, artwork_track_id: t.coverid, composer: t.composer, isClassical: t.isClassical)
+        }, by: \.id).compactMapValues(\.first)
+
+        let conductorList = conductorMap
+            .filter { $0.value.count >= 1 }
+            .map { (name: $0.key, albums: $0.value.compactMap { albumIndex[$0] }) }
+            .sorted { $0.name < $1.name }
+        let ensembleList = ensembleMap
+            .filter { $0.value.count >= 1 }
+            .map { (name: $0.key, albums: $0.value.compactMap { albumIndex[$0] }) }
+            .sorted { $0.name < $1.name }
+
+        await MainActor.run {
+            conductors = conductorList
+            ensembles  = ensembleList
+            isLoading  = false
+        }
+    }
+}
+
+private struct ConductorDetailView: View {
+    let name: String
+    let albums: [Album]
+
+    var body: some View {
+        List {
+            ForEach(albums.sorted { ($0.year ?? 0) > ($1.year ?? 0) }) { album in
+                NavigationLink(destination: AlbumDetailView(album: album)) {
+                    HStack(spacing: 12) {
+                        ArtworkView(coverid: album.artwork_track_id, size: 44)
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(album.album)
+                                .font(.roonBody(14, weight: .medium))
+                                .foregroundColor(.roonPrimary).lineLimit(1)
+                            HStack(spacing: 6) {
+                                if let composer = album.composer {
+                                    Text(composer).font(.roonBody(12)).foregroundColor(.roonSecondary).lineLimit(1)
+                                }
+                                if let year = album.year, year > 0 {
+                                    Text(String(year)).font(.roonMono(11)).foregroundColor(.roonTertiary)
+                                }
+                            }
+                        }
+                    }
+                }
+                .listRowBackground(Color.roonSurface)
+                .listRowSeparatorTint(Color.roonBorder)
+            }
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .background(Color.roonBase.ignoresSafeArea())
+        .navigationTitle(name)
+        .navigationBarTitleDisplayMode(.large)
+        .toolbarBackground(Color.roonBase, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
+        .toolbarColorScheme(.dark, for: .navigationBar)
     }
 }
