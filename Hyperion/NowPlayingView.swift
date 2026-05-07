@@ -1534,24 +1534,23 @@ struct SegmentedScrubberView: View {
                         )
                         .frame(width: segWidth, height: 22)
                         .contentShape(Rectangle())
+                        .onTapGesture {
+                            guard !isCurrent, let qi = queueIndex(for: track) else { return }
+                            onJumpToMovement(qi)
+                        }
                         .gesture(
-                            isCurrent
-                            ? AnyGesture(DragGesture(minimumDistance: 0)
+                            DragGesture(minimumDistance: 6)
                                 .onChanged { v in
+                                    guard isCurrent else { return }
                                     if !isDragging { Haptics.light() }
                                     isDragging   = true
                                     dragProgress = max(0, min(1, v.location.x / segWidth))
                                 }
                                 .onEnded { _ in
+                                    guard isCurrent else { return }
                                     onSeekInMovement(dragProgress)
                                     isDragging = false
-                                })
-                            : AnyGesture(TapGesture()
-                                .onEnded {
-                                    if let qi = queueIndex(for: track) {
-                                        onJumpToMovement(qi)
-                                    }
-                                })
+                                }
                         )
                     }
                 }
