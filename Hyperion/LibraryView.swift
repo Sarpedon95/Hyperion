@@ -595,7 +595,6 @@ struct MovementRowView: View {
     var showPerformer: Bool = false
     let onTap: () -> Void
     @ObservedObject private var likedTracks = LikedTracksStore.shared
-    @ObservedObject private var player = PlayerViewModel.shared
     @State private var showingAddToPlaylist = false
     @State private var showingTrackActions = false
     @State private var navigateToAlbum: Album? = nil
@@ -1613,6 +1612,18 @@ struct WorkGroupSectionView: View {
         return "Inferred grouping"
     }
 
+    private var performerLine: String {
+        var parts: [String] = []
+        if let c = group.composer?.trimmingCharacters(in: .whitespaces), !c.isEmpty {
+            parts.append(c)
+        }
+        if let ta = group.tracks.first?.trackartist?.trimmingCharacters(in: .whitespaces),
+           !ta.isEmpty, ta != group.composer {
+            parts.append(ta)
+        }
+        return parts.joined(separator: " · ")
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Section header — Roon Arc classical style: bold title + year + performer line
@@ -1634,17 +1645,6 @@ struct WorkGroupSectionView: View {
                     }
 
                     // Composer / performer summary line
-                    let performerLine: String = {
-                        var parts: [String] = []
-                        if let c = group.composer?.trimmingCharacters(in: .whitespaces), !c.isEmpty {
-                            parts.append(c)
-                        }
-                        if let ta = group.tracks.first?.trackartist?.trimmingCharacters(in: .whitespaces),
-                           !ta.isEmpty, ta != group.composer {
-                            parts.append(ta)
-                        }
-                        return parts.joined(separator: " · ")
-                    }()
                     if !performerLine.isEmpty {
                         Text(performerLine)
                             .font(.roonBody(12))

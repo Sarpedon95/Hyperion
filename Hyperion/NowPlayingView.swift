@@ -1418,14 +1418,6 @@ private struct ArtworkFullScreenView: View {
     }
 }
 
-private struct ShareSheet: UIViewControllerRepresentable {
-    let activityItems: [Any]
-    func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
-    }
-    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
-}
-
 // MARK: - Quality marker pill (legacy — kept for any callers outside NowPlayingView)
 
 struct QualityMarkerView: View {
