@@ -60,15 +60,15 @@ final class SearchViewModel: ObservableObject {
         searchTask?.cancel()
         searchSequence += 1
         let sequence = searchSequence
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
+        let key = query.lowercased().trimmingCharacters(in: .whitespaces)
+        guard !key.isEmpty else {
             results = ([], [], [], [], [], [], [])
             isSearching = false
             return
         }
 
         // 1. Return cached results immediately if available.
-        if let cached = cache[trimmed] {
+        if let cached = cache[key] {
             results = cached
             isSearching = false
             return
@@ -77,7 +77,7 @@ final class SearchViewModel: ObservableObject {
         isSearching = true
 
         // 2. Show in-memory results immediately while waiting for the server.
-        let local = library.searchLocal(query: trimmed)
+        let local = library.searchLocal(query: key)
         let hasLocal = !local.composers.isEmpty || !local.works.isEmpty || !local.albums.isEmpty
             || !local.artists.isEmpty || !local.tracks.isEmpty
         if hasLocal {
@@ -90,12 +90,12 @@ final class SearchViewModel: ObservableObject {
             try? await Task.sleep(nanoseconds: 300_000_000)
             guard !Task.isCancelled, let self, self.searchSequence == sequence else { return }
             if !hasLocal { self.isSearching = true }
-            let r = await library.search(query: trimmed)
+            let r = await library.search(query: key)
             guard !Task.isCancelled, self.searchSequence == sequence else { return }
-            RecentSearchStore.shared.add(trimmed)
+            RecentSearchStore.shared.add(key)
             self.results = r
             self.isSearching = false
-            self.cache[trimmed] = r
+            self.cache[key] = r
         }
     }
 

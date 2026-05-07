@@ -149,52 +149,30 @@ struct NowPlayingView: View {
                 .opacity(isDraggingDown ? max(0.45, 1.0 - dragOffset / 260) : 1.0)
 
             GeometryReader { geo in
-                let safeTop     = geo.safeAreaInsets.top
-                let safeBottom  = geo.safeAreaInsets.bottom
-                // Artwork is always a square whose side = screen width − 48 pt of horizontal margin.
-                let artworkSide = geo.size.width - 48
-                // Fixed heights: header(44) + trackInfo(60) + progress(44) + transport(80) + toolbar(60) = 288
-                // 5 equal gaps: above artwork, then between each adjacent pair of the remaining 5 sections.
-                let spacing = max(4, (geo.size.height - safeTop - safeBottom - artworkSide - 288) / 5)
+                let safeTop = geo.safeAreaInsets.top
+                let safeBottom = geo.safeAreaInsets.bottom
+                let available = geo.size.height - safeTop - safeBottom
+                let artworkSide = min(geo.size.width - 48, available * 0.42)
+                let remaining = available - artworkSide - 44 - 60 - 44 - 80 - 60
+                let gap = max(remaining / 6, 4)
 
                 VStack(spacing: 0) {
-                    // Safe-area top spacer
-                    Color.clear.frame(height: safeTop)
-
-                    // Section 1 — Header bar: 44 pt
-                    VStack(spacing: 0) {
-                        headerBar.frame(height: 44)
-                        Color.clear.frame(height: spacing)
-
-                        // Section 2 — Artwork: square, width = screen − 48
-                        artworkSection(side: artworkSide)
-                            .frame(width: artworkSide, height: artworkSide)
-                        Color.clear.frame(height: spacing)
-
-                        // Section 3 — Track title + artist: 60 pt
-                        trackInfo
-                            .frame(height: 60)
-                        Color.clear.frame(height: spacing)
-
-                        // Section 4 — Progress bar: 44 pt
-                        progressSection
-                            .frame(height: 44)
-                        Color.clear.frame(height: spacing)
-
-                        // Section 5 — Transport controls: 80 pt
-                        transportControls
-                            .frame(height: 80)
-                        Color.clear.frame(height: spacing)
-
-                        // Section 6 — Bottom toolbar: 60 pt
-                        bottomToolbar
-                            .frame(height: 60)
-                    }
-
-                    // Safe-area bottom spacer
-                    Color.clear.frame(height: safeBottom)
+                    headerBar.frame(height: 44)
+                    Color.clear.frame(height: gap)
+                    artworkSection(side: artworkSide)
+                    Color.clear.frame(height: gap)
+                    trackInfo.frame(height: 60)
+                    Color.clear.frame(height: gap)
+                    progressSection.frame(height: 44)
+                    Color.clear.frame(height: gap)
+                    transportControls.frame(height: 80)
+                    Color.clear.frame(height: gap)
+                    bottomToolbar.frame(height: 60)
+                    Color.clear.frame(height: gap)
                 }
-                .padding(.horizontal, 20)
+                .frame(width: geo.size.width)
+                .padding(.top, safeTop)
+                .padding(.bottom, safeBottom)
                 .simultaneousGesture(swipeDownToDismissGesture)
             }
             .ignoresSafeArea()
