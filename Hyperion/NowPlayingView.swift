@@ -1363,7 +1363,7 @@ private struct ArtworkFullScreenView: View {
         .ignoresSafeArea()
         .preferredColorScheme(.dark)
         .sheet(isPresented: $showShare) {
-            if let img = shareImage { ShareSheet(activityItems: [img]) }
+            if let img = shareImage { ShareSheet(items: [img]) }
         }
     }
 

@@ -50,31 +50,21 @@ extension Color {
 }
 
 // MARK: - Typography tokens
-//
-// All three helpers use the SwiftUI-native `relativeTo:` TextStyle so the
-// system scales them correctly with the user's preferred text size.  The
-// `size` parameter is the *design-time* point size at the default
-// (Large/xLarge) Dynamic Type category — the OS widens or narrows from there.
-//
-// Mapping rationale:
-//   roonTitle  → .headline  (prominent headings; scales moderately)
-//   roonBody   → .body      (general content text; standard scaling curve)
-//   roonMono   → .caption1  (compact info; smaller scaling step)
 
 extension Font {
     /// Serif title font — track/work/composer headings.
     static func roonTitle(_ size: CGFloat, weight: Font.Weight = .bold) -> Font {
-        .system(size: size, weight: weight, design: .serif, relativeTo: .headline)
+        .system(size: size, weight: weight, design: .serif)
     }
 
     /// Default body font — labels, descriptions, UI copy.
     static func roonBody(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        .system(size: size, weight: weight, design: .default, relativeTo: .body)
+        .system(size: size, weight: weight, design: .default)
     }
 
     /// Monospaced font — time displays, track numbers, and compact controls.
     static func roonMono(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        .system(size: size, weight: weight, design: .monospaced, relativeTo: .caption1)
+        .system(size: size, weight: weight, design: .monospaced)
     }
 }
 
