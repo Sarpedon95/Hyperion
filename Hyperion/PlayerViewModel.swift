@@ -121,6 +121,9 @@ final class PlayerViewModel: ObservableObject {
 
     private var radioRefreshTask: Task<Void, Never>? = nil
 
+    // 150 ms guard: prevents double-fires from rapid taps on prev/next.
+    private var lastSkipTimestamp: TimeInterval = 0
+
     // MARK: - Orpheus engine
 
     /// When true, new tracks route through OrpheusPlaybackEngine (PCM → DSP chain).
@@ -1157,6 +1160,9 @@ final class PlayerViewModel: ObservableObject {
     }
 
     func nextTrack() {
+        let now = Date().timeIntervalSinceReferenceDate
+        guard now - lastSkipTimestamp >= 0.15 else { return }
+        lastSkipTimestamp = now
         guard !queue.isEmpty else { return }
         if currentIndex < queue.count - 1 {
             currentIndex += 1
@@ -1168,6 +1174,9 @@ final class PlayerViewModel: ObservableObject {
     }
 
     func previousTrack() {
+        let now = Date().timeIntervalSinceReferenceDate
+        guard now - lastSkipTimestamp >= 0.15 else { return }
+        lastSkipTimestamp = now
         guard !queue.isEmpty else { return }
         if currentTime > 3 {
             seek(to: 0)
@@ -2689,29 +2698,35 @@ final class PlayerViewModel: ObservableObject {
     // MARK: - Crossfade (AVPlayer path only)
 
     /// Ramp `crossfadeVolume` from its current value down to 0 over `crossfadeDuration`.
+    /// Uses an equal-power (cosine) curve so perceived loudness stays constant
+    /// throughout the crossfade and avoids the volume dip that a linear ramp produces.
     private func startCrossfadeOut() {
         guard crossfadeDuration > 0 else { return }
         isCrossfadingOut = true
         crossfadeTask?.cancel()
-        let steps = max(1, Int(crossfadeDuration / 0.016))
+        let steps    = max(1, Int(crossfadeDuration / 0.016))
         let startVol = crossfadeVolume
-        let decrement = startVol / Float(steps)
         crossfadeTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            for _ in 0..<steps {
+            for i in 0..<steps {
                 guard !Task.isCancelled else { return }
-                self.crossfadeVolume     = max(0, self.crossfadeVolume - decrement)
-                self.player.volume       = max(0, min(1, self.volume)) * self.crossfadeVolume
+                // Equal-power: cos(t·π/2) from startVol → 0
+                let t   = Float(i + 1) / Float(steps)
+                let vol = startVol * cos(t * .pi / 2)
+                self.crossfadeVolume       = max(0, vol)
+                self.player.volume         = max(0, min(1, self.volume)) * self.crossfadeVolume
                 self.orpheusEngine?.volume = self.crossfadeVolume
                 try? await Task.sleep(nanoseconds: 16_000_000)
             }
-            self.crossfadeVolume     = 0
-            self.player.volume       = 0
+            self.crossfadeVolume       = 0
+            self.player.volume         = 0
             self.orpheusEngine?.volume = 0
         }
     }
 
     /// Ramp `crossfadeVolume` from 0 up to 1 over `crossfadeDuration`.
+    /// Uses an equal-power (sine) curve — the complementary half of the fade-out
+    /// curve — so the combined loudness of both tracks stays flat at every point.
     /// Resets immediately to 1 when crossfade is off.
     private func startCrossfadeIn() {
         crossfadeTask?.cancel()
@@ -2725,19 +2740,21 @@ final class PlayerViewModel: ObservableObject {
         crossfadeVolume        = 0
         player.volume          = 0
         orpheusEngine?.volume  = 0
-        let steps        = max(1, Int(crossfadeDuration / 0.016))
-        let increment    = Float(1.0) / Float(steps)
+        let steps = max(1, Int(crossfadeDuration / 0.016))
         crossfadeTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            for _ in 0..<steps {
+            for i in 0..<steps {
                 guard !Task.isCancelled else { return }
-                self.crossfadeVolume     = min(1, self.crossfadeVolume + increment)
-                self.player.volume       = max(0, min(1, self.volume)) * self.crossfadeVolume
+                // Equal-power: sin(t·π/2) from 0 → 1
+                let t   = Float(i + 1) / Float(steps)
+                let vol = sin(t * .pi / 2)
+                self.crossfadeVolume       = min(1, vol)
+                self.player.volume         = max(0, min(1, self.volume)) * self.crossfadeVolume
                 self.orpheusEngine?.volume = self.crossfadeVolume
                 try? await Task.sleep(nanoseconds: 16_000_000)
             }
-            self.crossfadeVolume     = 1
-            self.player.volume       = max(0, min(1, self.volume))
+            self.crossfadeVolume       = 1
+            self.player.volume         = max(0, min(1, self.volume))
             self.orpheusEngine?.volume = 1
         }
     }

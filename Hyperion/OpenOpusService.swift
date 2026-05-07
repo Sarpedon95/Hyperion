@@ -106,8 +106,8 @@ struct OOWorkListResponse: Codable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: DK.self)
-        status = try? c.decode(OOStatus.self, forKey: DK(stringValue: "status")!)
-        if let arr = try? c.decode([OOWork].self, forKey: DK(stringValue: "works")!) {
+        if let key = DK(stringValue: "status") { status = try? c.decode(OOStatus.self, forKey: key) } else { status = nil }
+        if let key = DK(stringValue: "works"), let arr = try? c.decode([OOWork].self, forKey: key) {
             works = arr
         } else {
             var collected: [OOWork] = []

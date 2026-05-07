@@ -81,9 +81,8 @@ struct ContentView: View {
             NowPlayingView()
                 .environment(\.hyperionBottomOverlayHeight, 0)
         }
-        .sheet(isPresented: $showOnboarding) {
-            ListeningProfileOnboarding()
-                .interactiveDismissDisabled(false)
+        .fullScreenCover(isPresented: $showOnboarding) {
+            HyperionOnboardingFlow()
         }
         .task {
             // Mark the tab bar interactive immediately — each tab shows its own

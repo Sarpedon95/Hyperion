@@ -18,16 +18,6 @@ struct OrpheusCrossfeedView: View {
 
             Section("Settings") {
                 LabeledSlider(
-                    label: "Frequency",
-                    value: Binding(
-                        get: { Double(dsp.crossfeedFrequency) },
-                        set: { dsp.crossfeedFrequency = Float($0); dsp.applyCrossfeed() }
-                    ),
-                    range: 200...2000,
-                    format: "%.0f Hz"
-                )
-
-                LabeledSlider(
                     label: "Level",
                     value: Binding(
                         get: { Double(dsp.crossfeedLevel) },
@@ -39,7 +29,7 @@ struct OrpheusCrossfeedView: View {
             }
 
             Section("About") {
-                Text("Crossfeed reduces the stereo width perceived through headphones by mixing a small amount of the left channel into the right and vice versa, centred around the crossfeed frequency. This simulates loudspeaker listening and reduces listening fatigue.")
+                Text("Crossfeed reduces perceived stereo width on headphones, softening hard-panned content and reducing listening fatigue. Higher levels produce a narrower, more speaker-like soundstage.")
                     .font(.roonBody(12))
                     .foregroundColor(.roonTertiary)
             }

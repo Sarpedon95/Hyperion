@@ -110,8 +110,7 @@ struct NowPlayingView: View {
     @State private var ooWorkDetail: OOWorkDetailResponse? = nil
     @State private var showLyrics: Bool = false
 
-    @State private var navigateToArtist: Artist? = nil
-    @State private var navigateToAlbum: Album? = nil
+    @State private var navPath = NavigationPath()
     @State private var showShareSheet: Bool = false
     @State private var showJournalSheet: Bool = false
     @State private var journalTrack: Track? = nil
@@ -142,6 +141,7 @@ struct NowPlayingView: View {
 
 
     var body: some View {
+        NavigationStack(path: $navPath) {
         ZStack(alignment: .bottom) {
             backgroundLayer
                 .ignoresSafeArea()
@@ -262,7 +262,7 @@ struct NowPlayingView: View {
         }
         .animation(.spring(response: 0.36, dampingFraction: 0.80), value: showQueuePanel)
         .onAppear {
-            DispatchQueue.main.async { isPillPulsing = true }
+            isPillPulsing = true
         }
         .onChange(of: player.currentTrack?.id) { _, _ in
             isDraggingProgress = false
@@ -273,6 +273,7 @@ struct NowPlayingView: View {
             artworkSwipeTask = nil
             artworkTransitioning = false
             ooWorkDetail = nil
+            if !navPath.isEmpty { navPath = NavigationPath() }
         }
         .onDisappear {
             artworkSwipeTask?.cancel()
@@ -326,22 +327,20 @@ struct NowPlayingView: View {
                 showJournalSheet = true
             }
         }
-        .sheet(item: $navigateToArtist) { artist in
-            NavigationStack {
-                ArtistDetailView(artist: artist)
-            }
-            .environment(\.hyperionBottomOverlayHeight, 0)
-        }
-        .sheet(item: $navigateToAlbum) { album in
-            NavigationStack {
-                AlbumDetailView(album: album)
-            }
-            .environment(\.hyperionBottomOverlayHeight, 0)
-        }
         .sheet(isPresented: $showOrpheus) {
             OrpheusView()
                 .environment(\.hyperionBottomOverlayHeight, 0)
         }
+        .toolbar(.hidden, for: .navigationBar)
+        .navigationDestination(for: Artist.self) { artist in
+            ArtistDetailView(artist: artist)
+                .environment(\.hyperionBottomOverlayHeight, 0)
+        }
+        .navigationDestination(for: Album.self) { album in
+            AlbumDetailView(album: album)
+                .environment(\.hyperionBottomOverlayHeight, 0)
+        }
+        } // NavigationStack
     }
 
     @ViewBuilder
@@ -505,7 +504,7 @@ struct NowPlayingView: View {
             Button {
                 if let album = resolvedAlbum() {
                     Haptics.light()
-                    navigateToAlbum = album
+                    navPath.append(album)
                 }
             } label: {
                 Text(player.currentTrack?.title ?? "")
@@ -526,7 +525,7 @@ struct NowPlayingView: View {
             if !artistLine.isEmpty {
                 Button {
                     Haptics.light()
-                    navigateToArtist = resolvedArtist(named: artistLine)
+                    navPath.append(resolvedArtist(named: artistLine))
                 } label: {
                     Text(artistLine)
                         .font(.system(size: 16, weight: .regular, design: .default))
@@ -665,17 +664,25 @@ struct NowPlayingView: View {
                 Haptics.medium()
                 player.togglePlayPause()
             } label: {
-                Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 36, weight: .medium))
-                    .foregroundColor(.roonPrimary)
-                    .frame(width: 76, height: 76)
-                    .contentShape(Rectangle())
-                    .offset(x: player.isPlaying ? 0 : 2)
+                ZStack {
+                    if player.isLoading {
+                        ProgressView()
+                            .tint(.white)
+                            .scaleEffect(1.4)
+                    } else {
+                        Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                            .font(.system(size: 36, weight: .medium))
+                            .foregroundColor(.roonPrimary)
+                            .offset(x: player.isPlaying ? 0 : 2)
+                    }
+                }
+                .frame(width: 76, height: 76)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .scaleEffect(player.isPlaying ? 1.0 : 0.97)
             .animation(.spring(response: 0.28, dampingFraction: 0.76), value: player.isPlaying)
-            .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
+            .accessibilityLabel(player.isLoading ? "Loading" : (player.isPlaying ? "Pause" : "Play"))
 
             Spacer(minLength: 0)
 
@@ -1046,8 +1053,17 @@ private struct MainTransportButton: View {
                 .frame(width: 64, height: 64)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ScaleButtonStyle(scale: 0.92))
         .accessibilityLabel(accessibilityLabel)
+    }
+}
+
+private struct ScaleButtonStyle: ButtonStyle {
+    var scale: CGFloat = 0.92
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? scale : 1.0)
+            .animation(.spring(response: 0.22, dampingFraction: 0.65), value: configuration.isPressed)
     }
 }
 
@@ -1689,7 +1705,7 @@ private struct InlineLyricsSection: View {
             result = cached
         } else {
             let artist = track.composer ?? track.albumartist ?? track.trackartist ?? ""
-            let title  = track.work?.isEmpty == false ? track.work! : track.title
+            let title  = track.work.flatMap { $0.isEmpty ? nil : $0 } ?? track.title
             result = await LyricsService.shared.lyrics(
                 artistName: artist.isEmpty ? (track.albumartist ?? track.title) : artist,
                 trackName:  title,

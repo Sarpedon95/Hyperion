@@ -261,8 +261,8 @@ final class OrpheusDSPEngine: NSObject, ObservableObject {
         if !crossfeedBypassed && crossfeedLevel > 0.05 {
             items.append(OrpheusSignalPathItem(
                 title: "Crossfeed",
-                technicalValue: String(format: "%.0f Hz · %.1f dB", crossfeedFrequency, crossfeedLevel),
-                explanation: "Crossfeed blends a small amount of left/right information to reduce hard stereo separation on headphones."
+                technicalValue: String(format: "%.1f dB", crossfeedLevel),
+                explanation: "Crossfeed reduces stereo width on headphones, softening hard-panned content and reducing listening fatigue."
             ))
         }
 

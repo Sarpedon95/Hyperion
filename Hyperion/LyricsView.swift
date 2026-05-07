@@ -348,7 +348,7 @@ struct LyricsView: View {
         activeLineIndex = 0
 
         let artist = track.composer ?? track.albumartist ?? track.trackartist ?? ""
-        let title  = track.work?.isEmpty == false ? track.work! : track.title
+        let title  = track.work.flatMap { $0.isEmpty ? nil : $0 } ?? track.title
         let album  = track.album ?? ""
 
         let result = await LyricsService.shared.lyrics(
@@ -367,7 +367,7 @@ struct LyricsView: View {
     private func pinAndReload(_ candidate: LyricsCandidate) {
         let artist = track.composer ?? track.albumartist ?? track.trackartist ?? ""
         let artistResolved = artist.isEmpty ? (track.albumartist ?? track.title) : artist
-        let title  = track.work?.isEmpty == false ? track.work! : track.title
+        let title  = track.work.flatMap { $0.isEmpty ? nil : $0 } ?? track.title
         let album  = track.album ?? ""
         LyricsService.shared.pinResult(
             candidate: candidate,
@@ -443,7 +443,7 @@ struct ManualLyricsSearchView: View {
         let a = track.composer ?? track.albumartist ?? track.trackartist ?? ""
         _artist = State(initialValue: a)
         _title  = State(initialValue:
-            (track.work?.isEmpty == false ? track.work! : nil) ?? track.title
+            track.work.flatMap { $0.isEmpty ? nil : $0 } ?? track.title
         )
     }
 

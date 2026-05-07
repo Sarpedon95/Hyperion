@@ -174,7 +174,7 @@ final class MetadataService {
                 try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
                 throw CancellationError()
             }
-            let result = try await group.next()!
+            guard let result = try await group.next() else { throw CancellationError() }
             group.cancelAll()
             return result
         }
@@ -196,6 +196,23 @@ final class MusicBrainzProvider: @unchecked Sendable {
         cfg.timeoutIntervalForResource = 10
         return URLSession(configuration: cfg)
     }()
+
+    // MusicBrainz ToS requires at most 1 request per second.
+    // This actor serialises all requests and inserts the necessary gap.
+    private actor RateLimiter {
+        private var lastRequest: Date = .distantPast
+        private let minInterval: TimeInterval = 1.1
+
+        func wait() async {
+            let elapsed = Date().timeIntervalSince(lastRequest)
+            if elapsed < minInterval {
+                let ns = UInt64((minInterval - elapsed) * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: ns)
+            }
+            lastRequest = Date()
+        }
+    }
+    private let rateLimiter = RateLimiter()
 
     func fetch(artist: String, album: String?) async -> MetadataResult? {
         do {
@@ -266,6 +283,7 @@ final class MusicBrainzProvider: @unchecked Sendable {
     }
 
     private func fetch(url: URL) async throws -> Data {
+        await rateLimiter.wait()
         var req = URLRequest(url: url)
         req.setValue("Hyperion/1.0 (iOS music player)", forHTTPHeaderField: "User-Agent")
         let (data, response) = try await session.data(for: req)
@@ -304,7 +322,8 @@ final class LastFmProvider: @unchecked Sendable {
 
         async let artistInfo    = fetchArtistInfo(encArtist: encArtist)
         async let similarArtists = fetchSimilarArtists(encArtist: encArtist)
-        async let albumInfo     = album != nil ? fetchAlbumInfo(encArtist: encArtist, encAlbum: album!.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "") : nil
+        let encAlbum = album.map { $0.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? $0 }
+        async let albumInfo: AlbumData? = encAlbum != nil ? fetchAlbumInfo(encArtist: encArtist, encAlbum: encAlbum ?? "") : nil
 
         let (info, similar, albumData) = await (artistInfo, similarArtists, albumInfo)
 
@@ -481,12 +500,12 @@ final class DiscogsProvider: @unchecked Sendable {
     private func fetchInternal(artist: String, album: String?) async -> MetadataResult? {
         guard let album else { return nil }
 
-        var items: [URLQueryItem] = [
+        let items: [URLQueryItem] = [
             URLQueryItem(name: "artist",        value: artist),
             URLQueryItem(name: "release_title", value: album),
             URLQueryItem(name: "token",         value: token)
         ]
-        var comps = URLComponents(string: "\(base)/database/search")!
+        guard var comps = URLComponents(string: "\(base)/database/search") else { return nil }
         comps.queryItems = items
         guard let searchURL = comps.url,
               let data = try? await fetch(url: searchURL),

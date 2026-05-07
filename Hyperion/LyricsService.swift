@@ -273,7 +273,8 @@ final class LyricsService {
                 let ls = (lines ?? []).map { LyricsLine(time: $0.time, text: $0.text) }
                 return ls.isEmpty ? .unavailable : .synced(ls)
             case .plain:
-                return (plainText?.isEmpty == false) ? .plain(plainText!) : .unavailable
+                if let text = plainText, !text.isEmpty { return .plain(text) }
+                return .unavailable
             case .instrumental: return .instrumental
             case .unavailable:  return .unavailable
             }
