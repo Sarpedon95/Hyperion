@@ -149,8 +149,12 @@ struct NowPlayingView: View {
                 .opacity(isDraggingDown ? max(0.45, 1.0 - dragOffset / 260) : 1.0)
 
             GeometryReader { geo in
-                let safeTop = geo.safeAreaInsets.top > 0 ? geo.safeAreaInsets.top : 59.0
-                let safeBottom = geo.safeAreaInsets.bottom > 0 ? geo.safeAreaInsets.bottom : 34.0
+                let window = UIApplication.shared.connectedScenes
+                    .compactMap { $0 as? UIWindowScene }
+                    .flatMap { $0.windows }
+                    .first { $0.isKeyWindow }
+                let safeTop = window?.safeAreaInsets.top ?? 59.0
+                let safeBottom = window?.safeAreaInsets.bottom ?? 34.0
                 let available = geo.size.height - safeTop - safeBottom
                 let artworkSide = min(geo.size.width - 48, available * 0.38)
                 let remaining = available - artworkSide - 44 - 60 - 44 - 80 - 60
