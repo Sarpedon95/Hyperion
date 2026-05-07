@@ -151,9 +151,12 @@ struct NowPlayingView: View {
             GeometryReader { geo in
                 let safeTop    = geo.safeAreaInsets.top
                 let safeBottom = geo.safeAreaInsets.bottom
-                // Artwork = 38% of physical screen height, never wider than the screen minus margins.
-                let artworkSide = min(geo.size.width - 40, geo.size.height * 0.38)
+                // Artwork = 35% of physical screen height.
+                // min() keeps it from being wider than the screen minus margins on any device.
+                let artworkSide = min(geo.size.width - 40, geo.size.height * 0.35)
 
+                // simultaneousGesture on the outermost VStack so the swipe-down-to-dismiss
+                // fires regardless of which child (artwork, buttons, progress bar) is touched.
                 VStack(spacing: 0) {
                     headerBar
                         .padding(.horizontal, 16)
@@ -163,30 +166,28 @@ struct NowPlayingView: View {
                     FocusModeBanner()
                         .animation(.spring(response: 0.3), value: FocusMode.shared.isActive)
 
-                    // Non-scrolling proportional layout: Spacer absorbs leftover vertical space
-                    // so artwork, controls and toolbar are always fully visible on one screen.
+                    // Inner VStack: explicit padding between each section, NO Spacer, NO maxHeight.
+                    // Content stacks from the top; leftover space sits below the toolbar (invisible).
                     VStack(spacing: 0) {
                         artworkSection(side: artworkSide)
                             .padding(.top, 8)
-                            .padding(.bottom, 12)
+                            .padding(.bottom, 20)
 
                         trackInfo
-                            .padding(.bottom, 4)
+                            .padding(.bottom, 16)
 
                         if let detail = ooWorkDetail {
                             openOpusInfoBlock(detail: detail)
-                                .padding(.bottom, 8)
+                                .padding(.bottom, 12)
                                 .transition(.opacity.combined(with: .move(edge: .top)))
                                 .animation(.easeInOut(duration: 0.25), value: ooWorkDetail != nil)
                         }
 
-                        Spacer(minLength: 8)
-
                         progressSection
-                            .padding(.bottom, 12)
+                            .padding(.bottom, 20)
 
                         transportControls
-                            .padding(.bottom, 12)
+                            .padding(.bottom, 20)
 
                         bottomToolbar
                             .padding(.bottom, max(safeBottom, 16))
@@ -197,9 +198,8 @@ struct NowPlayingView: View {
                         }
                     }
                     .padding(.horizontal, 16)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .gesture(swipeDownToDismissGesture)
                 }
+                .simultaneousGesture(swipeDownToDismissGesture)
             }
             .ignoresSafeArea()
             .offset(y: dragOffset)
@@ -952,15 +952,32 @@ struct NowPlayingView: View {
     }
 
     private func prewarmArtistDetail() async {
-        guard let track = player.currentTrack else { return }
+        guard let track = player.currentTrack else {
+            print("[Prewarm] No current track — skipping")
+            return
+        }
         let library = LibraryViewModel.shared
-        // Ensure the artists list is loaded so resolvedArtist() can find a valid Artist.id.
-        if library.artists.isEmpty { await library.loadArtists() }
+        print("[Prewarm] Track loaded: '\(track.title)' — starting prewarm")
+
+        // Load artists list if empty, so resolvedArtist() can find a valid id.
+        if library.artists.isEmpty {
+            print("[Prewarm] Artists list empty — loading now")
+            await library.loadArtists()
+        }
+
         let name = track.composer ?? track.albumartist ?? track.trackartist ?? ""
-        guard !name.isEmpty,
-              let artist = library.artists.first(where: { $0.name == name }),
-              artist.id > 0 else { return }
+        guard !name.isEmpty else {
+            print("[Prewarm] No artist name on track — skipping")
+            return
+        }
+        guard let artist = library.artists.first(where: { $0.name == name }), artist.id > 0 else {
+            print("[Prewarm] Artist '\(name)' not found in library (id=0 or missing) — skipping")
+            return
+        }
+
+        print("[Prewarm] Pre-warming artist detail for '\(name)' (id=\(artist.id))")
         _ = try? await library.loadArtistDetail(artistID: artist.id)
+        print("[Prewarm] Done — artist detail cached for '\(name)'")
     }
 
     // MARK: - Helpers

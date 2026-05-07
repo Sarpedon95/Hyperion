@@ -72,10 +72,12 @@ final class SearchViewModel: ObservableObject {
 
         // 1. Show cached full results instantly if available (no spinner, no server call).
         if let cached = cacheStore[trimmed] {
+            print("[Search] CACHE HIT for '\(trimmed)' — returning instantly")
             results = cached
             isSearching = false
             return
         }
+        print("[Search] CACHE MISS for '\(trimmed)' — querying local + server")
 
         isSearching = true
 
@@ -84,6 +86,7 @@ final class SearchViewModel: ObservableObject {
         let hasLocal = !local.composers.isEmpty || !local.works.isEmpty || !local.albums.isEmpty
             || !local.artists.isEmpty || !local.tracks.isEmpty
         if hasLocal {
+            print("[Search] LOCAL hit: \(local.artists.count) artists, \(local.tracks.count) tracks, \(local.albums.count) albums")
             results = local
             isSearching = false  // hide spinner; server results will silently replace local ones
         }
@@ -93,8 +96,10 @@ final class SearchViewModel: ObservableObject {
             try? await Task.sleep(nanoseconds: 300_000_000)
             guard !Task.isCancelled, let self, self.searchSequence == sequence else { return }
             if !hasLocal { self.isSearching = true }
+            print("[Search] SERVER fetch starting for '\(trimmed)'")
             let r = await library.search(query: trimmed)
             guard !Task.isCancelled, self.searchSequence == sequence else { return }
+            print("[Search] SERVER fetch done for '\(trimmed)': \(r.artists.count) artists, \(r.tracks.count) tracks, \(r.albums.count) albums")
             RecentSearchStore.shared.add(trimmed)
             self.results = r
             self.isSearching = false
@@ -161,7 +166,13 @@ struct SearchView: View {
                 vm.performSearch(query: newValue, library: library)
             }
             .task {
-                if library.composers.isEmpty { await library.loadComposers() }
+                // Pre-warm all in-memory stores so searchLocal() has data immediately.
+                // Each load() is no-op if already populated.
+                async let composers: Void = library.loadComposers()
+                async let artists:   Void = library.loadArtists()
+                async let songs:     Void = library.loadSongs()
+                async let albums:    Void = library.loadAlbums()
+                await composers; await artists; await songs; await albums
             }
         }
     }

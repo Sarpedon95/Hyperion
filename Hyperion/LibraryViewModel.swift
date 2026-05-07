@@ -302,12 +302,17 @@ final class LibraryViewModel: ObservableObject {
     // MARK: - Songs
 
     func loadSongs() async {
-        if !songs.isEmpty { return }
+        if !songs.isEmpty {
+            print("[LoadSongs] Already loaded (\(songs.count) songs) — skipping")
+            return
+        }
         if let existing = songsLoadTask {
             // Caller joining an in-flight load: wait for it, then ensure songs is populated.
+            print("[LoadSongs] In-flight load already running — joining it")
             _ = try? await existing.value
             return
         }
+        print("[LoadSongs] Starting full library song load")
         isLoadingSongs = true
         let pageSize = self.pageSize
         let task = Task<[Track], Error> {
