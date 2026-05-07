@@ -2933,9 +2933,11 @@ final class PlayerViewModel: ObservableObject {
 
         Task { @MainActor [weak self] in
             guard let self else { return }
-            guard let image = await self.loadImage(from: artURL) else { return }
+            let screenSize = UIScreen.main.bounds.size
+            let targetPts  = max(screenSize.width, screenSize.height)
+            guard let image = await self.loadImage(from: artURL, targetPoints: targetPts) else { return }
             guard self.artworkLoadID == loadID, self.currentTrack?.id == trackID else { return }
-            let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+            let artwork = MPMediaItemArtwork(boundsSize: screenSize) { _ in image }
             var updated = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
             updated[MPMediaItemPropertyArtwork] = artwork
             MPNowPlayingInfoCenter.default().nowPlayingInfo = updated

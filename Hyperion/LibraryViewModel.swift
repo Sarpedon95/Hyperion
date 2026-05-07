@@ -768,6 +768,9 @@ final class LibraryViewModel: ObservableObject {
         async let serverAlbumsTask: [Album] =
             (try? await LyrionAPI.shared.searchAlbums(term: trimmed, count: 150)) ?? []
 
+        async let serverArtistsTask: [Artist] =
+            (try? await LyrionAPI.shared.searchArtists(term: trimmed, count: 30)) ?? []
+
         async let directWorksTask: [[Work]] = withThrowingTaskGroup(of: [Work].self) { group in
             for term in workTermsSnapshot {
                 group.addTask { (try? await LyrionAPI.shared.getWorks(start: 0, count: 80, search: term)) ?? [] }
@@ -783,7 +786,13 @@ final class LibraryViewModel: ObservableObject {
         let serverWorkBatches = (try? await directWorksTask) ?? []
         guard !Task.isCancelled else { return ([], [], [], [], [], [], []) }
 
+        let serverArtists = await serverArtistsTask
+        guard !Task.isCancelled else { return ([], [], [], [], [], [], []) }
+
         serverAlbums.forEach { mergeAlbum($0) }
+        serverArtists.forEach { a in
+            if seenArtistIDs.insert(a.id).inserted { foundArtists.append(a) }
+        }
 
         for batch in serverWorkBatches {
             batch.filter {

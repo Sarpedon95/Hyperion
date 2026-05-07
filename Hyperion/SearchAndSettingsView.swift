@@ -39,11 +39,17 @@ final class RecentSearchStore: ObservableObject {
 
 // MARK: - Search view model (persists across navigation pushes)
 
+enum SearchScope: String, CaseIterable {
+    case library = "Library"
+    case all     = "All"
+}
+
 @MainActor
 final class SearchViewModel: ObservableObject {
     @Published var searchText: String = ""
     @Published var results: (composers: [Composer], works: [Work], albums: [Album], artists: [Artist], tracks: [Track], genres: [Genre], playlists: [LocalPlaylist]) = ([], [], [], [], [], [], [])
     @Published var isSearching: Bool = false
+    @Published var scope: SearchScope = .all
 
     private var searchTask: Task<Void, Never>? = nil
     private var searchSequence: Int = 0
@@ -85,10 +91,14 @@ final class SearchViewModel: ObservableObject {
             isSearching = false  // server results will replace these silently
         }
 
-        // 3. 300 ms debounce, then fetch from server.
+        // 3. 300 ms debounce, then fetch from server (skipped in Library scope).
         searchTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 300_000_000)
             guard !Task.isCancelled, let self, self.searchSequence == sequence else { return }
+            guard self.scope == .all else {
+                if !hasLocal { self.isSearching = false }
+                return
+            }
             if !hasLocal { self.isSearching = true }
             let r = await library.search(query: key)
             guard !Task.isCancelled, self.searchSequence == sequence else { return }
@@ -125,7 +135,16 @@ struct SearchView: View {
 
                 SearchInputField(text: $vm.searchText)
                     .padding(.horizontal, 16)
-                    .padding(.bottom, 16)
+                    .padding(.bottom, 8)
+
+                Picker("Scope", selection: $vm.scope) {
+                    ForEach(SearchScope.allCases, id: \.self) { s in
+                        Text(s.rawValue).tag(s)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 12)
 
                 Group {
                     if vm.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -148,6 +167,9 @@ struct SearchView: View {
             .toolbarColorScheme(.dark, for: .navigationBar)
             .onChange(of: vm.searchText) { _, newValue in
                 vm.performSearch(query: newValue, library: library)
+            }
+            .onChange(of: vm.scope) { _, _ in
+                vm.performSearch(query: vm.searchText, library: library)
             }
             .task {
                 // Pre-warm all in-memory stores so searchLocal() has data immediately.

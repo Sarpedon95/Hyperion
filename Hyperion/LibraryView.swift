@@ -2385,22 +2385,18 @@ struct ArtistDetailView: View {
         }
         .task(id: artist.id) {
             isLoading = true
+            metadataLoading = true
             displayedAlbumCount = 12
             metadata = nil
-            metadataLoading = false
             bioExpanded = false
-            defer { isLoading = false }
-            guard let result = try? await library.loadArtistDetail(artistID: artist.id) else { return }
-            albums      = result.albums
-            localTracks = result.songs
-            // Fetch enriched metadata after library data loads
-            let firstTrack = result.songs.first
-            metadataLoading = true
-            metadata = await MetadataService.shared.fetch(
-                artist: artist.name,
-                album: albums.first?.album,
-                track: firstTrack
-            )
+            async let detailTask = library.loadArtistDetail(artistID: artist.id)
+            async let metaTask   = MetadataService.shared.fetch(artist: artist.name, album: nil, track: nil)
+            if let result = try? await detailTask {
+                albums      = result.albums
+                localTracks = result.songs
+            }
+            isLoading = false
+            metadata = await metaTask
             metadataLoading = false
         }
     }
@@ -2503,20 +2499,22 @@ struct ArtistMetadataSection: View {
                             .padding(.horizontal, 20)
 
                         Text(bio)
-                            .font(.roonBody(14))
+                            .font(.body)
                             .foregroundColor(.roonSecondary)
-                            .lineLimit(bioExpanded ? nil : 3)
+                            .lineLimit(bioExpanded ? nil : 4)
                             .padding(.horizontal, 20)
 
-                        Button {
-                            withAnimation(.easeInOut(duration: 0.2)) { bioExpanded.toggle() }
-                        } label: {
-                            Text(bioExpanded ? "Show less" : "Read more")
-                                .font(.roonBody(13, weight: .semibold))
-                                .foregroundColor(.roonAccent)
+                        if bioExpanded || bio.count > 200 {
+                            Button {
+                                withAnimation(.easeInOut(duration: 0.2)) { bioExpanded.toggle() }
+                            } label: {
+                                Text(bioExpanded ? "Show less" : "Read more")
+                                    .font(.roonBody(13, weight: .semibold))
+                                    .foregroundColor(.roonAccent)
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.horizontal, 20)
                         }
-                        .buttonStyle(.plain)
-                        .padding(.horizontal, 20)
                     }
                 }
 

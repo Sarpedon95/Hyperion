@@ -109,6 +109,7 @@ struct NowPlayingView: View {
 
     @State private var ooWorkDetail: OOWorkDetailResponse? = nil
     @State private var showLyrics: Bool = false
+    @State private var showInlineLyrics: Bool = false
 
     @State private var navPath = NavigationPath()
     @State private var showShareSheet: Bool = false
@@ -149,13 +150,19 @@ struct NowPlayingView: View {
                 .opacity(isDraggingDown ? max(0.45, 1.0 - dragOffset / 260) : 1.0)
 
             VStack(spacing: 0) {
-                headerBar.frame(height: 44)
-                Color.clear.frame(height: 16)
-                artworkSection(side: min(UIScreen.main.bounds.width - 48, UIScreen.main.bounds.height * 0.35))
-                Color.clear.frame(height: 12)
+                headerBar.frame(height: 44).padding(.top, 8).background(Color.green)
+                Color.clear.frame(height: 8)
+                if !showInlineLyrics {
+                    artworkSection(side: min(UIScreen.main.bounds.width - 48, UIScreen.main.bounds.height * 0.35))
+                    Color.clear.frame(height: 12)
+                }
                 trackInfo.frame(height: 60)
                 Color.clear.frame(height: 8)
-                progressSection.frame(height: 44)
+                progressSection.frame(height: 56).clipped(antialiased: false)
+                if showInlineLyrics, let track = player.currentTrack {
+                    Color.clear.frame(height: 8)
+                    InlineLyricsSection(track: track)
+                }
                 Color.clear.frame(height: 16)
                 transportControls.frame(height: 80)
                 Color.clear.frame(height: 16)
@@ -732,6 +739,18 @@ struct NowPlayingView: View {
             ) {
                 Haptics.light()
                 showOrpheus = true
+            }
+
+            Spacer(minLength: 0)
+
+            // Inline lyrics toggle
+            BottomToolbarButton(
+                systemName: showInlineLyrics ? "quote.bubble.fill" : "quote.bubble",
+                tint: showInlineLyrics ? .roonAccent : .roonSecondary,
+                accessibilityLabel: showInlineLyrics ? "Hide lyrics" : "Show lyrics"
+            ) {
+                Haptics.light()
+                withAnimation(.easeInOut(duration: 0.2)) { showInlineLyrics.toggle() }
             }
 
             Spacer(minLength: 0)

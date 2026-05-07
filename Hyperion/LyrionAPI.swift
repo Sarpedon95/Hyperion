@@ -557,6 +557,19 @@ final class LyrionAPI {
         }
     }
 
+    func searchArtists(term: String, count: Int = 30) async throws -> [Artist] {
+        try Task.checkCancellation()
+        let trimmed = term.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        let result = try await request(params: ["artists", 0, count, "search:\(trimmed)"])
+        let arr = result["artists_loop"] as? [[String: Any]] ?? []
+        return arr.compactMap { dict in
+            guard let id   = JSON.int(dict["id"]),
+                  let name = dict["artist"] as? String else { return nil }
+            return Artist(id: id, name: name)
+        }
+    }
+
     /// Album-title search with layered fallbacks.
     func searchAlbums(term: String, count: Int = 100) async throws -> [Album] {
         try Task.checkCancellation()

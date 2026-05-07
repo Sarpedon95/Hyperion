@@ -78,7 +78,7 @@ final class MetadataService {
     private func isClassical(track: Track?) -> Bool {
         guard let track else { return false }
         if track.composer != nil { return true }
-        let classicalKeywords = ["classical", "opera", "orchestral", "chamber", "baroque"]
+        let classicalKeywords = ["classical", "opera", "orchestral", "chamber", "baroque", "romantic", "contemporary classical"]
         if let genre = track.genres?.lowercased() {
             for kw in classicalKeywords where genre.contains(kw) { return true }
         }
