@@ -745,9 +745,9 @@ struct NowPlayingView: View {
                     let lfm = LastFmAuthManager.shared
                     if lfm.isSignedIn {
                         if wasLiked {
-                            lfm.unlove(track: track.title ?? "", artist: track.artist ?? "")
+                            lfm.unlove(track: track.title ?? "", artist: track.trackartist ?? track.albumartist ?? "")
                         } else {
-                            lfm.love(track: track.title ?? "", artist: track.artist ?? "")
+                            lfm.love(track: track.title ?? "", artist: track.trackartist ?? track.albumartist ?? "")
                         }
                     }
                 }

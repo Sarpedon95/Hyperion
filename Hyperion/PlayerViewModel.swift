@@ -217,7 +217,7 @@ final class PlayerViewModel: ObservableObject {
         guard lfm.isSignedIn else { return }
         lfm.updateNowPlaying(
             track:    track.title ?? "",
-            artist:   track.artist ?? "",
+            artist:   track.trackartist ?? track.albumartist ?? "",
             album:    track.album,
             duration: track.duration
         )
@@ -232,7 +232,7 @@ final class PlayerViewModel: ObservableObject {
         hasScrobbled = true
         LastFmAuthManager.shared.scrobble(
             track:     track.title ?? "",
-            artist:    track.artist ?? "",
+            artist:    track.trackartist ?? track.albumartist ?? "",
             album:     track.album,
             timestamp: scrobbleStartTimestamp,
             duration:  track.duration

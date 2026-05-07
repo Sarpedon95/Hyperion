@@ -103,7 +103,7 @@ final class AudioPlayerManager: ObservableObject {
         let unit: AVAudioUnit? = await withCheckedContinuation { continuation in
             AVAudioUnit.instantiate(
                 with: CrossfeedAudioUnit.componentDescription,
-                options: .loadInProcess
+                options: []
             ) { avUnit, _ in
                 continuation.resume(returning: avUnit)
             }

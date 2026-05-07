@@ -95,7 +95,7 @@ final class CrossfeedAudioUnit: AUAudioUnit {
     static func register() {
         AUAudioUnit.registerSubclass(
             CrossfeedAudioUnit.self,
-            asComponentDescription: componentDescription,
+            as: componentDescription,
             name: "Hyperion Crossfeed",
             version: 1
         )
@@ -188,9 +188,8 @@ final class CrossfeedAudioUnit: AUAudioUnit {
             var flags: AudioUnitRenderActionFlags = []
             let status = pullInputBlock?(&flags, timestamp, frameCount, 0, outputData)
             guard status == noErr else { return status ?? kAudioUnitErr_NoConnection }
-            guard let abl = outputData else { return kAudioUnitErr_InvalidElement }
 
-            let ptr = UnsafeMutableAudioBufferListPointer(abl)
+            let ptr = UnsafeMutableAudioBufferListPointer(outputData)
             guard ptr.count >= 2,
                   let rawL = ptr[0].mData,
                   let rawR = ptr[1].mData else { return noErr }
