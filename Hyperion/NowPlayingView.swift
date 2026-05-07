@@ -150,7 +150,7 @@ struct NowPlayingView: View {
                 .opacity(isDraggingDown ? max(0.45, 1.0 - dragOffset / 260) : 1.0)
 
             VStack(spacing: 0) {
-                headerBar.frame(height: 44).padding(.top, 8).background(Color.green)
+                headerBar.frame(height: 44).padding(.top, 8)
                 Color.clear.frame(height: 8)
                 if !showInlineLyrics {
                     artworkSection(side: min(UIScreen.main.bounds.width - 48, UIScreen.main.bounds.height * 0.35))
@@ -169,8 +169,6 @@ struct NowPlayingView: View {
                 bottomToolbar.frame(height: 60)
             }
             .frame(maxWidth: .infinity)
-            .safeAreaInset(edge: .top) { Color.clear.frame(height: 0) }
-            .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 0) }
             .simultaneousGesture(swipeDownToDismissGesture)
             .offset(y: dragOffset)
             .animation(isDraggingDown ? .none : .spring(response: 0.34, dampingFraction: 0.84), value: dragOffset)
@@ -686,7 +684,7 @@ struct NowPlayingView: View {
         }
     }
 
-    // MARK: - Bottom toolbar (5 buttons: queue · heart · share · DSP · more)
+    // MARK: - Bottom toolbar (6 buttons: queue · heart · share · DSP · lyrics · more)
 
     private var bottomToolbar: some View {
         HStack(spacing: 0) {
