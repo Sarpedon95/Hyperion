@@ -152,15 +152,13 @@ struct NowPlayingView: View {
                 let safeTop = geo.safeAreaInsets.top
                 let safeBottom = geo.safeAreaInsets.bottom
                 let available = geo.size.height - safeTop - safeBottom
-                let artworkSide = min(geo.size.width - 48, available * 0.42)
+                let artworkSide = min(geo.size.width - 48, available * 0.38)
                 let remaining = available - artworkSide - 44 - 60 - 44 - 80 - 60
-                let gap = max(remaining / 6, 4)
+                let gap = max(remaining / 4, 4)
 
                 VStack(spacing: 0) {
                     headerBar.frame(height: 44)
-                    Color.clear.frame(height: gap)
                     artworkSection(side: artworkSide)
-                    Color.clear.frame(height: gap)
                     trackInfo.frame(height: 60)
                     Color.clear.frame(height: gap)
                     progressSection.frame(height: 44)
