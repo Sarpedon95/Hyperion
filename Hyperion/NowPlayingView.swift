@@ -149,11 +149,10 @@ struct NowPlayingView: View {
                 .opacity(isDraggingDown ? max(0.45, 1.0 - dragOffset / 260) : 1.0)
 
             GeometryReader { geo in
-                let safeTop = geo.safeAreaInsets.top
+                let safeTop    = geo.safeAreaInsets.top
                 let safeBottom = geo.safeAreaInsets.bottom
-                let usableHeight = max(geo.size.height - safeTop - safeBottom, 480)
-                // Artwork capped at 40% of usable height so controls stay visible without scrolling.
-                let artworkSide = min(geo.size.width - 32, usableHeight * 0.40)
+                // Artwork = 38% of physical screen height, never wider than the screen minus margins.
+                let artworkSide = min(geo.size.width - 40, geo.size.height * 0.38)
 
                 VStack(spacing: 0) {
                     headerBar
@@ -164,40 +163,42 @@ struct NowPlayingView: View {
                     FocusModeBanner()
                         .animation(.spring(response: 0.3), value: FocusMode.shared.isActive)
 
-                    ScrollView(showsIndicators: false) {
-                        VStack(spacing: 0) {
-                            artworkSection(side: artworkSide)
-                                .padding(.top, 8)
-                                .padding(.bottom, 16)
+                    // Non-scrolling proportional layout: Spacer absorbs leftover vertical space
+                    // so artwork, controls and toolbar are always fully visible on one screen.
+                    VStack(spacing: 0) {
+                        artworkSection(side: artworkSide)
+                            .padding(.top, 8)
+                            .padding(.bottom, 12)
 
-                            trackInfo
-                                .padding(.bottom, 12)
+                        trackInfo
+                            .padding(.bottom, 4)
 
-                            if let detail = ooWorkDetail {
-                                openOpusInfoBlock(detail: detail)
-                                    .padding(.bottom, 12)
-                                    .transition(.opacity.combined(with: .move(edge: .top)))
-                                    .animation(.easeInOut(duration: 0.25), value: ooWorkDetail != nil)
-                            }
-
-                            progressSection
-                                .padding(.bottom, 16)
-
-                            transportControls
-                                .padding(.bottom, 20)
-
-                            bottomToolbar
-                                .padding(.bottom, max(safeBottom, 16))
-
-                            if let track = player.currentTrack {
-                                InlineLyricsSection(track: track)
-                                    .padding(.bottom, max(safeBottom, 24))
-                            }
+                        if let detail = ooWorkDetail {
+                            openOpusInfoBlock(detail: detail)
+                                .padding(.bottom, 8)
+                                .transition(.opacity.combined(with: .move(edge: .top)))
+                                .animation(.easeInOut(duration: 0.25), value: ooWorkDetail != nil)
                         }
-                        .padding(.horizontal, 16)
-                        .frame(maxWidth: .infinity, alignment: .top)
+
+                        Spacer(minLength: 8)
+
+                        progressSection
+                            .padding(.bottom, 12)
+
+                        transportControls
+                            .padding(.bottom, 12)
+
+                        bottomToolbar
+                            .padding(.bottom, max(safeBottom, 16))
+
+                        if let track = player.currentTrack {
+                            InlineLyricsSection(track: track)
+                                .padding(.bottom, max(safeBottom, 8))
+                        }
                     }
-                    .simultaneousGesture(swipeDownToDismissGesture)
+                    .padding(.horizontal, 16)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .gesture(swipeDownToDismissGesture)
                 }
             }
             .ignoresSafeArea()

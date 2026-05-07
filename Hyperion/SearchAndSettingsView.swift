@@ -48,6 +48,11 @@ final class SearchViewModel: ObservableObject {
     private var searchTask: Task<Void, Never>? = nil
     private var searchSequence: Int = 0
 
+    // LRU cache for the last 8 completed server-result sets.
+    private var cacheKeys:  [String] = []
+    private var cacheStore: [String: LibraryViewModel.SearchResults] = [:]
+    private let cacheMax = 8
+
     var hasResults: Bool {
         !results.composers.isEmpty || !results.works.isEmpty || !results.albums.isEmpty
             || !results.artists.isEmpty || !results.tracks.isEmpty
@@ -64,21 +69,44 @@ final class SearchViewModel: ObservableObject {
             isSearching = false
             return
         }
+
+        // 1. Show cached full results instantly if available (no spinner, no server call).
+        if let cached = cacheStore[trimmed] {
+            results = cached
+            isSearching = false
+            return
+        }
+
         isSearching = true
-        // Show in-memory results immediately for instant feedback.
+
+        // 2. Show in-memory results immediately while waiting for the server.
         let local = library.searchLocal(query: trimmed)
         let hasLocal = !local.composers.isEmpty || !local.works.isEmpty || !local.albums.isEmpty
             || !local.artists.isEmpty || !local.tracks.isEmpty
-        if hasLocal { results = local }
-        // Debounce before firing server requests.
+        if hasLocal {
+            results = local
+            isSearching = false  // hide spinner; server results will silently replace local ones
+        }
+
+        // 3. 300 ms debounce, then fetch from server and merge.
         searchTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 200_000_000)
+            try? await Task.sleep(nanoseconds: 300_000_000)
             guard !Task.isCancelled, let self, self.searchSequence == sequence else { return }
+            if !hasLocal { self.isSearching = true }
             let r = await library.search(query: trimmed)
             guard !Task.isCancelled, self.searchSequence == sequence else { return }
             RecentSearchStore.shared.add(trimmed)
             self.results = r
             self.isSearching = false
+            // Store in cache.
+            if self.cacheStore[trimmed] == nil {
+                self.cacheKeys.append(trimmed)
+                self.cacheStore[trimmed] = r
+                if self.cacheKeys.count > self.cacheMax {
+                    let evicted = self.cacheKeys.removeFirst()
+                    self.cacheStore.removeValue(forKey: evicted)
+                }
+            }
         }
     }
 
