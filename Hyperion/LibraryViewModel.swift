@@ -600,7 +600,82 @@ final class LibraryViewModel: ObservableObject {
 
     // MARK: - Search
 
-    func search(query: String) async -> (composers: [Composer], works: [Work], albums: [Album], artists: [Artist], tracks: [Track], genres: [Genre], playlists: [LocalPlaylist]) {
+    typealias SearchResults = (composers: [Composer], works: [Work], albums: [Album], artists: [Artist], tracks: [Track], genres: [Genre], playlists: [LocalPlaylist])
+
+    /// In-memory only search — returns results immediately without any network calls.
+    func searchLocal(query: String) -> SearchResults {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return ([], [], [], [], [], [], []) }
+
+        let needle = SearchTextNormalizer.Needle(trimmed)
+
+        var foundComposers: [Composer] = []
+        var foundWorks:     [Work]     = []
+        var foundAlbums:    [Album]    = []
+        var foundArtists:   [Artist]   = []
+        var foundTracks:    [Track]    = []
+        var seenComposerIDs = Set<Int>()
+        var seenWorkIDs     = Set<Int>()
+        var seenWorkKeys    = Set<String>()
+        var seenAlbumIDs    = Set<Int>()
+        var seenArtistIDs   = Set<Int>()
+        var seenTrackIDs    = Set<Int>()
+
+        composers.filter { needle.matches($0.artist) }.forEach { c in
+            guard seenComposerIDs.insert(c.id).inserted else { return }
+            foundComposers.append(c)
+        }
+        artists.filter { needle.matches($0.name) }.forEach { a in
+            guard seenArtistIDs.insert(a.id).inserted else { return }
+            foundArtists.append(a)
+        }
+        songs.filter {
+            needle.matches($0.title) ||
+            needle.matches($0.trackartist ?? $0.albumartist ?? "") ||
+            needle.matches($0.album ?? "")
+        }.forEach { t in
+            guard seenTrackIDs.insert(t.id).inserted else { return }
+            foundTracks.append(t)
+        }
+        albums.filter {
+            needle.matches($0.album) ||
+            needle.matches($0.artist   ?? "") ||
+            needle.matches($0.composer ?? "")
+        }.forEach { a in
+            guard seenAlbumIDs.insert(a.id).inserted else { return }
+            foundAlbums.append(a)
+        }
+        for cached in worksCache.values {
+            cached.filter {
+                needle.matches($0.work) ||
+                needle.matches($0.composer ?? "")
+            }.forEach { w in
+                if w.work_id > 0 {
+                    guard seenWorkIDs.insert(w.work_id).inserted else { return }
+                } else {
+                    let key = "\(w.work)|\(w.composer ?? "")"
+                    guard seenWorkKeys.insert(key).inserted else { return }
+                }
+                foundWorks.append(w)
+            }
+        }
+        let matchedGenres = genres.filter { needle.matches($0.name) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        let matchedPlaylists = PlaylistStore.shared.playlists.filter { needle.matches($0.name) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+
+        return (
+            Array(foundComposers.prefix(30)),
+            Array(foundWorks.prefix(50)),
+            Array(foundAlbums.prefix(60)),
+            Array(foundArtists.prefix(20)),
+            Array(foundTracks.prefix(30)),
+            Array(matchedGenres.prefix(15)),
+            Array(matchedPlaylists.prefix(15))
+        )
+    }
+
+    func search(query: String) async -> SearchResults {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return ([], [], [], [], [], [], []) }
 

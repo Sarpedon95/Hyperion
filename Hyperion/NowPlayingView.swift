@@ -152,8 +152,8 @@ struct NowPlayingView: View {
                 let safeTop = geo.safeAreaInsets.top
                 let safeBottom = geo.safeAreaInsets.bottom
                 let usableHeight = max(geo.size.height - safeTop - safeBottom, 480)
-                // Cap artwork so it never dominates the layout on any screen size.
-                let artworkSide = min(geo.size.width - 32, usableHeight * 0.44)
+                // Artwork capped at 40% of usable height so controls stay visible without scrolling.
+                let artworkSide = min(geo.size.width - 32, usableHeight * 0.40)
 
                 VStack(spacing: 0) {
                     headerBar
@@ -168,10 +168,10 @@ struct NowPlayingView: View {
                         VStack(spacing: 0) {
                             artworkSection(side: artworkSide)
                                 .padding(.top, 8)
-                                .padding(.bottom, 20)
+                                .padding(.bottom, 16)
 
                             trackInfo
-                                .padding(.bottom, 16)
+                                .padding(.bottom, 12)
 
                             if let detail = ooWorkDetail {
                                 openOpusInfoBlock(detail: detail)
@@ -181,13 +181,13 @@ struct NowPlayingView: View {
                             }
 
                             progressSection
-                                .padding(.bottom, 20)
+                                .padding(.bottom, 16)
 
                             transportControls
-                                .padding(.bottom, 28)
+                                .padding(.bottom, 20)
 
                             bottomToolbar
-                                .padding(.bottom, 16)
+                                .padding(.bottom, max(safeBottom, 16))
 
                             if let track = player.currentTrack {
                                 InlineLyricsSection(track: track)
@@ -195,11 +195,7 @@ struct NowPlayingView: View {
                             }
                         }
                         .padding(.horizontal, 16)
-                        .frame(
-                            maxWidth: .infinity,
-                            minHeight: usableHeight - 44,
-                            alignment: .top
-                        )
+                        .frame(maxWidth: .infinity, alignment: .top)
                     }
                     .simultaneousGesture(swipeDownToDismissGesture)
                 }
@@ -280,6 +276,7 @@ struct NowPlayingView: View {
         }
         .task(id: player.currentTrack?.id) {
             await fetchOOWorkDetail()
+            await prewarmArtistDetail()
         }
         .sheet(isPresented: $showAddToPlaylist) {
             if let track = player.currentTrack {
@@ -951,6 +948,18 @@ struct NowPlayingView: View {
             linkerLog("NowPlaying workDetail failed for workID \(workID): \(error)")
             ooWorkDetail = nil
         }
+    }
+
+    private func prewarmArtistDetail() async {
+        guard let track = player.currentTrack else { return }
+        let library = LibraryViewModel.shared
+        // Ensure the artists list is loaded so resolvedArtist() can find a valid Artist.id.
+        if library.artists.isEmpty { await library.loadArtists() }
+        let name = track.composer ?? track.albumartist ?? track.trackartist ?? ""
+        guard !name.isEmpty,
+              let artist = library.artists.first(where: { $0.name == name }),
+              artist.id > 0 else { return }
+        _ = try? await library.loadArtistDetail(artistID: artist.id)
     }
 
     // MARK: - Helpers

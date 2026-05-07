@@ -65,6 +65,12 @@ final class SearchViewModel: ObservableObject {
             return
         }
         isSearching = true
+        // Show in-memory results immediately for instant feedback.
+        let local = library.searchLocal(query: trimmed)
+        let hasLocal = !local.composers.isEmpty || !local.works.isEmpty || !local.albums.isEmpty
+            || !local.artists.isEmpty || !local.tracks.isEmpty
+        if hasLocal { results = local }
+        // Debounce before firing server requests.
         searchTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 200_000_000)
             guard !Task.isCancelled, let self, self.searchSequence == sequence else { return }
@@ -258,6 +264,8 @@ struct SearchSuggestionsView: View {
                                     ComposerSmallRow(composer: composer)
                                 }
                                 .buttonStyle(.plain)
+                                .frame(maxWidth: .infinity)
+                                .contentShape(Rectangle())
                                 if composer.id != cachedOtherComposers.last?.id {
                                     Color.roonBorder.frame(height: 0.5).padding(.leading, 64)
                                 }
@@ -497,6 +505,8 @@ struct SearchResultsView: View {
                                     SearchArtistRow(artist: artist)
                                 }
                                 .buttonStyle(.plain)
+                                .frame(maxWidth: .infinity)
+                                .contentShape(Rectangle())
                                 if artist.id != results.artists.last?.id {
                                     Color.roonBorder.frame(height: 0.5).padding(.leading, 64)
                                 }
@@ -520,6 +530,8 @@ struct SearchResultsView: View {
                                         .padding(.vertical, 8)
                                 }
                                 .buttonStyle(.plain)
+                                .frame(maxWidth: .infinity)
+                                .contentShape(Rectangle())
                                 .simultaneousGesture(DragGesture(minimumDistance: 0)
                                     .onChanged { _ in Task { try? await library.getTracksForAlbum(album.id) } }
                                 )
@@ -544,6 +556,8 @@ struct SearchResultsView: View {
                                     SearchTrackRow(track: track)
                                 }
                                 .buttonStyle(.plain)
+                                .frame(maxWidth: .infinity)
+                                .contentShape(Rectangle())
                                 if track.id != results.tracks.last?.id {
                                     Color.roonBorder.frame(height: 0.5).padding(.leading, 64)
                                 }
@@ -565,6 +579,8 @@ struct SearchResultsView: View {
                                     ComposerSmallRow(composer: composer)
                                 }
                                 .buttonStyle(.plain)
+                                .frame(maxWidth: .infinity)
+                                .contentShape(Rectangle())
                                 if composer.id != results.composers.last?.id {
                                     Color.roonBorder.frame(height: 0.5).padding(.leading, 64)
                                 }
@@ -588,6 +604,8 @@ struct SearchResultsView: View {
                                         .padding(.vertical, 6)
                                 }
                                 .buttonStyle(.plain)
+                                .frame(maxWidth: .infinity)
+                                .contentShape(Rectangle())
                                 if work.id != results.works.last?.id {
                                     Color.roonBorder.frame(height: 0.5).padding(.leading, 82)
                                 }
@@ -628,6 +646,8 @@ struct SearchResultsView: View {
                                     .padding(.vertical, 10)
                                 }
                                 .buttonStyle(.plain)
+                                .frame(maxWidth: .infinity)
+                                .contentShape(Rectangle())
                                 if genre.id != results.genres.last?.id {
                                     Color.roonBorder.frame(height: 0.5).padding(.leading, 68)
                                 }
@@ -649,6 +669,8 @@ struct SearchResultsView: View {
                                     SearchPlaylistRow(playlist: playlist)
                                 }
                                 .buttonStyle(.plain)
+                                .frame(maxWidth: .infinity)
+                                .contentShape(Rectangle())
                                 if playlist.id != results.playlists.last?.id {
                                     Color.roonBorder.frame(height: 0.5).padding(.leading, 68)
                                 }
