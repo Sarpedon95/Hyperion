@@ -149,56 +149,52 @@ struct NowPlayingView: View {
                 .opacity(isDraggingDown ? max(0.45, 1.0 - dragOffset / 260) : 1.0)
 
             GeometryReader { geo in
-                let safeTop    = geo.safeAreaInsets.top
-                let safeBottom = geo.safeAreaInsets.bottom
-                // Artwork = 35% of physical screen height.
-                // min() keeps it from being wider than the screen minus margins on any device.
-                let artworkSide = min(geo.size.width - 40, geo.size.height * 0.35)
+                let safeTop     = geo.safeAreaInsets.top
+                let safeBottom  = geo.safeAreaInsets.bottom
+                // Artwork is always a square whose side = screen width − 48 pt of horizontal margin.
+                let artworkSide = geo.size.width - 48
+                // Fixed heights: header(44) + trackInfo(60) + progress(44) + transport(80) + toolbar(60) = 288
+                // 5 equal gaps: above artwork, then between each adjacent pair of the remaining 5 sections.
+                let spacing = max(4, (geo.size.height - safeTop - safeBottom - artworkSide - 288) / 5)
 
-                // simultaneousGesture on the outermost VStack so the swipe-down-to-dismiss
-                // fires regardless of which child (artwork, buttons, progress bar) is touched.
                 VStack(spacing: 0) {
-                    headerBar
-                        .padding(.horizontal, 16)
-                        .padding(.top, safeTop + 6)
-                        .padding(.bottom, 4)
+                    // Safe-area top spacer
+                    Color.clear.frame(height: safeTop)
 
-                    FocusModeBanner()
-                        .animation(.spring(response: 0.3), value: FocusMode.shared.isActive)
-
-                    // Inner VStack: explicit padding between each section, NO Spacer, NO maxHeight.
-                    // Content stacks from the top; leftover space sits below the toolbar (invisible).
+                    // Section 1 — Header bar: 44 pt
                     VStack(spacing: 0) {
+                        headerBar.frame(height: 44)
+                        Color.clear.frame(height: spacing)
+
+                        // Section 2 — Artwork: square, width = screen − 48
                         artworkSection(side: artworkSide)
-                            .padding(.top, 8)
-                            .padding(.bottom, 20)
+                            .frame(width: artworkSide, height: artworkSide)
+                        Color.clear.frame(height: spacing)
 
+                        // Section 3 — Track title + artist: 60 pt
                         trackInfo
-                            .padding(.bottom, 16)
+                            .frame(height: 60)
+                        Color.clear.frame(height: spacing)
 
-                        if let detail = ooWorkDetail {
-                            openOpusInfoBlock(detail: detail)
-                                .padding(.bottom, 12)
-                                .transition(.opacity.combined(with: .move(edge: .top)))
-                                .animation(.easeInOut(duration: 0.25), value: ooWorkDetail != nil)
-                        }
-
+                        // Section 4 — Progress bar: 44 pt
                         progressSection
-                            .padding(.bottom, 20)
+                            .frame(height: 44)
+                        Color.clear.frame(height: spacing)
 
+                        // Section 5 — Transport controls: 80 pt
                         transportControls
-                            .padding(.bottom, 20)
+                            .frame(height: 80)
+                        Color.clear.frame(height: spacing)
 
+                        // Section 6 — Bottom toolbar: 60 pt
                         bottomToolbar
-                            .padding(.bottom, max(safeBottom, 16))
-
-                        if let track = player.currentTrack {
-                            InlineLyricsSection(track: track)
-                                .padding(.bottom, max(safeBottom, 8))
-                        }
+                            .frame(height: 60)
                     }
-                    .padding(.horizontal, 16)
+
+                    // Safe-area bottom spacer
+                    Color.clear.frame(height: safeBottom)
                 }
+                .padding(.horizontal, 20)
                 .simultaneousGesture(swipeDownToDismissGesture)
             }
             .ignoresSafeArea()

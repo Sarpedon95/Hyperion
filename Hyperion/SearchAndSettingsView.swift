@@ -48,10 +48,7 @@ final class SearchViewModel: ObservableObject {
     private var searchTask: Task<Void, Never>? = nil
     private var searchSequence: Int = 0
 
-    // LRU cache for the last 8 completed server-result sets.
-    private var cacheKeys:  [String] = []
-    private var cacheStore: [String: LibraryViewModel.SearchResults] = [:]
-    private let cacheMax = 8
+    private var cache: [String: LibraryViewModel.SearchResults] = [:]
 
     var hasResults: Bool {
         !results.composers.isEmpty || !results.works.isEmpty || !results.albums.isEmpty
@@ -70,14 +67,12 @@ final class SearchViewModel: ObservableObject {
             return
         }
 
-        // 1. Show cached full results instantly if available (no spinner, no server call).
-        if let cached = cacheStore[trimmed] {
-            print("[Search] CACHE HIT for '\(trimmed)' — returning instantly")
+        // 1. Return cached results immediately if available.
+        if let cached = cache[trimmed] {
             results = cached
             isSearching = false
             return
         }
-        print("[Search] CACHE MISS for '\(trimmed)' — querying local + server")
 
         isSearching = true
 
@@ -86,32 +81,21 @@ final class SearchViewModel: ObservableObject {
         let hasLocal = !local.composers.isEmpty || !local.works.isEmpty || !local.albums.isEmpty
             || !local.artists.isEmpty || !local.tracks.isEmpty
         if hasLocal {
-            print("[Search] LOCAL hit: \(local.artists.count) artists, \(local.tracks.count) tracks, \(local.albums.count) albums")
             results = local
-            isSearching = false  // hide spinner; server results will silently replace local ones
+            isSearching = false  // server results will replace these silently
         }
 
-        // 3. 300 ms debounce, then fetch from server and merge.
+        // 3. 300 ms debounce, then fetch from server.
         searchTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 300_000_000)
             guard !Task.isCancelled, let self, self.searchSequence == sequence else { return }
             if !hasLocal { self.isSearching = true }
-            print("[Search] SERVER fetch starting for '\(trimmed)'")
             let r = await library.search(query: trimmed)
             guard !Task.isCancelled, self.searchSequence == sequence else { return }
-            print("[Search] SERVER fetch done for '\(trimmed)': \(r.artists.count) artists, \(r.tracks.count) tracks, \(r.albums.count) albums")
             RecentSearchStore.shared.add(trimmed)
             self.results = r
             self.isSearching = false
-            // Store in cache.
-            if self.cacheStore[trimmed] == nil {
-                self.cacheKeys.append(trimmed)
-                self.cacheStore[trimmed] = r
-                if self.cacheKeys.count > self.cacheMax {
-                    let evicted = self.cacheKeys.removeFirst()
-                    self.cacheStore.removeValue(forKey: evicted)
-                }
-            }
+            self.cache[trimmed] = r
         }
     }
 
