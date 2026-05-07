@@ -159,9 +159,9 @@ struct NowPlayingView: View {
                 VStack(spacing: 0) {
                     headerBar.frame(height: 44)
                     artworkSection(side: artworkSide)
-                    trackInfo.frame(height: 60)
+                    trackInfo.frame(height: 60).background(Color.blue)
                     Color.clear.frame(height: gap)
-                    progressSection.frame(height: 44)
+                    progressSection.frame(height: 44).background(Color.red)
                     Color.clear.frame(height: gap)
                     transportControls.frame(height: 80)
                     Color.clear.frame(height: gap)
