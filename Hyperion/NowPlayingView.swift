@@ -150,14 +150,18 @@ struct NowPlayingView: View {
 
             VStack(spacing: 0) {
                 headerBar.frame(height: 44)
-                artworkSection(side: min(UIScreen.main.bounds.width - 48, UIScreen.main.bounds.height * 0.38))
-                trackInfo.frame(height: 60).background(Color.blue)
-                progressSection.frame(height: 44).background(Color.red)
+                Color.clear.frame(height: 16)
+                artworkSection(side: min(UIScreen.main.bounds.width - 48, UIScreen.main.bounds.height * 0.35))
+                Color.clear.frame(height: 12)
+                trackInfo.frame(height: 60)
+                Color.clear.frame(height: 8)
+                progressSection.frame(height: 44)
+                Color.clear.frame(height: 16)
                 transportControls.frame(height: 80)
+                Color.clear.frame(height: 16)
                 bottomToolbar.frame(height: 60)
-                Spacer()
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(maxWidth: .infinity)
             .safeAreaInset(edge: .top) { Color.clear.frame(height: 0) }
             .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 0) }
             .simultaneousGesture(swipeDownToDismissGesture)
