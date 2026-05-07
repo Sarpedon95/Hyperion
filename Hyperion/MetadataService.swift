@@ -245,7 +245,7 @@ final class MusicBrainzProvider: @unchecked Sendable {
         // Fetch release info if album provided
         var releaseYear: String?
         var label: String?
-        var genre: String?
+        let genre: String?  = nil
 
         if let album {
             let encArtist = artist.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""

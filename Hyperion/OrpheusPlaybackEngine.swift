@@ -131,9 +131,9 @@ final class OrpheusPlaybackEngine {
 
     // MARK: - Constants
 
-    static let maxScheduledBuffers = 8
-    static let preloadFrames: Int = 88_200          // ~2 s @ 44.1 kHz
-    static let streamingTimeoutSeconds: Double = 15.0
+    nonisolated static let maxScheduledBuffers = 8
+    nonisolated static let preloadFrames: Int = 88_200          // ~2 s @ 44.1 kHz
+    nonisolated static let streamingTimeoutSeconds: Double = 15.0
 
     // MARK: - Audio graph (captured at init, safe to use from any queue)
 
@@ -496,7 +496,6 @@ final class OrpheusPlaybackEngine {
         let state    = rs
         let node     = playerNode
         let format   = fmt
-        let mode     = playbackMode
         let fq       = feedQueue
 
         // Cancel the current feed loop by incrementing generation on MainActor.
@@ -857,6 +856,9 @@ private enum OPEBufferLoop {
             return nil
         case .reading:
             break
+        case .unknown:
+            state.isEOS = true
+            return nil
         @unknown default:
             state.isEOS = true
             return nil

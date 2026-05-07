@@ -64,7 +64,7 @@ struct RecordingComparatorSheet: View {
                     loadingIDs.remove(candidate.lmsAlbumID)
                 }
             } else {
-                await MainActor.run { loadingIDs.remove(candidate.lmsAlbumID) }
+                _ = await MainActor.run { loadingIDs.remove(candidate.lmsAlbumID) }
             }
         }
     }

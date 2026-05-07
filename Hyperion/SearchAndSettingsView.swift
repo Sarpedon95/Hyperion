@@ -1058,7 +1058,7 @@ struct SettingsView: View {
                 .listRowBackground(Color.roonSurface)
 
                 Section {
-                    NavigationLink(destination: ListeningProfileOnboarding()) {
+                    NavigationLink(destination: HyperionOnboardingFlow()) {
                         HStack {
                             Text("Retune Profile").foregroundColor(.roonPrimary)
                             Spacer()

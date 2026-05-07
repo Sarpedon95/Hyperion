@@ -739,7 +739,7 @@ final class LibraryViewModel: ObservableObject {
         }
         let matchedGenres = genres.filter { needle.matches($0.name) }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-        let matchedPlaylists = await PlaylistStore.shared.playlists.filter { needle.matches($0.name) }
+        let matchedPlaylists = PlaylistStore.shared.playlists.filter { needle.matches($0.name) }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
 
         return (
