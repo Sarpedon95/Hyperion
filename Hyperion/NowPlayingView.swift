@@ -148,36 +148,19 @@ struct NowPlayingView: View {
                 .overlay(backgroundChrome)
                 .opacity(isDraggingDown ? max(0.45, 1.0 - dragOffset / 260) : 1.0)
 
-            GeometryReader { geo in
-                let window = UIApplication.shared.connectedScenes
-                    .compactMap { $0 as? UIWindowScene }
-                    .flatMap { $0.windows }
-                    .first { $0.isKeyWindow }
-                let safeTop = window?.safeAreaInsets.top ?? 59.0
-                let safeBottom = window?.safeAreaInsets.bottom ?? 34.0
-                let available = geo.size.height - safeTop - safeBottom
-                let artworkSide = min(geo.size.width - 48, available * 0.38)
-                let remaining = available - artworkSide - 44 - 60 - 44 - 80 - 60
-                let gap = max(remaining / 4, 4)
-
-                VStack(spacing: 0) {
-                    headerBar.frame(height: 44)
-                    artworkSection(side: artworkSide)
-                    trackInfo.frame(height: 60).background(Color.blue)
-                    Color.clear.frame(height: gap)
-                    progressSection.frame(height: 44).background(Color.red)
-                    Color.clear.frame(height: gap)
-                    transportControls.frame(height: 80)
-                    Color.clear.frame(height: gap)
-                    bottomToolbar.frame(height: 60)
-                    Color.clear.frame(height: gap)
-                }
-                .frame(width: geo.size.width)
-                .padding(.top, safeTop)
-                .padding(.bottom, safeBottom)
-                .simultaneousGesture(swipeDownToDismissGesture)
+            VStack(spacing: 0) {
+                headerBar.frame(height: 44)
+                artworkSection(side: min(UIScreen.main.bounds.width - 48, UIScreen.main.bounds.height * 0.38))
+                trackInfo.frame(height: 60).background(Color.blue)
+                progressSection.frame(height: 44).background(Color.red)
+                transportControls.frame(height: 80)
+                bottomToolbar.frame(height: 60)
+                Spacer()
             }
-            .ignoresSafeArea()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .safeAreaInset(edge: .top) { Color.clear.frame(height: 0) }
+            .safeAreaInset(edge: .bottom) { Color.clear.frame(height: 0) }
+            .simultaneousGesture(swipeDownToDismissGesture)
             .offset(y: dragOffset)
             .animation(isDraggingDown ? .none : .spring(response: 0.34, dampingFraction: 0.84), value: dragOffset)
 
