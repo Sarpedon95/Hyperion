@@ -18,6 +18,7 @@ final class PlayerViewModel: ObservableObject {
         didSet {
             guard let track = currentTrack, track.id != oldValue?.id else { return }
             LyricsService.shared.prefetch(for: track)
+            handleTrackChangeForScrobbling(track)
         }
     }
     @Published var currentWorkGroup: WorkGroup? = nil
@@ -194,9 +195,50 @@ final class PlayerViewModel: ObservableObject {
     /// Prevents fetching radio tracks more than once per track when ≤30 s remain.
     private var radioEarlyFetchTriggered: Bool = false
 
+    // MARK: - Last.fm scrobbling state
+    private var scrobbleTrackID: Int?
+    private var scrobbleStartTimestamp: TimeInterval = 0
+    private var scrobbleThreshold: Double = 0   // seconds: min(duration/2, 240)
+    private var hasScrobbled: Bool = false
+
     // MARK: - "Resume where you left off" state persistence
 
     /// Schedules a debounced save of the current playback snapshot.
+    // MARK: - Scrobbling helpers
+
+    private func handleTrackChangeForScrobbling(_ track: Track) {
+        scrobbleTrackID = track.id
+        scrobbleStartTimestamp = Date().timeIntervalSince1970
+        hasScrobbled = false
+        let dur = track.duration ?? 0
+        scrobbleThreshold = dur > 30 ? min(dur / 2, 240) : .infinity
+
+        let lfm = LastFmAuthManager.shared
+        guard lfm.isSignedIn else { return }
+        lfm.updateNowPlaying(
+            track:    track.title ?? "",
+            artist:   track.artist ?? "",
+            album:    track.album,
+            duration: track.duration
+        )
+    }
+
+    private func checkScrobbleThreshold(_ time: Double) {
+        guard !hasScrobbled,
+              let tid = scrobbleTrackID,
+              let track = currentTrack, track.id == tid,
+              scrobbleThreshold.isFinite,
+              time >= scrobbleThreshold else { return }
+        hasScrobbled = true
+        LastFmAuthManager.shared.scrobble(
+            track:     track.title ?? "",
+            artist:    track.artist ?? "",
+            album:     track.album,
+            timestamp: scrobbleStartTimestamp,
+            duration:  track.duration
+        )
+    }
+
     /// Called from the periodic time observer (every 0.5 s) with a 2-second
     /// debounce so disk I/O is bounded to ≤ 1 write per 2 s while scrubbing.
     private func schedulePlaybackStateSave() {
@@ -1599,6 +1641,7 @@ final class PlayerViewModel: ObservableObject {
             self.progress    = self.duration > 0 ? min(1, time / self.duration) : 0
             self.refreshNowPlayingPlaybackState()
             self.schedulePlaybackStateSave()
+            self.checkScrobbleThreshold(time)
             let remaining = self.duration > 0 ? self.duration - time : 0
             if self.crossfadeDuration > 0 && remaining > 0
                && remaining <= self.crossfadeDuration && !self.isCrossfadingOut {
@@ -2021,6 +2064,7 @@ final class PlayerViewModel: ObservableObject {
                     : 0
                 self.refreshNowPlayingPlaybackState()
                 self.schedulePlaybackStateSave()
+                self.checkScrobbleThreshold(self.currentTime)
                 let remaining = self.duration > 0 ? self.duration - self.currentTime : 0
                 if !self.isPlaybackRoutedThroughOrpheus && self.crossfadeDuration > 0
                    && remaining > 0 && remaining <= self.crossfadeDuration && !self.isCrossfadingOut {

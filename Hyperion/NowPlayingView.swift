@@ -738,8 +738,17 @@ struct NowPlayingView: View {
             ) {
                 Haptics.light()
                 if let track = player.currentTrack {
+                    let wasLiked = likedTracks.isLiked(track)
                     withAnimation(.spring(response: 0.28, dampingFraction: 0.58)) {
                         likedTracks.toggle(track)
+                    }
+                    let lfm = LastFmAuthManager.shared
+                    if lfm.isSignedIn {
+                        if wasLiked {
+                            lfm.unlove(track: track.title ?? "", artist: track.artist ?? "")
+                        } else {
+                            lfm.love(track: track.title ?? "", artist: track.artist ?? "")
+                        }
                     }
                 }
             }

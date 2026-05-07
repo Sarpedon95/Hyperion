@@ -62,7 +62,7 @@ enum HeadroomMode: String, Codable, CaseIterable, Identifiable {
 struct OrpheusPreset: Codable, Identifiable, Hashable {
     var id: UUID       = UUID()
     var name: String
-    var deviceName: String?    // Bluetooth display name for auto-switch
+    var deviceName: String?
 
     var mainEQBands:           [OrpheusEQBand]
     var mainEQBypassed:        Bool
@@ -70,6 +70,7 @@ struct OrpheusPreset: Codable, Identifiable, Hashable {
     var headphoneEQBypassed:   Bool
     var crossfeedFrequency:    Float
     var crossfeedLevel:        Float
+    var crossfeedDelay:        Float
     var crossfeedBypassed:     Bool
     var volumeLevelingMode:    VolumeLevelingMode
     var volumeLevelingTargetLUFS: Float
@@ -82,6 +83,64 @@ struct OrpheusPreset: Codable, Identifiable, Hashable {
     var headroomMode:          HeadroomMode
     var headroomManualDB:      Float
     var headroomBypassed:      Bool
+
+    // Memberwise init — used when creating presets programmatically.
+    init(name: String, deviceName: String? = nil,
+         mainEQBands: [OrpheusEQBand], mainEQBypassed: Bool,
+         headphoneEQBands: [OrpheusEQBand], headphoneEQBypassed: Bool,
+         crossfeedFrequency: Float, crossfeedLevel: Float, crossfeedDelay: Float, crossfeedBypassed: Bool,
+         volumeLevelingMode: VolumeLevelingMode, volumeLevelingTargetLUFS: Float, volumeLevelingBypassed: Bool,
+         balanceLeft: Float, balanceRight: Float, balanceMono: Bool, balanceBypassed: Bool,
+         srcMode: SRCMode, headroomMode: HeadroomMode, headroomManualDB: Float, headroomBypassed: Bool) {
+        self.name                     = name
+        self.deviceName               = deviceName
+        self.mainEQBands              = mainEQBands
+        self.mainEQBypassed           = mainEQBypassed
+        self.headphoneEQBands         = headphoneEQBands
+        self.headphoneEQBypassed      = headphoneEQBypassed
+        self.crossfeedFrequency       = crossfeedFrequency
+        self.crossfeedLevel           = crossfeedLevel
+        self.crossfeedDelay           = crossfeedDelay
+        self.crossfeedBypassed        = crossfeedBypassed
+        self.volumeLevelingMode       = volumeLevelingMode
+        self.volumeLevelingTargetLUFS = volumeLevelingTargetLUFS
+        self.volumeLevelingBypassed   = volumeLevelingBypassed
+        self.balanceLeft              = balanceLeft
+        self.balanceRight             = balanceRight
+        self.balanceMono              = balanceMono
+        self.balanceBypassed          = balanceBypassed
+        self.srcMode                  = srcMode
+        self.headroomMode             = headroomMode
+        self.headroomManualDB         = headroomManualDB
+        self.headroomBypassed         = headroomBypassed
+    }
+
+    // Custom decoder provides default for crossfeedDelay so old saved presets decode cleanly.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id                       = (try? c.decode(UUID.self,              forKey: .id))              ?? UUID()
+        name                     = try  c.decode(String.self,             forKey: .name)
+        deviceName               = try? c.decode(String.self,             forKey: .deviceName)
+        mainEQBands              = try  c.decode([OrpheusEQBand].self,    forKey: .mainEQBands)
+        mainEQBypassed           = try  c.decode(Bool.self,               forKey: .mainEQBypassed)
+        headphoneEQBands         = try  c.decode([OrpheusEQBand].self,    forKey: .headphoneEQBands)
+        headphoneEQBypassed      = try  c.decode(Bool.self,               forKey: .headphoneEQBypassed)
+        crossfeedFrequency       = try  c.decode(Float.self,              forKey: .crossfeedFrequency)
+        crossfeedLevel           = try  c.decode(Float.self,              forKey: .crossfeedLevel)
+        crossfeedDelay           = (try? c.decode(Float.self,             forKey: .crossfeedDelay))  ?? 0.3
+        crossfeedBypassed        = try  c.decode(Bool.self,               forKey: .crossfeedBypassed)
+        volumeLevelingMode       = try  c.decode(VolumeLevelingMode.self, forKey: .volumeLevelingMode)
+        volumeLevelingTargetLUFS = try  c.decode(Float.self,              forKey: .volumeLevelingTargetLUFS)
+        volumeLevelingBypassed   = try  c.decode(Bool.self,               forKey: .volumeLevelingBypassed)
+        balanceLeft              = try  c.decode(Float.self,              forKey: .balanceLeft)
+        balanceRight             = try  c.decode(Float.self,              forKey: .balanceRight)
+        balanceMono              = try  c.decode(Bool.self,               forKey: .balanceMono)
+        balanceBypassed          = try  c.decode(Bool.self,               forKey: .balanceBypassed)
+        srcMode                  = try  c.decode(SRCMode.self,            forKey: .srcMode)
+        headroomMode             = try  c.decode(HeadroomMode.self,       forKey: .headroomMode)
+        headroomManualDB         = try  c.decode(Float.self,              forKey: .headroomManualDB)
+        headroomBypassed         = try  c.decode(Bool.self,               forKey: .headroomBypassed)
+    }
 }
 
 // MARK: - DSP Engine
@@ -102,9 +161,14 @@ final class OrpheusDSPEngine: NSObject, ObservableObject {
     @Published var headphoneEQBypassed: Bool           = false
 
     // MARK: Crossfeed
-    @Published var crossfeedFrequency: Float = 700   // Hz
-    @Published var crossfeedLevel: Float     = 6.0   // dB
+    @Published var crossfeedFrequency: Float = 700   // Hz (LPF cutoff)
+    @Published var crossfeedLevel: Float     = 0.45  // strength 0…1
+    @Published var crossfeedDelay: Float     = 0.3   // ms ITD
     @Published var crossfeedBypassed: Bool   = false
+
+    // True when the current audio output is wired or Bluetooth headphones.
+    // Crossfeed is auto-bypassed for speaker / AirPlay / line output.
+    @Published private(set) var isHeadphoneOutput: Bool = false
 
     // MARK: Volume Leveling
     @Published var volumeLevelingMode: VolumeLevelingMode = .auto
@@ -189,12 +253,17 @@ final class OrpheusDSPEngine: NSObject, ObservableObject {
     }
 
     func applyCrossfeed() {
-        let mixer = audioManager.crossfeedMixer
-        if isPureModeEnabled || crossfeedBypassed {
-            mixer.outputVolume = 1.0
+        let effectiveBypassed = isPureModeEnabled || crossfeedBypassed || !isHeadphoneOutput
+
+        if let au = audioManager.crossfeedAU {
+            // Real Bauer DSP via custom AUAudioUnit
+            au.isBypassed   = effectiveBypassed
+            au.strength     = crossfeedLevel
+            au.cutoffHz     = crossfeedFrequency
+            au.delayMs      = crossfeedDelay
         } else {
-            let attenuation = max(0.5, 1.0 - (crossfeedLevel / 24.0))
-            mixer.outputVolume = Float(attenuation)
+            // Fallback: pass-through mixer until the AU finishes loading
+            audioManager.crossfeedMixer.outputVolume = 1.0
         }
         scheduleSettingsSave()
     }
@@ -258,11 +327,12 @@ final class OrpheusDSPEngine: NSObject, ObservableObject {
             ))
         }
 
-        if !crossfeedBypassed && crossfeedLevel > 0.05 {
+        if !crossfeedBypassed && crossfeedLevel > 0.01 && isHeadphoneOutput {
             items.append(OrpheusSignalPathItem(
                 title: "Crossfeed",
-                technicalValue: String(format: "%.1f dB", crossfeedLevel),
-                explanation: "Crossfeed reduces stereo width on headphones, softening hard-panned content and reducing listening fatigue."
+                technicalValue: String(format: "%.0f%% strength · %.0f Hz · %.1f ms",
+                                       crossfeedLevel * 100, crossfeedFrequency, crossfeedDelay),
+                explanation: "Bauer crossfeed reduces stereo width on headphones, softening hard-panned content and reducing listening fatigue."
             ))
         }
 
@@ -305,7 +375,7 @@ final class OrpheusDSPEngine: NSObject, ObservableObject {
         let inactive = [
             mainEQBypassed || activeMainBands.isEmpty ? "EQ" : nil,
             headphoneEQBypassed || activeHeadphoneBands.isEmpty ? "Headphone EQ" : nil,
-            crossfeedBypassed || crossfeedLevel <= 0.05 ? "Crossfeed" : nil,
+            crossfeedBypassed || crossfeedLevel <= 0.01 || !isHeadphoneOutput ? "Crossfeed" : nil,
             volumeLevelingBypassed ? "Volume leveling" : nil,
             headroomBypassed ? "Headroom" : nil,
             balanceBypassed || (abs(balanceLeft) <= 0.05 && abs(balanceRight) <= 0.05 && !balanceMono) ? "Balance" : nil
@@ -340,6 +410,7 @@ final class OrpheusDSPEngine: NSObject, ObservableObject {
         headphoneEQBypassed      = preset.headphoneEQBypassed
         crossfeedFrequency       = preset.crossfeedFrequency
         crossfeedLevel           = preset.crossfeedLevel
+        crossfeedDelay           = preset.crossfeedDelay
         crossfeedBypassed        = preset.crossfeedBypassed
         volumeLevelingMode       = preset.volumeLevelingMode
         volumeLevelingTargetLUFS = preset.volumeLevelingTargetLUFS
@@ -378,6 +449,7 @@ final class OrpheusDSPEngine: NSObject, ObservableObject {
             headphoneEQBypassed:     headphoneEQBypassed,
             crossfeedFrequency:      crossfeedFrequency,
             crossfeedLevel:          crossfeedLevel,
+            crossfeedDelay:          crossfeedDelay,
             crossfeedBypassed:       crossfeedBypassed,
             volumeLevelingMode:      volumeLevelingMode,
             volumeLevelingTargetLUFS: volumeLevelingTargetLUFS,
@@ -404,6 +476,7 @@ final class OrpheusDSPEngine: NSObject, ObservableObject {
         var headphoneEQBypassed:     Bool
         var crossfeedFrequency:      Float
         var crossfeedLevel:          Float
+        var crossfeedDelay:          Float?  // optional for backward compat with old saves
         var crossfeedBypassed:       Bool
         var volumeLevelingMode:      VolumeLevelingMode
         var volumeLevelingTargetLUFS: Float
@@ -437,6 +510,7 @@ final class OrpheusDSPEngine: NSObject, ObservableObject {
             headphoneEQBypassed:     headphoneEQBypassed,
             crossfeedFrequency:      crossfeedFrequency,
             crossfeedLevel:          crossfeedLevel,
+            crossfeedDelay:          crossfeedDelay,
             crossfeedBypassed:       crossfeedBypassed,
             volumeLevelingMode:      volumeLevelingMode,
             volumeLevelingTargetLUFS: volumeLevelingTargetLUFS,
@@ -466,6 +540,7 @@ final class OrpheusDSPEngine: NSObject, ObservableObject {
         headphoneEQBypassed      = s.headphoneEQBypassed
         crossfeedFrequency       = s.crossfeedFrequency
         crossfeedLevel           = s.crossfeedLevel
+        crossfeedDelay           = s.crossfeedDelay ?? 0.3
         crossfeedBypassed        = s.crossfeedBypassed
         volumeLevelingMode       = s.volumeLevelingMode
         volumeLevelingTargetLUFS = s.volumeLevelingTargetLUFS
@@ -538,25 +613,44 @@ final class OrpheusDSPEngine: NSObject, ObservableObject {
         centralManager = CBCentralManager(delegate: self, queue: nil, options: [
             CBCentralManagerOptionShowPowerAlertKey: false
         ])
-        // Also subscribe to AVAudioSession route changes (more reliable for BT audio).
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(audioRouteDidChange(_:)),
             name: AVAudioSession.routeChangeNotification,
             object: nil
         )
+        // Seed headphone state from the current route at launch.
+        let headphoneTypes: Set<AVAudioSession.Port> = [
+            .headphones, .bluetoothA2DP, .bluetoothHFP, .bluetoothLE
+        ]
+        let outputs = AVAudioSession.sharedInstance().currentRoute.outputs
+        isHeadphoneOutput = outputs.contains { headphoneTypes.contains($0.portType) }
     }
 
     @objc private nonisolated func audioRouteDidChange(_ note: Notification) {
         let session = AVAudioSession.sharedInstance()
         let outputs = session.currentRoute.outputs
-        let newName = outputs.first(where: {
-            $0.portType == .bluetoothA2DP || $0.portType == .bluetoothHFP || $0.portType == .bluetoothLE
+
+        let headphoneTypes: Set<AVAudioSession.Port> = [
+            .headphones, .bluetoothA2DP, .bluetoothHFP, .bluetoothLE
+        ]
+        let headphonesConnected = outputs.contains { headphoneTypes.contains($0.portType) }
+
+        let btName = outputs.first(where: {
+            $0.portType == .bluetoothA2DP ||
+            $0.portType == .bluetoothHFP  ||
+            $0.portType == .bluetoothLE
         })?.portName
 
         Task { @MainActor [weak self] in
             guard let self else { return }
-            if let name = newName, !name.isEmpty {
+
+            // Update headphone state and re-apply crossfeed bypass accordingly.
+            self.isHeadphoneOutput = headphonesConnected
+            self.applyCrossfeed()
+
+            // Bluetooth preset auto-switch
+            if let name = btName, !name.isEmpty {
                 if self.connectedBluetoothDeviceName != name {
                     self.connectedBluetoothDeviceName = name
                     self.autoSwitchPresetIfNeeded(for: name)

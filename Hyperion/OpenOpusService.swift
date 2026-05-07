@@ -200,8 +200,6 @@ final class OpenOpusService {
 
     static let shared = OpenOpusService()
 
-    // nonisolated(unsafe): URLSession is created once and never mutated;
-    // safe to access from the nonisolated networking primitives below.
     private let session: URLSession = {
         let cfg = URLSessionConfiguration.default
         cfg.timeoutIntervalForRequest  = 15

@@ -323,7 +323,7 @@ struct OrpheusView: View {
     private var crossfeedCard: some View {
         OrpheusDSPCard(
             title: "Crossfeed",
-            subtitle: String(format: "%+.0f dB", dsp.crossfeedLevel),
+            subtitle: dsp.crossfeedBypassed ? "Off" : String(format: "%.0f%% · %.0f Hz", dsp.crossfeedLevel * 100, dsp.crossfeedFrequency),
             iconName: "arrow.left.arrow.right",
             isEnabled: Binding(
                 get: { !dsp.crossfeedBypassed },

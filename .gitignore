@@ -27,3 +27,6 @@ ExportOptions.plist
 
 # Local config
 .env
+
+# API secrets — use Secrets.xcconfig.example as the template
+Secrets.xcconfig

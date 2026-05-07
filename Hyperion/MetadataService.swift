@@ -299,7 +299,7 @@ final class LastFmProvider: @unchecked Sendable {
     static let shared = LastFmProvider()
     private init() {}
 
-    private let apiKey = "1f3fd89f88c37df99a6dbc3a06b21642"
+    private var apiKey: String { SecretsProvider.lastFmApiKey }
     private let base   = "https://ws.audioscrobbler.com/2.0/"
 
     private let session: URLSession = {
@@ -479,7 +479,8 @@ final class DiscogsProvider: @unchecked Sendable {
     static let shared = DiscogsProvider()
     private init() {}
 
-    private let token = "KETJXiJyIAMjqNiUGvCrkTeAnAyktTEPZhjEQHYt"
+    // Read token directly from Keychain to avoid a @MainActor hop from non-isolated context.
+    private var token: String { KeychainManager.shared.load(key: "discogs.accessToken") ?? "" }
     private let base  = "https://api.discogs.com"
 
     private let session: URLSession = {
@@ -499,25 +500,27 @@ final class DiscogsProvider: @unchecked Sendable {
 
     private func fetchInternal(artist: String, album: String?) async -> MetadataResult? {
         guard let album else { return nil }
+        let tok = token
+        guard !tok.isEmpty else { return nil }
 
         let items: [URLQueryItem] = [
             URLQueryItem(name: "artist",        value: artist),
             URLQueryItem(name: "release_title", value: album),
-            URLQueryItem(name: "token",         value: token)
+            URLQueryItem(name: "token",         value: tok)
         ]
         guard var comps = URLComponents(string: "\(base)/database/search") else { return nil }
         comps.queryItems = items
         guard let searchURL = comps.url,
-              let data = try? await fetch(url: searchURL),
+              let data = try? await fetch(url: searchURL, token: tok),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let results = json["results"] as? [[String: Any]],
               let first = results.first,
               let releaseID = first["id"] as? Int else { return nil }
 
         // Fetch release detail
-        let detailURL = URL(string: "\(base)/releases/\(releaseID)?token=\(token)")
+        let detailURL = URL(string: "\(base)/releases/\(releaseID)?token=\(tok)")
         guard let detailURL,
-              let detailData = try? await fetch(url: detailURL),
+              let detailData = try? await fetch(url: detailURL, token: tok),
               let detailJSON = try? JSONSerialization.jsonObject(with: detailData) as? [String: Any] else { return nil }
 
         let year   = (detailJSON["year"] as? Int).map { String($0) }
@@ -543,7 +546,7 @@ final class DiscogsProvider: @unchecked Sendable {
         )
     }
 
-    private func fetch(url: URL) async throws -> Data {
+    private func fetch(url: URL, token: String) async throws -> Data {
         var req = URLRequest(url: url)
         req.setValue("Discogs token=\(token)", forHTTPHeaderField: "Authorization")
         req.setValue("Hyperion/1.0 (iOS music player)", forHTTPHeaderField: "User-Agent")

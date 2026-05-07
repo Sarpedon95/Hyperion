@@ -13,6 +13,8 @@ struct HyperionApp: App {
 
     init() {
         HyperionApp.configureAppearance()
+        // Register custom Audio Units before any AVAudioEngine chain is built.
+        CrossfeedAudioUnit.register()
         // Touch singletons at launch so their sessions/observers are registered
         // before any SwiftUI view appears.
         _ = PlayerViewModel.shared

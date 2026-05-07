@@ -843,6 +843,8 @@ struct SettingsView: View {
     @ObservedObject private var player       = PlayerViewModel.shared
     @ObservedObject private var playlistStore = PlaylistStore.shared
     @ObservedObject private var audiomuse    = AudiomuseManager.shared
+    @ObservedObject private var lastFmAuth   = LastFmAuthManager.shared
+    @ObservedObject private var discogsAuth  = DiscogsAuthManager.shared
     @Environment(\.dismiss) private var dismiss
 
     @State private var localURL: String     = ""
@@ -855,6 +857,15 @@ struct SettingsView: View {
     @State private var logsCopied: Bool = false
     @State private var connectionTestTask: Task<Void, Never>? = nil
     @State private var connectionTestID: UUID? = nil
+
+    // Last.fm login sheet
+    @State private var showLastFmLogin: Bool   = false
+    @State private var lastFmUsername: String  = ""
+    @State private var lastFmPassword: String  = ""
+
+    // Discogs login sheet
+    @State private var showDiscogsLogin: Bool  = false
+    @State private var discogsPATInput: String = ""
 
     var body: some View {
         NavigationStack {
@@ -991,6 +1002,73 @@ struct SettingsView: View {
                 AudiomuseSectionView(audiomuse: audiomuse)
                     .listRowBackground(Color.roonSurface)
 
+                // MARK: - Accounts
+
+                Section {
+                    // Last.fm
+                    if lastFmAuth.isSignedIn {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Last.fm").foregroundColor(.roonPrimary)
+                                Text(lastFmAuth.username ?? "Connected")
+                                    .font(.roonBody(12)).foregroundColor(.roonSecondary)
+                            }
+                            Spacer()
+                            Button("Sign Out") { lastFmAuth.signOut() }
+                                .font(.roonBody(13)).foregroundColor(.roonAccent)
+                        }
+                    } else {
+                        Button {
+                            lastFmUsername = ""
+                            lastFmPassword = ""
+                            showLastFmLogin = true
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Last.fm").foregroundColor(.roonPrimary)
+                                    Text("Scrobble tracks and sync loves")
+                                        .font(.roonBody(12)).foregroundColor(.roonSecondary)
+                                }
+                                Spacer()
+                                Text("Sign In").font(.roonBody(13)).foregroundColor(.roonAccent)
+                            }
+                        }
+                    }
+
+                    // Discogs
+                    if discogsAuth.isConnected {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Discogs").foregroundColor(.roonPrimary)
+                                Text("Personal Access Token connected")
+                                    .font(.roonBody(12)).foregroundColor(.roonSecondary)
+                            }
+                            Spacer()
+                            Button("Disconnect") { discogsAuth.disconnect() }
+                                .font(.roonBody(13)).foregroundColor(.roonAccent)
+                        }
+                    } else {
+                        Button {
+                            discogsPATInput = ""
+                            showDiscogsLogin = true
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Discogs").foregroundColor(.roonPrimary)
+                                    Text("Album metadata and release info")
+                                        .font(.roonBody(12)).foregroundColor(.roonSecondary)
+                                }
+                                Spacer()
+                                Text("Connect").font(.roonBody(13)).foregroundColor(.roonAccent)
+                            }
+                        }
+                    }
+                } header: { Text("ACCOUNTS") } footer: {
+                    Text("Last.fm scrobbles tracks and syncs your loved songs. Discogs provides album release info and metadata.")
+                        .font(.roonBody(12)).foregroundColor(.roonTertiary)
+                }
+                .listRowBackground(Color.roonSurface)
+
                 Section {
                     Toggle(isOn: $player.useOrpheusEngine) {
                         VStack(alignment: .leading, spacing: 3) {
@@ -1113,6 +1191,13 @@ struct SettingsView: View {
                 connectionTestTask = nil
                 connectionTestID = nil
                 isTestingConnection = false
+            }
+            .sheet(isPresented: $showLastFmLogin) {
+                LastFmLoginSheet(username: $lastFmUsername, password: $lastFmPassword,
+                                 isPresented: $showLastFmLogin)
+            }
+            .sheet(isPresented: $showDiscogsLogin) {
+                DiscogsLoginSheet(pat: $discogsPATInput, isPresented: $showDiscogsLogin)
             }
         }
     }
@@ -1300,6 +1385,128 @@ private struct AudiomuseSectionView: View {
         } header: { Text("AI MIXES") } footer: {
             Text("AudioMuse is an optional LMS plugin that generates AI mixes. When unavailable, Hyperion falls back to local mix generation. A 5-second timeout is used for all AudioMuse requests.")
                 .font(.roonBody(12)).foregroundColor(.roonTertiary)
+        }
+    }
+}
+
+// MARK: - Last.fm Login Sheet
+
+private struct LastFmLoginSheet: View {
+    @Binding var username: String
+    @Binding var password: String
+    @Binding var isPresented: Bool
+    @ObservedObject private var auth = LastFmAuthManager.shared
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("Username", text: $username)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                    SecureField("Password", text: $password)
+                }
+                .listRowBackground(Color.roonSurface)
+
+                if let error = auth.authError {
+                    Section {
+                        Text(error)
+                            .font(.roonBody(13))
+                            .foregroundColor(.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .listRowBackground(Color.roonSurface)
+                }
+
+                Section {
+                    Button {
+                        Task { await auth.signIn(username: username, password: password) }
+                    } label: {
+                        HStack {
+                            Spacer()
+                            if auth.isAuthenticating {
+                                ProgressView().tint(.roonAccent)
+                            } else {
+                                Text("Sign In")
+                                    .fontWeight(.semibold)
+                                    .foregroundColor(.roonAccent)
+                            }
+                            Spacer()
+                        }
+                    }
+                    .disabled(auth.isAuthenticating || username.isEmpty || password.isEmpty)
+                }
+                .listRowBackground(Color.roonSurface)
+            }
+            .scrollContentBackground(.hidden)
+            .background(Color.roonBase.ignoresSafeArea())
+            .navigationTitle("Sign in to Last.fm")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarColorScheme(.dark, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { isPresented = false }
+                        .foregroundColor(.roonSecondary)
+                }
+            }
+            .preferredColorScheme(.dark)
+            .onChange(of: auth.isSignedIn) { _, signedIn in
+                if signedIn { isPresented = false }
+            }
+        }
+    }
+}
+
+// MARK: - Discogs Login Sheet
+
+private struct DiscogsLoginSheet: View {
+    @Binding var pat: String
+    @Binding var isPresented: Bool
+    @ObservedObject private var auth = DiscogsAuthManager.shared
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("Personal Access Token", text: $pat)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .font(.system(.body, design: .monospaced))
+                } footer: {
+                    Text("Generate a Personal Access Token at discogs.com → Settings → Developers. The token is stored securely in your device Keychain.")
+                        .font(.roonBody(12)).foregroundColor(.roonTertiary)
+                }
+                .listRowBackground(Color.roonSurface)
+
+                Section {
+                    Button {
+                        auth.connect(token: pat)
+                        isPresented = false
+                    } label: {
+                        HStack {
+                            Spacer()
+                            Text("Connect")
+                                .fontWeight(.semibold)
+                                .foregroundColor(.roonAccent)
+                            Spacer()
+                        }
+                    }
+                    .disabled(pat.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+                .listRowBackground(Color.roonSurface)
+            }
+            .scrollContentBackground(.hidden)
+            .background(Color.roonBase.ignoresSafeArea())
+            .navigationTitle("Connect Discogs")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarColorScheme(.dark, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { isPresented = false }
+                        .foregroundColor(.roonSecondary)
+                }
+            }
+            .preferredColorScheme(.dark)
         }
     }
 }

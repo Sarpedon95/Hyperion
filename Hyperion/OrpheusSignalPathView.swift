@@ -21,7 +21,7 @@ struct OrpheusSignalPathView: View {
             SignalNode(label: "HP EQ",    detail: pure ? "Pure" : eqSummary(dsp.headphoneEQBands, bypassed: dsp.headphoneEQBypassed),
                        icon: "headphones",
                        bypassed: pure || dsp.headphoneEQBypassed, pureOverride: pure && !dsp.headphoneEQBypassed),
-            SignalNode(label: "Xfeed",    detail: (pure || dsp.crossfeedBypassed) ? (pure ? "Pure" : "Off") : String(format: "%+.0f dB", dsp.crossfeedLevel),
+            SignalNode(label: "Xfeed",    detail: (pure || dsp.crossfeedBypassed) ? (pure ? "Pure" : "Off") : String(format: "%.0f%%", dsp.crossfeedLevel * 100),
                        icon: "arrow.left.arrow.right",
                        bypassed: pure || dsp.crossfeedBypassed, pureOverride: pure && !dsp.crossfeedBypassed),
             SignalNode(label: "Leveling", detail: (pure || dsp.volumeLevelingBypassed) ? (pure ? "Pure" : "Off") : "\(Int(dsp.volumeLevelingTargetLUFS)) LUFS",

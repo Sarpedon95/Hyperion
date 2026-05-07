@@ -24,26 +24,33 @@ final class AudioPlayerManager: ObservableObject {
     let player: AVQueuePlayer
 
     // MARK: - DSP signal chain (AVAudioEngine)
-    /// Primary path: playerNode → mainEQNode → headphoneEQNode → crossfeedMixer
-    ///        → levelingMixer → balanceMixer → mainMixerNode → outputNode
-    /// OrpheusPlaybackEngine schedules decoded PCM buffers into `playerNode`.
-    /// When `PlayerViewModel.isPlaybackRoutedThroughOrpheus` is true, audio is
-    /// confirmed to be flowing through this chain.
+    /// Primary path (once crossfeed AU loads):
+    ///   playerNode → mainEQNode → headphoneEQNode → crossfeedUnit
+    ///              → levelingMixer → balanceMixer → mainMixerNode → outputNode
+    ///
+    /// Before the crossfeed AU is available (initial boot):
+    ///   playerNode → mainEQNode → headphoneEQNode → crossfeedMixer (pass-through)
+    ///              → levelingMixer → balanceMixer → mainMixerNode → outputNode
     let isDSPChainFedByPlayback = false  // legacy flag — routing truth is in PlayerViewModel
 
     let engine          = AVAudioEngine()
     let playerNode      = AVAudioPlayerNode()
     let mainEQNode      = AVAudioUnitEQ(numberOfBands: 10)
     let headphoneEQNode = AVAudioUnitEQ(numberOfBands: 10)
-    let crossfeedMixer  = AVAudioMixerNode()
     let levelingMixer   = AVAudioMixerNode()
     let balanceMixer    = AVAudioMixerNode()
+
+    // crossfeedMixer is the pass-through placeholder until the real AU loads.
+    let crossfeedMixer  = AVAudioMixerNode()
+
+    // The real Bauer crossfeed AU. Set once after async instantiation.
+    private(set) var crossfeedUnit: AVAudioUnit?
+    // Typed accessor into the AU's DSP parameters.
+    private(set) var crossfeedAU: CrossfeedAudioUnit?
 
     private init() {
         let persistentPlayer = AVQueuePlayer()
         persistentPlayer.automaticallyWaitsToMinimizeStalling = true
-        // Do NOT set actionAtItemEnd to .pause — leave the default (.advance) so
-        // pre-inserted items play back-to-back without a silence gap (gapless).
         player = persistentPlayer
 
         let session = AVAudioSession.sharedInstance()
@@ -70,13 +77,13 @@ final class AudioPlayerManager: ObservableObject {
         engine.attach(levelingMixer)
         engine.attach(balanceMixer)
 
-        // nil format → AVAudioEngine negotiates compatible format automatically.
-        engine.connect(playerNode,      to: mainEQNode,            format: nil)
-        engine.connect(mainEQNode,      to: headphoneEQNode,       format: nil)
-        engine.connect(headphoneEQNode, to: crossfeedMixer,        format: nil)
-        engine.connect(crossfeedMixer,  to: levelingMixer,         format: nil)
-        engine.connect(levelingMixer,   to: balanceMixer,          format: nil)
-        engine.connect(balanceMixer,    to: engine.mainMixerNode,  format: nil)
+        // Initial chain uses crossfeedMixer as a pass-through placeholder.
+        engine.connect(playerNode,      to: mainEQNode,           format: nil)
+        engine.connect(mainEQNode,      to: headphoneEQNode,      format: nil)
+        engine.connect(headphoneEQNode, to: crossfeedMixer,       format: nil)
+        engine.connect(crossfeedMixer,  to: levelingMixer,        format: nil)
+        engine.connect(levelingMixer,   to: balanceMixer,         format: nil)
+        engine.connect(balanceMixer,    to: engine.mainMixerNode, format: nil)
 
         engine.prepare()
         do {
@@ -85,26 +92,59 @@ final class AudioPlayerManager: ObservableObject {
         } catch {
             ServerLogStore.shared.error("AVAudioEngine start failed: \(error.localizedDescription)")
         }
+
+        // Load the real crossfeed AU asynchronously and splice it in.
+        Task { await loadCrossfeedAU() }
+    }
+
+    // MARK: - Crossfeed AU hot-splice
+
+    private func loadCrossfeedAU() async {
+        let unit: AVAudioUnit? = await withCheckedContinuation { continuation in
+            AVAudioUnit.instantiate(
+                with: CrossfeedAudioUnit.componentDescription,
+                options: .loadInProcess
+            ) { avUnit, _ in
+                continuation.resume(returning: avUnit)
+            }
+        }
+
+        guard let unit, let au = unit.auAudioUnit as? CrossfeedAudioUnit else {
+            ServerLogStore.shared.info("CrossfeedAudioUnit: instantiation failed, using pass-through mixer")
+            return
+        }
+
+        // Splice the real AU into the chain between headphoneEQNode and levelingMixer.
+        // The engine is paused briefly; no audio is playing during boot so no audible gap.
+        engine.pause()
+        engine.disconnectNodeOutput(headphoneEQNode)
+        engine.disconnectNodeOutput(crossfeedMixer)
+        engine.detach(crossfeedMixer)
+        engine.attach(unit)
+        engine.connect(headphoneEQNode, to: unit,            format: nil)
+        engine.connect(unit,            to: levelingMixer,   format: nil)
+        try? engine.start()
+
+        crossfeedUnit = unit
+        crossfeedAU   = au
+        ServerLogStore.shared.info("CrossfeedAudioUnit: Bauer crossfeed DSP loaded and spliced into chain")
+
+        // Apply current DSP settings now that the real AU is available.
+        OrpheusDSPEngine.shared.applyCrossfeed()
     }
 
     // MARK: - PlayerViewModel compatibility surface
 
-    /// Replace the entire queue with a single item. Removes all pre-queued
-    /// gapless items so the player starts fresh on the new track.
     func replaceCurrentItem(with item: AVPlayerItem?) {
         player.removeAllItems()
         if let item { player.insert(item, after: nil) }
     }
 
-    /// Pre-insert the next item at the tail of the queue so AVQueuePlayer can
-    /// advance to it without a silence gap when the current item ends.
     func preloadNextItem(_ item: AVPlayerItem) {
         guard !player.items().contains(item) else { return }
         player.insert(item, after: player.items().last)
     }
 
-    /// Remove all queued items except the currently playing one.
-    /// Called when the queue changes so stale pre-loaded items don't play.
     func removePreloadedItems() {
         let items = player.items()
         guard items.count > 1 else { return }
