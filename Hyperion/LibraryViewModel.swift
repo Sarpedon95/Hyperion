@@ -636,8 +636,7 @@ final class LibraryViewModel: ObservableObject {
             foundAlbums.append(a)
         }
 
-        // 1. Local composer search (always complete — paginated on load)
-        if composers.isEmpty { await loadComposers() }
+        // 1. Local composer search (only searches data already in memory — never blocks on load)
         composers.filter { needle.matches($0.artist) }.forEach { mergeComposer($0) }
 
         // 1a. Local artist search
@@ -645,8 +644,7 @@ final class LibraryViewModel: ObservableObject {
             if seenArtistIDs.insert(a.id).inserted { foundArtists.append(a) }
         }
 
-        // 1b. Local track search
-        if songs.isEmpty { await loadSongs() }
+        // 1b. Local track search (only searches data already in memory — never blocks on load)
         songs.filter {
             needle.matches($0.title) ||
             needle.matches($0.trackartist ?? $0.albumartist ?? "") ||

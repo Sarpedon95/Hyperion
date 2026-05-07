@@ -152,7 +152,8 @@ struct NowPlayingView: View {
                 let safeTop = geo.safeAreaInsets.top
                 let safeBottom = geo.safeAreaInsets.bottom
                 let usableHeight = max(geo.size.height - safeTop - safeBottom, 480)
-                let artworkSide = geo.size.width - 48  // 24pt padding each side
+                // Cap artwork so it never dominates the layout on any screen size.
+                let artworkSide = min(geo.size.width - 32, usableHeight * 0.44)
 
                 VStack(spacing: 0) {
                     headerBar
@@ -166,18 +167,14 @@ struct NowPlayingView: View {
                     ScrollView(showsIndicators: false) {
                         VStack(spacing: 0) {
                             artworkSection(side: artworkSide)
-                                .padding(.horizontal, 8)
                                 .padding(.top, 8)
                                 .padding(.bottom, 20)
 
                             trackInfo
-                                .padding(.horizontal, 8)
-                                .padding(.top, 0)
                                 .padding(.bottom, 16)
 
                             if let detail = ooWorkDetail {
                                 openOpusInfoBlock(detail: detail)
-                                    .padding(.horizontal, 8)
                                     .padding(.bottom, 12)
                                     .transition(.opacity.combined(with: .move(edge: .top)))
                                     .animation(.easeInOut(duration: 0.25), value: ooWorkDetail != nil)
@@ -199,7 +196,6 @@ struct NowPlayingView: View {
                         }
                         .padding(.horizontal, 16)
                         .frame(
-                            minWidth: geo.size.width,
                             maxWidth: .infinity,
                             minHeight: usableHeight - 44,
                             alignment: .top
@@ -208,6 +204,7 @@ struct NowPlayingView: View {
                     .simultaneousGesture(swipeDownToDismissGesture)
                 }
             }
+            .ignoresSafeArea()
             .offset(y: dragOffset)
             .animation(isDraggingDown ? .none : .spring(response: 0.34, dampingFraction: 0.84), value: dragOffset)
 
