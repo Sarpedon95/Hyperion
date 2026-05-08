@@ -91,9 +91,9 @@ final class SearchViewModel: ObservableObject {
             isSearching = false  // server results will replace these silently
         }
 
-        // 3. 300 ms debounce, then fetch from server (skipped in Library scope).
+        // 3. 150 ms debounce, then fetch from server (skipped in Library scope).
         searchTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 300_000_000)
+            try? await Task.sleep(nanoseconds: 150_000_000)
             guard !Task.isCancelled, let self, self.searchSequence == sequence else { return }
             guard self.scope == .all else {
                 if !hasLocal { self.isSearching = false }
@@ -178,13 +178,14 @@ struct SearchView: View {
                 vm.performSearch(query: vm.searchText, library: library)
             }
             .task {
-                // Pre-warm all in-memory stores so searchLocal() has data immediately.
-                // Each load() is no-op if already populated.
+                // Pre-warm fast stores (composers, artists, first album page).
+                // loadSongs() is intentionally omitted — it fetches the entire
+                // song library in pages and blocks search for several seconds on
+                // large libraries. Track results come from the server search instead.
                 async let composers: Void = library.loadComposers()
                 async let artists:   Void = library.loadArtists()
-                async let songs:     Void = library.loadSongs()
                 async let albums:    Void = library.loadAlbums()
-                await composers; await artists; await songs; await albums
+                await composers; await artists; await albums
             }
         }
     }

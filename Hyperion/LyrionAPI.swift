@@ -450,6 +450,15 @@ final class LyrionAPI {
         return Self.parseAlbums(arr)
     }
 
+    func getTracksForArtist(artistID: Int, count: Int = 500) async throws -> [Track] {
+        try Task.checkCancellation()
+        let result = try await request(params: [
+            "titles", 0, count, "artist_id:\(artistID)",
+            "tags:\(trackTags)", "sort:title"
+        ])
+        return Self.parseTracks(result["titles_loop"] as? [[String: Any]] ?? [])
+    }
+
     func getTracksForWork(workID: Int) async throws -> [Track] {
         try Task.checkCancellation()
         let result = try await request(params: [
@@ -568,6 +577,16 @@ final class LyrionAPI {
                   let name = dict["artist"] as? String else { return nil }
             return Artist(id: id, name: name)
         }
+    }
+
+    func searchTracks(term: String, count: Int = 30) async throws -> [Track] {
+        try Task.checkCancellation()
+        let trimmed = term.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        let result = try await request(params: [
+            "titles", 0, count, "search:\(trimmed)", "tags:\(trackTags)", "sort:title"
+        ])
+        return Self.parseTracks(result["titles_loop"] as? [[String: Any]] ?? [])
     }
 
     /// Album-title search with layered fallbacks.

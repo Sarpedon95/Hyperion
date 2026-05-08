@@ -1691,11 +1691,22 @@ final class PlayerViewModel: ObservableObject {
             accept: "audio/flac,audio/mpeg,audio/mp4,audio/aac,audio/wav,audio/*,*/*"
         )
 
+        // Grab the prefetched asset for this track before launching the load task.
+        // The prefetch task already started asset.load(.duration) in the background,
+        // so reusing this asset skips one (or more) network round-trips inside load().
+        var orpheusPreloadedAsset: AVURLAsset? = nil
+        if let cached = prefetchedNextAsset, cached.trackID == track.id {
+            orpheusPreloadedAsset = cached.asset
+            prefetchedNextAsset   = nil
+            ServerLogStore.shared.debug("Orpheus: reusing prefetched asset for \(track.title)")
+        }
+
         orpheusLoadTask?.cancel()
         orpheusLoadTask = Task { @MainActor [weak self] in
             guard let self, self.orpheusEngine === engine, playbackID == self.activePlaybackID else { return }
             do {
-                try await engine.load(url: candidates[0], headers: headers, startTime: startTime)
+                try await engine.load(url: candidates[0], headers: headers, startTime: startTime,
+                                      preloadedAsset: orpheusPreloadedAsset)
                 guard self.orpheusEngine === engine, playbackID == self.activePlaybackID else { return }
                 // Mirror engine diagnostic state to published properties.
                 self.orpheusDurationKnown  = engine.durationKnown

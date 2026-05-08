@@ -172,7 +172,12 @@ final class OrpheusPlaybackEngine {
     /// Loads the asset at `url`, classifies it as file-like or streaming, and
     /// prepares the AVAssetReader. Throws only on genuine failures; indefinite
     /// duration is handled as streaming mode (not a fallback condition).
-    func load(url: URL, headers: [String: String], startTime: Double = 0) async throws {
+    ///
+    /// `preloadedAsset` — pass a prefetched `AVURLAsset` whose HTTP connection
+    /// is already established. When provided the asset is used directly instead
+    /// of creating a new one, eliminating one network round-trip.
+    func load(url: URL, headers: [String: String], startTime: Double = 0,
+              preloadedAsset: AVURLAsset? = nil) async throws {
         playbackMode  = .fileLike
         streamKind    = .unknown
         durationKnown = false
@@ -184,45 +189,52 @@ final class OrpheusPlaybackEngine {
         let sessionRate = AVAudioSession.sharedInstance().sampleRate
         sampleRate = sessionRate > 0 ? sessionRate : 44_100
 
-        let options: [String: Any] = ["AVURLAssetHTTPHeaderFieldsKey": headers]
-        let asset = AVURLAsset(url: url, options: options)
+        // Reuse a prefetched asset when available — its HTTP connection is already
+        // established so .duration / .loadTracks resolve much faster.
+        let asset: AVURLAsset
+        if let preloaded = preloadedAsset {
+            asset = preloaded
+            ServerLogStore.shared.debug(
+                "Orpheus load (prefetched): \(ServerLogStore.redactedURL(url.absoluteString))"
+            )
+        } else {
+            let options: [String: Any] = ["AVURLAssetHTTPHeaderFieldsKey": headers]
+            asset = AVURLAsset(url: url, options: options)
+            ServerLogStore.shared.debug(
+                "Orpheus load: \(ServerLogStore.redactedURL(url.absoluteString))"
+            )
+        }
         currentAsset = asset
 
-        ServerLogStore.shared.debug(
-            "Orpheus load: \(ServerLogStore.redactedURL(url.absoluteString))"
-        )
-
-        // 1 — Duration & stream classification
-        do {
-            let cmDur = try await asset.load(.duration)
-            if cmDur.isValid && !cmDur.isIndefinite && cmDur.seconds > 0 {
-                duration      = cmDur.seconds
-                streamKind    = .fileLike
-                playbackMode  = .fileLike
-                durationKnown = true
-                canSeek       = true
-                onDurationKnown?(duration)
-                ServerLogStore.shared.debug(
-                    "Orpheus: duration=\(String(format:"%.2f",duration))s  mode=fileLike  canSeek=true"
-                )
-            } else {
-                streamKind   = .streamLike
-                playbackMode = .streaming
-                ServerLogStore.shared.info(
-                    "Orpheus: indefinite duration — mode=streaming  canSeek=false"
-                )
-            }
-        } catch {
-            throw OrpheusError.assetLoadFailed(error)
-        }
-
-        // 2 — Audio tracks
+        // 1+2 — Duration & audio tracks concurrently (each is a separate network probe).
+        let cmDur: CMTime
         let tracks: [AVAssetTrack]
         do {
-            tracks = try await asset.loadTracks(withMediaType: .audio)
+            async let durLoad    = asset.load(.duration)
+            async let tracksLoad = asset.loadTracks(withMediaType: .audio)
+            (cmDur, tracks) = try await (durLoad, tracksLoad)
         } catch {
             throw OrpheusError.assetLoadFailed(error)
         }
+
+        if cmDur.isValid && !cmDur.isIndefinite && cmDur.seconds > 0 {
+            duration      = cmDur.seconds
+            streamKind    = .fileLike
+            playbackMode  = .fileLike
+            durationKnown = true
+            canSeek       = true
+            onDurationKnown?(duration)
+            ServerLogStore.shared.debug(
+                "Orpheus: duration=\(String(format:"%.2f",duration))s  mode=fileLike  canSeek=true"
+            )
+        } else {
+            streamKind   = .streamLike
+            playbackMode = .streaming
+            ServerLogStore.shared.info(
+                "Orpheus: indefinite duration — mode=streaming  canSeek=false"
+            )
+        }
+
         guard let audioTrack = tracks.first else {
             throw OrpheusError.noAudioTrack
         }

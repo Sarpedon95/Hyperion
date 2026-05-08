@@ -284,10 +284,11 @@ final class LibraryViewModel: ObservableObject {
 
         let task = Task<ArtistDetailResult, Error> { @MainActor in
             async let albumsResult = LyrionAPI.shared.getAlbumsForArtist(artistID: artistID)
-            await self.loadSongs()
+            async let tracksResult = LyrionAPI.shared.getTracksForArtist(artistID: artistID)
             var loadedAlbums = (try? await albumsResult) ?? []
             loadedAlbums.sort { $0.album.localizedCaseInsensitiveCompare($1.album) == .orderedAscending }
-            return ArtistDetailResult(albums: loadedAlbums, songs: self.songs)
+            let loadedTracks = (try? await tracksResult) ?? []
+            return ArtistDetailResult(albums: loadedAlbums, songs: loadedTracks)
         }
         artistDetailTasks[artistID] = task
         defer { artistDetailTasks[artistID] = nil }
@@ -771,6 +772,9 @@ final class LibraryViewModel: ObservableObject {
         async let serverArtistsTask: [Artist] =
             (try? await LyrionAPI.shared.searchArtists(term: trimmed, count: 30)) ?? []
 
+        async let serverTracksTask: [Track] =
+            (try? await LyrionAPI.shared.searchTracks(term: trimmed, count: 30)) ?? []
+
         async let directWorksTask: [[Work]] = withThrowingTaskGroup(of: [Work].self) { group in
             for term in workTermsSnapshot {
                 group.addTask { (try? await LyrionAPI.shared.getWorks(start: 0, count: 80, search: term)) ?? [] }
@@ -789,6 +793,9 @@ final class LibraryViewModel: ObservableObject {
         let serverArtists = await serverArtistsTask
         guard !Task.isCancelled else { return ([], [], [], [], [], [], []) }
 
+        let serverTracks = await serverTracksTask
+        guard !Task.isCancelled else { return ([], [], [], [], [], [], []) }
+
         serverAlbums.forEach { mergeAlbum($0) }
         serverArtists.forEach { a in
             if seenArtistIDs.insert(a.id).inserted { foundArtists.append(a) }
@@ -799,6 +806,11 @@ final class LibraryViewModel: ObservableObject {
                 needle.matches($0.work) ||
                 needle.matches($0.composer ?? "")
             }.forEach { mergeWork($0) }
+        }
+
+        // Merge server track results (fills track results when songs aren't pre-loaded).
+        serverTracks.forEach { t in
+            if seenTrackIDs.insert(t.id).inserted { foundTracks.append(t) }
         }
 
         // 5. Sort and cap
