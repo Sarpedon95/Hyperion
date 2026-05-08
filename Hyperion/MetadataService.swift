@@ -24,6 +24,8 @@ enum MetadataSource: String, Codable {
 struct MetadataResult: Codable {
     let artistBio: String?
     let artistImageURL: URL?
+    let artistBorn: String?
+    let artistDied: String?
     let similarArtists: [SimilarArtist]
     let tags: [String]
     let albumReview: String?
@@ -85,16 +87,16 @@ final class MetadataService {
         return false
     }
 
-    // MARK: - Classical fetch (OpenOpus portrait + Last.fm bio + MusicBrainz tags)
+    // MARK: - Classical fetch (OpenOpus portrait/dates + Last.fm bio + MusicBrainz tags)
 
     private func fetchClassical(artist: String, album: String?) async -> MetadataResult? {
-        async let ooResult  = fetchOpenOpusPortrait(composer: artist)
+        async let ooTask    = fetchOpenOpusData(composer: artist)
         async let lfmResult = LastFmProvider.shared.fetch(artist: artist, album: album)
         async let mbResult  = MusicBrainzProvider.shared.fetch(artist: artist, album: album)
 
-        let (portrait, lfm, mb) = await (ooResult, lfmResult, mbResult)
+        let (oo, lfm, mb) = await (ooTask, lfmResult, mbResult)
 
-        let imageURL = portrait ?? lfm?.artistImageURL
+        let imageURL = oo.portrait ?? lfm?.artistImageURL
         let bio      = lfm?.artistBio
         let similar  = lfm?.similarArtists ?? []
         var seen     = Set<String>()
@@ -105,6 +107,8 @@ final class MetadataService {
         return MetadataResult(
             artistBio:        bio,
             artistImageURL:   imageURL,
+            artistBorn:       oo.born,
+            artistDied:       oo.died,
             similarArtists:   similar,
             tags:             tags,
             albumReview:      lfm?.albumReview      ?? mb?.albumReview,
@@ -115,16 +119,22 @@ final class MetadataService {
         )
     }
 
-    private func fetchOpenOpusPortrait(composer: String) async -> URL? {
+    private struct OOData { let portrait: URL?; let born: String?; let died: String? }
+
+    private func fetchOpenOpusData(composer: String) async -> OOData {
         do {
             let composers = try await MetadataService.withTimeout(seconds: 5) {
                 try await OpenOpusService.shared.searchComposers(name: composer)
             }
-            if let c = composers.first, let portrait = c.portrait, !portrait.isEmpty {
-                return URL(string: portrait)
+            if let c = composers.first {
+                return OOData(
+                    portrait: c.portrait.flatMap { $0.isEmpty ? nil : URL(string: $0) },
+                    born: c.birth,
+                    died: c.death
+                )
             }
         } catch {}
-        return nil
+        return OOData(portrait: nil, born: nil, died: nil)
     }
 
     // MARK: - Non-classical fetch (OpenOpus portrait + Last.fm bio + MusicBrainz tags, all concurrent)
@@ -135,13 +145,13 @@ final class MetadataService {
     // track metadata isn't available (isClassical can't fire on a nil track).
 
     private func fetchNonClassical(artist: String, album: String?) async -> MetadataResult? {
-        async let ooPortrait = fetchOpenOpusPortrait(composer: artist)
-        async let lfmTask    = LastFmProvider.shared.fetch(artist: artist, album: album)
-        async let mbTask     = MusicBrainzProvider.shared.fetch(artist: artist, album: album)
+        async let ooTask  = fetchOpenOpusData(composer: artist)
+        async let lfmTask = LastFmProvider.shared.fetch(artist: artist, album: album)
+        async let mbTask  = MusicBrainzProvider.shared.fetch(artist: artist, album: album)
 
-        let (portrait, lfm, mb) = await (ooPortrait, lfmTask, mbTask)
+        let (oo, lfm, mb) = await (ooTask, lfmTask, mbTask)
 
-        let imageURL = portrait ?? lfm?.artistImageURL
+        let imageURL = oo.portrait ?? lfm?.artistImageURL
         let bio      = lfm?.artistBio
         let similar  = lfm?.similarArtists ?? []
         var seen     = Set<String>()
@@ -151,10 +161,12 @@ final class MetadataService {
             return await DiscogsProvider.shared.fetch(artist: artist, album: album)
         }
 
-        let source: MetadataSource = portrait != nil ? .openOpus : (bio != nil ? .lastFm : .musicBrainz)
+        let source: MetadataSource = oo.portrait != nil ? .openOpus : (bio != nil ? .lastFm : .musicBrainz)
         return MetadataResult(
             artistBio:        bio,
             artistImageURL:   imageURL,
+            artistBorn:       oo.born,
+            artistDied:       oo.died,
             similarArtists:   similar,
             tags:             tags,
             albumReview:      lfm?.albumReview      ?? mb?.albumReview,
@@ -297,6 +309,8 @@ final class MusicBrainzProvider: @unchecked Sendable {
         return MetadataResult(
             artistBio:        nil,
             artistImageURL:   nil,
+            artistBorn:       nil,
+            artistDied:       nil,
             similarArtists:   [],
             tags:             tags,
             albumReview:      nil,
@@ -362,6 +376,8 @@ final class LastFmProvider: @unchecked Sendable {
         return MetadataResult(
             artistBio:        bio,
             artistImageURL:   image,
+            artistBorn:       nil,
+            artistDied:       nil,
             similarArtists:   similar,
             tags:             tags,
             albumReview:      albumData?.review,
@@ -561,6 +577,8 @@ final class DiscogsProvider: @unchecked Sendable {
         return MetadataResult(
             artistBio:        nil,
             artistImageURL:   nil,
+            artistBorn:       nil,
+            artistDied:       nil,
             similarArtists:   [],
             tags:             tags,
             albumReview:      notes,

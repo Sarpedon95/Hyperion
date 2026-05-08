@@ -32,6 +32,7 @@ final class PlayerViewModel: ObservableObject {
     @Published var sourceFormat: String = ""
     @Published var currentStreamURL: URL? = nil
     @Published var outputFormat: String = ""
+    @Published var outputDeviceName: String = ""
     /// Live LMS/Lyrion metadata fetched after each track starts playing.
     /// Used for truthful signal-path diagnostics; it does not prove final output.
     @Published var lmsAudioQuality: LMSAudioQuality? = nil
@@ -1398,6 +1399,7 @@ final class PlayerViewModel: ObservableObject {
         currentStreamURL           = nil
         sourceFormat               = ""
         outputFormat               = ""
+        outputDeviceName           = ""
         isBitPerfect               = false
     }
 
@@ -1751,45 +1753,37 @@ final class PlayerViewModel: ObservableObject {
         let session = AVAudioSession.sharedInstance()
         let route = session.currentRoute
 
-        // Determine output device type
         let outputPortTypes = route.outputs.map(\.portType)
-        var deviceName = "Unknown"
+        var categoryName = "Unknown"
         var isLossless = false
 
         if outputPortTypes.contains(.headphones) {
-            deviceName = "Headphones"
-            isLossless = true
+            categoryName = "Wired headphones"; isLossless = true
         } else if outputPortTypes.contains(.builtInSpeaker) {
-            deviceName = "Speaker"
-            isLossless = true
+            categoryName = "Built-in speaker"; isLossless = true
         } else if outputPortTypes.contains(.airPlay) {
-            deviceName = "AirPlay"
-            isLossless = false
+            categoryName = "AirPlay"
         } else if outputPortTypes.contains(.carAudio) {
-            deviceName = "CarPlay"
-            isLossless = false
+            categoryName = "CarPlay"
         } else if outputPortTypes.contains(.bluetoothA2DP) || outputPortTypes.contains(.bluetoothLE) {
-            deviceName = "Bluetooth"
-            isLossless = false
+            categoryName = "Bluetooth"
         } else if !outputPortTypes.isEmpty {
-            deviceName = outputPortTypes.first?.rawValue ?? "Unknown"
-            isLossless = true
+            categoryName = outputPortTypes.first?.rawValue ?? "Unknown"; isLossless = true
         }
 
-        // Get channel count and sample rate from the session
+        // portName gives the user-visible name (e.g. "AirPods Pro", "James's iPhone").
+        let portName = route.outputs.first?.portName ?? ""
+        outputDeviceName = portName.isEmpty ? categoryName : portName
+
         let channelCount = session.outputNumberOfChannels
-        let sampleRate = session.sampleRate > 0 ? Int(session.sampleRate) : 48000
+        let hz = session.sampleRate > 0 ? Int(session.sampleRate) : 48000
+        let kHz = hz >= 1000 ? "\(hz / 1000) kHz" : "\(hz) Hz"
+        outputFormat = "\(kHz) · \(channelCount)ch"
 
-        // Format: "Device (sample rate Hz, N channels)"
-        outputFormat = "\(deviceName) (\(sampleRate) Hz, \(channelCount)ch)"
-
-        // Do not mark bit-perfect from route/source heuristics. The signal-path
-        // model requires final stream/output and processing facts that AVAudioSession
-        // does not expose here.
         _ = isLossless
         isBitPerfect = false
 
-        ServerLogStore.shared.debug("Audio output: \(outputFormat) (bit-perfect not inferred from route)")
+        ServerLogStore.shared.debug("Audio output: \(outputDeviceName) / \(outputFormat)")
     }
 
     private func beginPlayback(
@@ -2127,7 +2121,9 @@ final class PlayerViewModel: ObservableObject {
                 var statusTrack: [String: Any] = [:]
                 var statusMatchedCurrentTrack: Bool? = nil
                 do {
-                    statusResult = try await LyrionAPI.shared.request(params: ["status", "-", 1, "tags:\(tags)"])
+                    // tags=A adds audio_samplerate / audio_bitdepth / audio_bitrate —
+                    // the actual post-transcode wire format for the active LMS player stream.
+                    statusResult = try await LyrionAPI.shared.request(params: ["status", "-", 1, "tags:\(tags)A"])
                     statusTrack = Self.firstLoopEntry(in: statusResult, keys: ["playlist_loop"]) ?? [:]
                     if let statusID = Self.intValue(statusTrack["id"] ?? statusTrack["track_id"]) {
                         statusMatchedCurrentTrack = statusID == track.id
@@ -2135,6 +2131,11 @@ final class PlayerViewModel: ObservableObject {
                 } catch {
                     ServerLogStore.shared.debug("LMS status diagnostics unavailable for signal path: \(error.localizedDescription)")
                 }
+
+                // Stream format from tags=A — top-level status fields, not playlist_loop
+                let streamSampleRate = Self.intValue(statusResult["audio_samplerate"]).flatMap { $0 > 0 ? $0 : nil }
+                let streamBitDepth   = Self.intValue(statusResult["audio_bitdepth"]).flatMap { $0 > 0 ? $0 : nil }
+                let streamBitRate    = Self.stringValue(statusResult["audio_bitrate"])?.trimmingCharacters(in: .whitespaces)
 
                 let statusCanFill = statusMatchedCurrentTrack == true
                 let type = Self.firstString([songInfo["type"], statusCanFill ? statusTrack["type"] : nil, track.audioType])?.lowercased() ?? ""
@@ -2180,6 +2181,10 @@ final class PlayerViewModel: ObservableObject {
                     playerName: playerName,
                     playerMode: playerMode,
                     lmsVolume: lmsVolume,
+                    streamSampleRate: streamSampleRate,
+                    streamBitDepth: streamBitDepth,
+                    streamBitRate: streamBitRate?.isEmpty == false ? streamBitRate : nil,
+                    outputDeviceName: self.outputDeviceName.isEmpty ? nil : self.outputDeviceName,
                     rawTrackFields: Self.rawFieldMap(songInfo),
                     rawStatusFields: rawStatusFields,
                     fieldsUsed: fieldsUsed,
@@ -2207,6 +2212,10 @@ final class PlayerViewModel: ObservableObject {
                     playerName: nil,
                     playerMode: nil,
                     lmsVolume: nil,
+                    streamSampleRate: nil,
+                    streamBitDepth: nil,
+                    streamBitRate: nil,
+                    outputDeviceName: self.outputDeviceName.isEmpty ? nil : self.outputDeviceName,
                     rawTrackFields: [:],
                     rawStatusFields: [:],
                     fieldsUsed: [],

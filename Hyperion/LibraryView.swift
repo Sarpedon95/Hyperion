@@ -2146,18 +2146,28 @@ struct ArtistRowView: View {
 struct ArtistDetailView: View {
 
     let artist: Artist
-    @ObservedObject private var library = LibraryViewModel.shared
-    @ObservedObject private var player = PlayerViewModel.shared
+    @ObservedObject private var library     = LibraryViewModel.shared
+    @ObservedObject private var player      = PlayerViewModel.shared
     @ObservedObject private var likedTracks = LikedTracksStore.shared
 
-    @State private var albums: [Album] = []
-    @State private var localTracks: [Track] = []
-    @State private var isLoading: Bool = true
-    @State private var displayedAlbumCount: Int = 12
-    @State private var metadata: MetadataResult? = nil
-    @State private var metadataLoading: Bool = false
-    @State private var bioExpanded: Bool = false
+    @State private var albums:              [Album] = []
+    @State private var localTracks:         [Track] = []
+    @State private var compositions:        [Work]  = []
+    @State private var isLoading:           Bool    = true
+    @State private var compositionsLoading: Bool    = false
+    @State private var displayedAlbumCount: Int     = 12
+    @State private var metadata:            MetadataResult? = nil
+    @State private var metadataLoading:     Bool    = false
+    @State private var bioExpanded:         Bool    = false
+    @State private var selectedTab:         ArtistTab = .overview
     @State private var navigateToSimilarArtist: Artist? = nil
+
+    enum ArtistTab: String, CaseIterable {
+        case overview     = "Overview"
+        case info         = "Info"
+        case discography  = "Discography"
+        case compositions = "Compositions"
+    }
 
     private var tracksByArtist: [Track] {
         let folded = SearchTextNormalizer.folded(artist.name)
@@ -2175,210 +2185,38 @@ struct ArtistDetailView: View {
         }
     }
 
+    private var isClassicalArtist: Bool {
+        tracksByArtist.contains { $0.composer != nil } || metadata?.source == .openOpus
+    }
+
+    private var visibleTabs: [ArtistTab] {
+        isClassicalArtist ? ArtistTab.allCases : ArtistTab.allCases.filter { $0 != .compositions }
+    }
+
+    private var lmsComposerID: Int? {
+        let folded = SearchTextNormalizer.folded(artist.name)
+        return library.composers.first { SearchTextNormalizer.folded($0.artist) == folded }?.id
+    }
+
+    private var isArtistLiked: Bool {
+        !tracksByArtist.isEmpty && tracksByArtist.allSatisfy { likedTracks.isLiked($0) }
+    }
+
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                artistHeader
-
-                HStack(spacing: 12) {
-                    Button {
-                        player.playTracks(tracksByArtist)
-                    } label: {
-                        Label("Play", systemImage: "play.fill")
-                            .font(.roonBody(15, weight: .semibold))
-                            .foregroundColor(.white)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 46)
-                            .background(Color.roonAccent)
-                            .clipShape(Capsule())
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(tracksByArtist.isEmpty)
-
-                    Button {
-                        player.playTracks(tracksByArtist, shuffle: true)
-                    } label: {
-                        Label("Shuffle", systemImage: "shuffle")
-                            .font(.roonBody(15, weight: .semibold))
-                            .foregroundColor(.roonPrimary)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 46)
-                            .background(Color.roonSurface)
-                            .overlay(Capsule().strokeBorder(Color.roonBorder, lineWidth: 1))
-                            .clipShape(Capsule())
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(tracksByArtist.isEmpty)
-
-                    Button {
-                        guard !tracksByArtist.isEmpty else { return }
-                        player.playTracks(tracksByArtist)
-                        player.isRadioEnabled = true
-                    } label: {
-                        ZStack {
-                            Circle()
-                                .fill(Color.roonSurface)
-                                .overlay(Capsule().strokeBorder(Color.roonBorder, lineWidth: 1))
-                                .frame(width: 46, height: 46)
-                            Image(systemName: "dot.radiowaves.left.and.right")
-                                .font(.system(size: 17))
-                                .foregroundColor(.roonSecondary)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(tracksByArtist.isEmpty)
-                    .accessibilityLabel("Start Radio")
-                }
-                .padding(.horizontal, 20)
-
-                if isLoading {
-                    // Skeleton grid while albums load
-                    artistSectionTitle("Albums")
-                    LazyVGrid(
-                        columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)],
-                        spacing: 16
-                    ) {
-                        ForEach(0..<6, id: \.self) { _ in
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(Color.roonElevated)
-                                .aspectRatio(1, contentMode: .fit)
-                                .redacted(reason: .placeholder)
-                        }
-                    }
-                    .padding(.horizontal, 16)
-                    // Skeleton song rows
-                    artistSectionTitle("Songs")
-                    LazyVStack(spacing: 0) {
-                        ForEach(0..<5, id: \.self) { _ in
-                            HStack(spacing: 12) {
-                                RoundedRectangle(cornerRadius: 4)
-                                    .fill(Color.roonElevated)
-                                    .frame(width: 44, height: 44)
-                                VStack(alignment: .leading, spacing: 4) {
-                                    RoundedRectangle(cornerRadius: 3)
-                                        .fill(Color.roonElevated)
-                                        .frame(width: 160, height: 13)
-                                    RoundedRectangle(cornerRadius: 3)
-                                        .fill(Color.roonElevated.opacity(0.6))
-                                        .frame(width: 100, height: 11)
-                                }
-                                Spacer()
-                            }
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 10)
-                            .redacted(reason: .placeholder)
-                        }
-                    }
-                    .background(Color.roonSurface)
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
-                    .padding(.horizontal, 16)
-                } else {
-                    if !albums.isEmpty {
-                        artistSectionTitle("Albums")
-                        let visibleAlbums = Array(albums.prefix(displayedAlbumCount))
-                        LazyVGrid(
-                            columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)],
-                            spacing: 16
-                        ) {
-                            ForEach(visibleAlbums) { album in
-                                NavigationLink {
-                                    AlbumDetailView(album: album)
-                                } label: {
-                                    ArtistAlbumGridCard(album: album)
-                                }
-                                .buttonStyle(.plain)
-                            }
-                            // Load-more sentinel
-                            if albums.count > displayedAlbumCount {
-                                Color.clear
-                                    .frame(height: 1)
-                                    .onAppear { displayedAlbumCount += 12 }
-                            }
-                        }
-                        .padding(.horizontal, 16)
-                    }
-
-                    if !tracksByArtist.isEmpty {
-                        artistSectionTitle("Songs")
-                        LazyVStack(spacing: 0) {
-                            ForEach(Array(tracksByArtist.enumerated()), id: \.element.id) { index, track in
-                                Button {
-                                    player.playTracks(tracksByArtist, startingAt: index)
-                                } label: {
-                                    SongRowView(track: track, isActive: player.currentTrack?.id == track.id)
-                                        .padding(.horizontal, 16)
-                                        .padding(.vertical, 6)
-                                }
-                                .buttonStyle(.plain)
-                                if index < tracksByArtist.count - 1 {
-                                    Color.roonBorder.frame(height: 0.5).padding(.leading, 76)
-                                }
-                            }
-                        }
-                        .background(Color.roonSurface)
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
-                        .padding(.horizontal, 16)
-                    }
-
-                    if !likedByArtist.isEmpty {
-                        artistSectionTitle("Liked Songs")
-                        LazyVStack(spacing: 0) {
-                            ForEach(Array(likedByArtist.prefix(8).enumerated()), id: \.element.id) { index, track in
-                                Button {
-                                    player.playTracks(likedByArtist, startingAt: index)
-                                } label: {
-                                    SongRowView(track: track, isActive: player.currentTrack?.id == track.id)
-                                        .padding(.horizontal, 16)
-                                        .padding(.vertical, 6)
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                        .background(Color.roonSurface)
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
-                        .padding(.horizontal, 16)
-                    }
-
-                    if albums.isEmpty && tracksByArtist.isEmpty {
-                        VStack(spacing: 12) {
-                            Image(systemName: "person.crop.circle")
-                                .font(.system(size: 44))
-                                .foregroundColor(.roonTertiary)
-                            Text("No local matches found")
-                                .font(.roonTitle(18))
-                                .foregroundColor(.roonPrimary)
-                            Text("Hyperion could not find albums or locally indexed tracks for this artist yet.")
-                                .font(.roonBody(13))
-                                .foregroundColor(.roonSecondary)
-                                .multilineTextAlignment(.center)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 50)
-                        .padding(.horizontal, 32)
-                    }
-                }
-
-                // MARK: - Metadata enrichment
-                ArtistMetadataSection(
-                    metadata: metadata,
-                    isLoading: metadataLoading,
-                    bioExpanded: $bioExpanded,
-                    onArtistTap: { name in
-                        navigateToSimilarArtist = library.artists.first { $0.name == name }
-                            ?? Artist(id: 0, name: name)
-                    }
-                )
-
-                Spacer(minLength: 24)
+            VStack(spacing: 0) {
+                heroSection
+                tabBar
+                tabContent
+                    .id(selectedTab)
             }
         }
         .scrollContentBackground(.hidden)
         .bottomOverlayAwareScroll()
         .background(Color.roonBase.ignoresSafeArea())
-        .navigationTitle(artist.name)
+        .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbarBackground(Color.roonBase, for: .navigationBar)
-        .toolbarBackground(.visible, for: .navigationBar)
+        .toolbarBackground(.hidden, for: .navigationBar)
         .toolbarColorScheme(.dark, for: .navigationBar)
         .navigationDestination(item: $navigateToSimilarArtist) { similar in
             ArtistDetailView(artist: similar)
@@ -2389,6 +2227,8 @@ struct ArtistDetailView: View {
             displayedAlbumCount = 12
             metadata = nil
             bioExpanded = false
+            selectedTab = .overview
+            compositions = []
             async let detailTask = library.loadArtistDetail(artistID: artist.id)
             async let metaTask   = MetadataService.shared.fetch(artist: artist.name, album: nil, track: nil)
             if let result = try? await detailTask {
@@ -2399,111 +2239,232 @@ struct ArtistDetailView: View {
             metadata = await metaTask
             metadataLoading = false
         }
+        .onChange(of: selectedTab) { _, tab in
+            guard tab == .compositions, compositions.isEmpty, !compositionsLoading else { return }
+            Task {
+                compositionsLoading = true
+                if let id = lmsComposerID {
+                    compositions = (try? await library.loadWorks(composerID: id)) ?? []
+                }
+                compositionsLoading = false
+            }
+        }
     }
 
-    private var artistHeader: some View {
-        ZStack(alignment: .bottom) {
-            // Blurred hero backdrop — uses metadata portrait or first album art
+    // MARK: - Hero
+
+    private var heroSection: some View {
+        ZStack(alignment: .bottomLeading) {
             Group {
-                if let portraitURL = metadata?.artistImageURL {
-                    AsyncArtistHeroImage(url: portraitURL)
+                if let url = metadata?.artistImageURL {
+                    AsyncArtistHeroImage(url: url)
                 } else if let coverid = albums.first?.artwork_track_id {
-                    ArtworkView(coverid: coverid, size: 280)
+                    ArtworkView(coverid: coverid, size: 400)
                         .frame(maxWidth: .infinity)
-                        .frame(height: 280)
                         .clipped()
                 } else {
-                    Color.roonElevated.frame(height: 200)
+                    Color.roonElevated
                 }
             }
+            .frame(height: UIScreen.main.bounds.height * 0.45)
+            .clipped()
             .overlay(
                 LinearGradient(
-                    gradient: Gradient(colors: [Color.roonBase.opacity(0), Color.roonBase]),
-                    startPoint: .top,
-                    endPoint: .bottom
+                    colors: [.clear, .black.opacity(0.75)],
+                    startPoint: .center, endPoint: .bottom
                 )
             )
 
-            // Foreground: avatar + name
-            VStack(spacing: 10) {
-                ZStack {
-                    Circle()
-                        .fill(Color.roonSurface.opacity(0.85))
-                        .frame(width: 100, height: 100)
-                        .shadow(color: .black.opacity(0.5), radius: 12, y: 4)
-                    if let portraitURL = metadata?.artistImageURL {
-                        AsyncArtistHeroImage(url: portraitURL)
-                            .frame(width: 100, height: 100)
-                            .clipShape(Circle())
-                    } else {
-                        Text(NameFormatting.initials(artist.name))
-                            .font(.roonTitle(32))
-                            .foregroundColor(.roonAccent)
-                    }
-                }
+            VStack(alignment: .leading, spacing: 12) {
                 Text(artist.name)
-                    .font(.roonTitle(30))
-                    .foregroundColor(.roonPrimary)
-                    .multilineTextAlignment(.center)
-                    .lineLimit(3)
+                    .font(.system(size: 32, weight: .bold))
+                    .foregroundColor(.white)
                     .shadow(color: .black.opacity(0.6), radius: 4, y: 2)
-                if !isLoading {
-                    Text("\(albums.count) albums • \(tracksByArtist.count) tracks")
-                        .font(.roonBody(13))
-                        .foregroundColor(.roonSecondary)
+                    .lineLimit(2)
+
+                HStack(spacing: 12) {
+                    Button {
+                        player.playTracks(tracksByArtist)
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "play.fill").font(.system(size: 13))
+                            Text("Play Now").font(.roonBody(14, weight: .semibold))
+                        }
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 10)
+                        .background(Color.roonAccent)
+                        .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(tracksByArtist.isEmpty)
+
+                    Button {
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.58)) {
+                            if isArtistLiked {
+                                tracksByArtist.filter { likedTracks.isLiked($0) }.forEach { likedTracks.toggle($0) }
+                            } else {
+                                tracksByArtist.filter { !likedTracks.isLiked($0) }.forEach { likedTracks.toggle($0) }
+                            }
+                        }
+                    } label: {
+                        Image(systemName: isArtistLiked ? "heart.fill" : "heart")
+                            .font(.system(size: 18))
+                            .foregroundColor(isArtistLiked ? .red : .white)
+                            .frame(width: 40, height: 40)
+                            .background(Color.black.opacity(0.35))
+                            .clipShape(Circle())
+                            .overlay(Circle().strokeBorder(Color.white.opacity(0.4), lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(tracksByArtist.isEmpty)
                 }
             }
-            .padding(.bottom, 20)
             .padding(.horizontal, 20)
+            .padding(.bottom, 20)
         }
         .frame(maxWidth: .infinity)
-        .frame(minHeight: 240)
     }
 
-    private func artistSectionTitle(_ title: String) -> some View {
-        Text(title)
-            .font(.roonTitle(20))
-            .foregroundColor(.roonPrimary)
-            .padding(.horizontal, 20)
-    }
-}
+    // MARK: - Tab bar
 
-// MARK: - Artist metadata enrichment section
-
-struct ArtistMetadataSection: View {
-    let metadata: MetadataResult?
-    let isLoading: Bool
-    @Binding var bioExpanded: Bool
-    let onArtistTap: (String) -> Void
-
-    var body: some View {
-        if isLoading {
-            // Skeleton placeholders
-            VStack(alignment: .leading, spacing: 16) {
-                Rectangle().fill(Color.roonElevated).frame(height: 14).cornerRadius(7)
-                    .padding(.horizontal, 20).redacted(reason: .placeholder)
-                Rectangle().fill(Color.roonElevated).frame(height: 14).cornerRadius(7)
-                    .padding(.horizontal, 20).frame(maxWidth: 260, alignment: .leading).redacted(reason: .placeholder)
-                Rectangle().fill(Color.roonElevated).frame(height: 14).cornerRadius(7)
-                    .padding(.horizontal, 20).frame(maxWidth: 200, alignment: .leading).redacted(reason: .placeholder)
+    private var tabBar: some View {
+        HStack(spacing: 0) {
+            ForEach(visibleTabs, id: \.self) { tab in
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) { selectedTab = tab }
+                } label: {
+                    VStack(spacing: 0) {
+                        Text(tab.rawValue)
+                            .font(.roonBody(13, weight: selectedTab == tab ? .semibold : .regular))
+                            .foregroundColor(selectedTab == tab ? .roonPrimary : .roonSecondary)
+                            .padding(.vertical, 12)
+                        Rectangle()
+                            .fill(selectedTab == tab ? Color.roonAccent : Color.clear)
+                            .frame(height: 2)
+                    }
+                }
+                .buttonStyle(.plain)
+                .frame(maxWidth: .infinity)
             }
-            .padding(.top, 8)
-        } else if let metadata {
-            VStack(alignment: .leading, spacing: 20) {
-                // Bio
-                if let bio = metadata.artistBio, !bio.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("About")
+        }
+        .background(Color.roonBase)
+        .overlay(Color.roonBorder.frame(height: 0.5), alignment: .bottom)
+    }
+
+    // MARK: - Tab content
+
+    @ViewBuilder
+    private var tabContent: some View {
+        switch selectedTab {
+        case .overview:     overviewTab
+        case .info:         infoTab
+        case .discography:  discographyTab
+        case .compositions: compositionsTab
+        }
+    }
+
+    // MARK: - Overview tab
+
+    private var overviewTab: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            if isLoading {
+                ProgressView().tint(.roonAccent).frame(maxWidth: .infinity).padding(.top, 40)
+            } else {
+                if !tracksByArtist.isEmpty {
+                    artistSectionTitle("Popular")
+                    LazyVStack(spacing: 0) {
+                        ForEach(Array(tracksByArtist.prefix(5).enumerated()), id: \.element.id) { index, track in
+                            Button {
+                                player.playTracks(tracksByArtist, startingAt: index)
+                            } label: {
+                                SongRowView(track: track, isActive: player.currentTrack?.id == track.id)
+                                    .padding(.horizontal, 16)
+                                    .padding(.vertical, 6)
+                            }
+                            .buttonStyle(.plain)
+                            if index < min(4, tracksByArtist.count - 1) {
+                                Color.roonBorder.frame(height: 0.5).padding(.leading, 76)
+                            }
+                        }
+                    }
+                    .background(Color.roonSurface)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .padding(.horizontal, 16)
+                }
+
+                if !albums.isEmpty {
+                    artistSectionTitle("Albums")
+                    LazyVGrid(
+                        columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)],
+                        spacing: 16
+                    ) {
+                        ForEach(Array(albums.prefix(6))) { album in
+                            NavigationLink { AlbumDetailView(album: album) } label: {
+                                ArtistAlbumGridCard(album: album)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                }
+
+                if let similar = metadata?.similarArtists, !similar.isEmpty {
+                    artistSectionTitle("Similar Artists")
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 14) {
+                            ForEach(similar) { s in
+                                Button {
+                                    navigateToSimilarArtist = library.artists.first { $0.name == s.name }
+                                        ?? Artist(id: 0, name: s.name)
+                                } label: {
+                                    SimilarArtistCard(similar: s)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.horizontal, 20)
+                    }
+                }
+
+                if tracksByArtist.isEmpty && albums.isEmpty {
+                    VStack(spacing: 12) {
+                        Image(systemName: "person.crop.circle")
+                            .font(.system(size: 44))
+                            .foregroundColor(.roonTertiary)
+                        Text("No local content found")
                             .font(.roonTitle(18))
                             .foregroundColor(.roonPrimary)
-                            .padding(.horizontal, 20)
+                        Text("No locally indexed albums or tracks for this artist yet.")
+                            .font(.roonBody(13))
+                            .foregroundColor(.roonSecondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 50)
+                    .padding(.horizontal, 32)
+                }
+            }
+            Spacer(minLength: 24)
+        }
+        .padding(.top, 20)
+    }
 
+    // MARK: - Info tab
+
+    private var infoTab: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            if metadataLoading {
+                ProgressView().tint(.roonAccent).frame(maxWidth: .infinity).padding(.top, 40)
+            } else if let m = metadata {
+                if let bio = m.artistBio, !bio.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        artistSectionTitle("About")
                         Text(bio)
                             .font(.body)
                             .foregroundColor(.roonSecondary)
                             .lineLimit(bioExpanded ? nil : 4)
                             .padding(.horizontal, 20)
-
                         if bioExpanded || bio.count > 200 {
                             Button {
                                 withAnimation(.easeInOut(duration: 0.2)) { bioExpanded.toggle() }
@@ -2518,45 +2479,138 @@ struct ArtistMetadataSection: View {
                     }
                 }
 
-                // Tags
-                if !metadata.tags.isEmpty {
-                    MetadataTagsRow(tags: metadata.tags)
-                }
-
-                // Similar artists
-                if !metadata.similarArtists.isEmpty {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("Similar Artists")
-                            .font(.roonTitle(18))
-                            .foregroundColor(.roonPrimary)
-                            .padding(.horizontal, 20)
-
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 14) {
-                                ForEach(metadata.similarArtists) { similar in
-                                    Button {
-                                        onArtistTap(similar.name)
-                                    } label: {
-                                        SimilarArtistCard(similar: similar)
-                                    }
-                                    .buttonStyle(.plain)
-                                }
+                if m.artistBorn != nil || m.artistDied != nil {
+                    HStack(spacing: 24) {
+                        if let born = m.artistBorn {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Born").font(.roonBody(11)).foregroundColor(.roonTertiary)
+                                Text(born).font(.roonBody(14, weight: .medium)).foregroundColor(.roonPrimary)
                             }
-                            .padding(.horizontal, 20)
                         }
+                        if let died = m.artistDied {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Died").font(.roonBody(11)).foregroundColor(.roonTertiary)
+                                Text(died).font(.roonBody(14, weight: .medium)).foregroundColor(.roonPrimary)
+                            }
+                        }
+                        Spacer()
                     }
+                    .padding(.horizontal, 20)
                 }
 
-                // Source badge
+                if !m.tags.isEmpty { MetadataTagsRow(tags: m.tags) }
+
                 HStack {
                     Spacer()
-                    Text("via \(metadata.source.displayName)")
+                    Text("via \(m.source.displayName)")
                         .font(.roonBody(10, weight: .medium))
                         .foregroundColor(.roonTertiary)
                         .padding(.horizontal, 20)
                 }
+            } else {
+                Text("No info available.")
+                    .font(.roonBody(14))
+                    .foregroundColor(.roonSecondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 40)
+                    .padding(.horizontal, 20)
             }
+            Spacer(minLength: 24)
         }
+        .padding(.top, 20)
+    }
+
+    // MARK: - Discography tab
+
+    private var discographyTab: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            if isLoading {
+                LazyVGrid(
+                    columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)],
+                    spacing: 16
+                ) {
+                    ForEach(0..<6, id: \.self) { _ in
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color.roonElevated)
+                            .aspectRatio(1, contentMode: .fit)
+                            .redacted(reason: .placeholder)
+                    }
+                }
+                .padding(.horizontal, 16)
+            } else if !albums.isEmpty {
+                LazyVGrid(
+                    columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)],
+                    spacing: 16
+                ) {
+                    ForEach(Array(albums.prefix(displayedAlbumCount))) { album in
+                        NavigationLink { AlbumDetailView(album: album) } label: {
+                            ArtistAlbumGridCard(album: album)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    if albums.count > displayedAlbumCount {
+                        Color.clear.frame(height: 1).onAppear { displayedAlbumCount += 12 }
+                    }
+                }
+                .padding(.horizontal, 16)
+            } else {
+                Text("No albums found.")
+                    .font(.roonBody(14))
+                    .foregroundColor(.roonSecondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 40)
+            }
+            Spacer(minLength: 24)
+        }
+        .padding(.top, 16)
+    }
+
+    // MARK: - Compositions tab
+
+    private var compositionsTab: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if compositionsLoading {
+                ProgressView().tint(.roonAccent).frame(maxWidth: .infinity).padding(.top, 40)
+            } else if !compositions.isEmpty {
+                LazyVStack(spacing: 0) {
+                    ForEach(compositions) { work in
+                        NavigationLink {
+                            WorkDetailView(work: work)
+                        } label: {
+                            WorkRowView(work: work, showComposer: false)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 8)
+                        }
+                        .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity)
+                        .contentShape(Rectangle())
+                        if work.id != compositions.last?.id {
+                            Color.roonBorder.frame(height: 0.5).padding(.leading, 16)
+                        }
+                    }
+                }
+                .background(Color.roonSurface)
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .padding(.horizontal, 16)
+                .padding(.top, 16)
+            } else {
+                Text("No compositions found for this artist.")
+                    .font(.roonBody(14))
+                    .foregroundColor(.roonSecondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 40)
+                    .padding(.horizontal, 20)
+            }
+            Spacer(minLength: 24)
+        }
+        .padding(.top, 16)
+    }
+
+    private func artistSectionTitle(_ title: String) -> some View {
+        Text(title)
+            .font(.roonTitle(20))
+            .foregroundColor(.roonPrimary)
+            .padding(.horizontal, 20)
     }
 }
 

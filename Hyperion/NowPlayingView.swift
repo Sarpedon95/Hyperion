@@ -26,6 +26,12 @@ struct LMSAudioQuality {
     let playerName: String?
     let playerMode: String?
     let lmsVolume: Int?
+    // Stream format from LMS status tags=A — describes the actual post-transcode wire format
+    let streamSampleRate: Int?
+    let streamBitDepth: Int?
+    let streamBitRate: String?
+    // Output device name from AVAudioSession.currentRoute (e.g. "AirPods Pro")
+    let outputDeviceName: String?
     let rawTrackFields: [String: String]
     let rawStatusFields: [String: String]
     let fieldsUsed: [String]
@@ -129,6 +135,7 @@ struct NowPlayingView: View {
             sourceFormat:      player.sourceFormat,
             selectedStreamURL: player.currentStreamURL,
             outputFormat:      player.outputFormat,
+            outputDeviceName:  player.outputDeviceName,
             localVolume:       player.volume,
             lmsQuality:        player.lmsAudioQuality,
             orpheusState:      orpheus.signalPathState(
@@ -155,19 +162,25 @@ struct NowPlayingView: View {
                     .padding(.top, UIApplication.shared.connectedScenes
                         .compactMap { $0 as? UIWindowScene }
                         .first?.windows.first?.safeAreaInsets.top ?? 50)
-                Color.clear.frame(height: 8)
-                if !showInlineLyrics {
+                if showInlineLyrics {
+                    lyricsCompactHeader
+                    Color.clear.frame(height: 8)
+                    progressSection.frame(height: 56).clipped(antialiased: false)
+                    if let track = player.currentTrack {
+                        InlineLyricsSection(track: track, expandToFill: true)
+                            .frame(height: lyricsScrollHeight)
+                    } else {
+                        Spacer(minLength: 0)
+                    }
+                    Color.clear.frame(height: 8)
+                } else {
                     artworkSection(side: min(UIScreen.main.bounds.width - 48, UIScreen.main.bounds.height * 0.35))
                     Color.clear.frame(height: 12)
-                }
-                trackInfo.frame(height: 60)
-                Color.clear.frame(height: 8)
-                progressSection.frame(height: 56).clipped(antialiased: false)
-                if showInlineLyrics, let track = player.currentTrack {
+                    trackInfo.frame(height: 60)
                     Color.clear.frame(height: 8)
-                    InlineLyricsSection(track: track)
+                    progressSection.frame(height: 56).clipped(antialiased: false)
+                    Color.clear.frame(height: 16)
                 }
-                Color.clear.frame(height: 16)
                 transportControls.frame(height: 80)
                 Color.clear.frame(height: 16)
                 bottomToolbar.frame(height: 60)
@@ -201,6 +214,14 @@ struct NowPlayingView: View {
             Button("Sleep Timer") {
                 Haptics.light()
                 showSleepTimer = true
+            }
+            Button("DSP / EQ") {
+                Haptics.light()
+                showOrpheus = true
+            }
+            Button("Share") {
+                Haptics.light()
+                showShareSheet = true
             }
             Button(player.isRadioEnabled ? "Radio Off" : "Radio On") {
                 Haptics.light()
@@ -570,7 +591,7 @@ struct NowPlayingView: View {
                 ) { finalProgress in
                     player.seek(to: finalProgress * max(player.duration, 1))
                 }
-                .frame(height: 22)
+                .frame(height: 28)
                 .accessibilityLabel("Playback position")
                 .accessibilityValue("\(formatTime(player.currentTime)) of \(formatTime(player.duration))")
                 .accessibilityAdjustableAction { direction in
@@ -689,7 +710,52 @@ struct NowPlayingView: View {
         }
     }
 
-    // MARK: - Bottom toolbar (6 buttons: queue · heart · share · DSP · lyrics · more)
+    // MARK: - Lyrics compact header (shown when inline lyrics are active)
+
+    private var lyricsScrollHeight: CGFloat {
+        let scene = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }.first
+        let safeTop    = scene?.windows.first?.safeAreaInsets.top    ?? 47
+        let safeBottom = scene?.windows.first?.safeAreaInsets.bottom ?? 34
+        // fixed slots: safeTop + headerBar + compactHeader + gap + progress + gap + gap + transport + gap + toolbar + safeBottom
+        let occupied: CGFloat = (safeTop + 44) + 136 + 8 + 56 + 8 + 8 + 80 + 16 + 60 + safeBottom
+        return max(200, UIScreen.main.bounds.height - occupied)
+    }
+
+    private var lyricsCompactHeader: some View {
+        HStack(alignment: .center, spacing: 16) {
+            ArtworkView(coverid: player.currentTrack?.coverid, size: 120, contentMode: .fill)
+                .frame(width: 120, height: 120)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .shadow(color: .black.opacity(0.3), radius: 8, y: 4)
+                .onTapGesture { showArtworkFullScreen = true }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(player.currentTrack?.title ?? "")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundColor(.roonPrimary)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                let artistLine = player.currentTrack?.composer
+                    ?? player.currentTrack?.albumartist
+                    ?? player.currentTrack?.trackartist ?? ""
+                if !artistLine.isEmpty {
+                    Text(artistLine)
+                        .font(.system(size: 14))
+                        .foregroundColor(.roonSecondary)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 12)
+        .padding(.bottom, 4)
+        .frame(height: 136)
+    }
+
+    // MARK: - Bottom toolbar (5 buttons: queue · heart · save · lyrics · more)
 
     private var bottomToolbar: some View {
         HStack(spacing: 0) {
@@ -726,23 +792,12 @@ struct NowPlayingView: View {
 
             Spacer(minLength: 0)
 
-            // Share
-            BottomToolbarButton(systemName: "square.and.arrow.up", accessibilityLabel: "Share") {
+            // Save / Add to playlist
+            BottomToolbarButton(systemName: "plus.circle", tint: .roonSecondary, accessibilityLabel: "Add to playlist") {
                 Haptics.light()
-                showShareSheet = true
+                showAddToPlaylist = true
             }
-
-            Spacer(minLength: 0)
-
-            // DSP / EQ
-            BottomToolbarButton(
-                systemName: "dial.medium",
-                tint: .roonSecondary,
-                accessibilityLabel: "DSP"
-            ) {
-                Haptics.light()
-                showOrpheus = true
-            }
+            .disabled(player.currentTrack == nil)
 
             Spacer(minLength: 0)
 
@@ -758,7 +813,7 @@ struct NowPlayingView: View {
 
             Spacer(minLength: 0)
 
-            // More (ellipsis) — includes sleep timer, radio, signal path, focus mode
+            // More — sleep timer, DSP, share, radio, signal path, focus mode
             BottomToolbarButton(systemName: "ellipsis", accessibilityLabel: "More options") {
                 Haptics.light()
                 showMoreActions = true
@@ -1135,27 +1190,27 @@ struct ProgressBarView: View {
             let displayProgress = isDragging ? dragProgress : progress
             let clampedDisplay = max(0, min(1, displayProgress))
             let filledWidth = width * clampedDisplay
-            let thumbOffset = max(0, min(width - 16, filledWidth - 8))
+            let thumbOffset = max(0, min(width - 22, filledWidth - 11))
 
             ZStack(alignment: .leading) {
                 Capsule()
                     .fill(Color.white.opacity(0.18))
-                    .frame(height: 3)
+                    .frame(height: 4)
                     .frame(maxWidth: .infinity)
 
                 Capsule()
                     .fill(Color.white.opacity(0.96))
-                    .frame(width: max(0, filledWidth), height: 3)
+                    .frame(width: max(0, filledWidth), height: 4)
 
                 Circle()
                     .fill(Color.white)
-                    .frame(width: 16, height: 16)
+                    .frame(width: 22, height: 22)
                     .shadow(color: .black.opacity(0.35), radius: 4)
                     .offset(x: thumbOffset)
-                    .scaleEffect(isDragging ? 1.18 : 1.0)
+                    .scaleEffect(isDragging ? 1.15 : 1.0)
                     .animation(.spring(response: 0.2), value: isDragging)
             }
-            .frame(height: 22)
+            .frame(height: 28)
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 0)
@@ -1171,7 +1226,7 @@ struct ProgressBarView: View {
                     }
             )
         }
-        .frame(height: 22)
+        .frame(height: 28)
     }
 }
 
@@ -1620,6 +1675,7 @@ struct SegmentedScrubberView: View {
 
 private struct InlineLyricsSection: View {
     let track: Track
+    var expandToFill: Bool = false
     @ObservedObject private var player = PlayerViewModel.shared
 
     struct ILDLine: Identifiable {
@@ -1636,8 +1692,11 @@ private struct InlineLyricsSection: View {
     var body: some View {
         Group {
             if !displayLines.isEmpty {
-                syncedView
-                    .frame(height: 200)
+                if expandToFill {
+                    syncedView
+                } else {
+                    syncedView.frame(height: 200)
+                }
             } else if let plain = plainText, !plain.isEmpty {
                 Text(plain)
                     .font(.system(size: 13, weight: .regular))

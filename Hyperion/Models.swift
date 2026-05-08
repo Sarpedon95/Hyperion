@@ -507,6 +507,7 @@ struct AudioSignalPath: Identifiable, Hashable {
         sourceFormat: String,
         selectedStreamURL: URL?,
         outputFormat: String,
+        outputDeviceName: String = "",
         localVolume: Float,
         lmsQuality: LMSAudioQuality? = nil,
         orpheusState: OrpheusSignalPathState? = nil,
@@ -578,43 +579,93 @@ struct AudioSignalPath: Identifiable, Hashable {
             && !decodedFormat.hasPrefix("unknown")
         steps.append(AudioPathStep(
             id: "decode",
-            icon: "arrowtriangle.right.fill",
+            icon: "waveform",
             title: "Decode",
-            subtitle: decodedFormatKnown
-                ? "AVAssetTrack: \(decodedFormat)"
-                : "iOS AVPlayer decodes Hyperion's selected stream",
+            subtitle: decodedFormatKnown ? decodedFormat : "AVPlayer",
             status: .unknown,
             statusLabel: decodedFormatKnown ? "Detected" : "Not reported",
-            confidence: .verified,
-            technicalValue: decodedFormatKnown ? decodedFormat : streamDescription,
-            explanation: "Hyperion creates an AVURLAsset/AVPlayerItem from this LMS stream URL. AVPlayer performs decoding locally; LMS decode/transcode state for this direct stream is not explicitly reported here.",
+            confidence: decodedFormatKnown ? .verified : .reported,
+            technicalValue: decodedFormatKnown ? decodedFormat : (selectedStreamURL == nil ? nil : streamDescription),
+            explanation: "Hyperion decodes the LMS stream via AVPlayer/AVURLAsset. When Orpheus is active, the exact decoded format is read from AVAssetTrack.",
             sourceOfTruth: decodedFormatKnown
                 ? "AVAssetTrack.formatDescriptions (Orpheus engine)"
-                : "Hyperion playback code + selected stream URL",
+                : "Hyperion playback — AVPlayer direct stream",
             usedFields: [decodedFormatKnown ? "decodedFormat" : nil,
                          selectedStreamURL == nil ? nil : "selectedStreamURL"].compactMap { $0 },
             missingFields: decodedFormatKnown ? [] : (selectedStreamURL == nil ? ["selectedStreamURL"] : [])
         ))
 
+        // LMS processing — use tags=A stream fields when available, fall back to URL heuristic.
+        let streamSR  = lmsQuality?.streamSampleRate.flatMap { $0 > 0 ? $0 : nil }
+        let streamBD  = lmsQuality?.streamBitDepth.flatMap  { $0 > 0 ? $0 : nil }
+        let streamBR  = lmsQuality?.streamBitRate.flatMap   { $0.isEmpty ? nil : $0 }
+        var streamFmtParts: [String] = []
+        if let sr = streamSR { streamFmtParts.append(formatSampleRate(sr)) }
+        if let bd = streamBD { streamFmtParts.append("\(bd)-bit") }
+        if let br = streamBR { streamFmtParts.append(br) }
+        let streamFmtStr = streamFmtParts.isEmpty ? nil : streamFmtParts.joined(separator: " / ")
+
+        let isDirect: Bool? = {
+            guard let sr = streamSR, let srcRate = sampleRate, srcRate > 0 else { return nil }
+            return sr == srcRate && (streamBD == nil || streamBD == sampleSize)
+        }()
+
+        let lmsSubtitle: String
+        let lmsStatus: QualityStatus
+        let lmsTechValue: String?
+        let lmsSourceOfTruth: String
+        let lmsMissingFields: [String]
+
+        if isDirect == true {
+            lmsSubtitle     = "Direct — no transcode"
+            lmsStatus       = .lossless
+            lmsTechValue    = streamFmtStr
+            lmsSourceOfTruth = "LMS status audio_ fields (tags=A)"
+            lmsMissingFields = []
+        } else if let sfStr = streamFmtStr {
+            lmsSubtitle     = "Transcoded to \(sfStr)"
+            lmsStatus       = .converted
+            lmsTechValue    = sfStr
+            lmsSourceOfTruth = "LMS status audio_ fields (tags=A)"
+            lmsMissingFields = []
+        } else if appearsTranscoded {
+            lmsSubtitle     = "Stream extension differs from source codec"
+            lmsStatus       = .converted
+            lmsTechValue    = streamDescription.isEmpty ? nil : streamDescription
+            lmsSourceOfTruth = "LMS stream URL + source metadata heuristic"
+            lmsMissingFields = ["audio_samplerate", "audio_bitdepth"]
+        } else {
+            lmsSubtitle     = "Transcode format not reported"
+            lmsStatus       = .unknown
+            lmsTechValue    = streamDescription.isEmpty ? nil : streamDescription
+            lmsSourceOfTruth = "LMS stream URL + source metadata"
+            lmsMissingFields = ["audio_samplerate", "audio_bitdepth"]
+        }
+
         steps.append(AudioPathStep(
             id: "lms-processing",
             icon: "network",
             title: "LMS processing",
-            subtitle: appearsTranscoded ? "Selected stream extension differs from source codec" : "Transcoding/final output format not reported by LMS",
-            status: appearsTranscoded ? .converted : .unknown,
-            statusLabel: appearsTranscoded ? "Transcoded?" : "Unknown",
-            confidence: appearsTranscoded ? .unverified : .unknown,
-            technicalValue: selectedStreamURL == nil ? nil : streamDescription,
-            explanation: appearsTranscoded
-                ? "The chosen stream URL looks different from the reported source format. That suggests a conversion candidate, but Hyperion still needs LMS convert/status output to prove the exact final format."
-                : "LMS status/songinfo describes the library track, but does not report the exact decoded/transcoded stream format that AVPlayer receives.",
-            sourceOfTruth: "LMS stream URL + LMS metadata",
-            usedFields: selectedStreamURL == nil ? [] : ["selectedStreamURL", "type"],
-            missingFields: ["final_output_format", "transcode_pipeline"]
+            subtitle: lmsSubtitle,
+            status: lmsStatus,
+            statusLabel: isDirect == true ? "Direct" : (streamFmtStr != nil ? "Transcoded" : (appearsTranscoded ? "Transcoded?" : "Unknown")),
+            confidence: isDirect != nil ? .reported : (appearsTranscoded ? .unverified : .unknown),
+            technicalValue: lmsTechValue,
+            explanation: isDirect == true
+                ? "LMS is streaming the source file without transcoding — sample rate and bit depth match the library file."
+                : (streamFmtStr != nil
+                   ? "LMS is delivering a transcoded stream to Hyperion. Source and stream formats differ."
+                   : "LMS transcode state was not reported. tags=A requires an active LMS player streaming to a registered output."),
+            sourceOfTruth: lmsSourceOfTruth,
+            usedFields: streamFmtStr != nil ? ["audio_samplerate", "audio_bitdepth"] : (selectedStreamURL == nil ? [] : ["selectedStreamURL", "type"]),
+            missingFields: lmsMissingFields
         ))
-        whyNotBitPerfect.append("LMS final stream/output format and transcode pipeline are not reported for this Hyperion direct stream.")
-        missingFields.insert("final_output_format")
-        missingFields.insert("transcode_pipeline")
+        if isDirect != true {
+            whyNotBitPerfect.append(streamFmtStr != nil
+                ? "LMS is transcoding the source stream."
+                : "LMS transcode format is not reported (tags=A unavailable or LMS player not active).")
+            missingFields.insert("final_output_format")
+        }
 
         let replayText: String
         let replayTech: String?
@@ -724,18 +775,26 @@ struct AudioSignalPath: Identifiable, Hashable {
         }
 
         let outputKnown = !outputFormat.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let deviceLine: String = {
+            let dev = outputDeviceName.trimmingCharacters(in: .whitespacesAndNewlines)
+            let fmt = outputFormat.trimmingCharacters(in: .whitespacesAndNewlines)
+            if dev.isEmpty && fmt.isEmpty { return "Not reported" }
+            if dev.isEmpty { return fmt }
+            if fmt.isEmpty { return dev }
+            return "\(dev) · \(fmt)"
+        }()
         steps.append(AudioPathStep(
             id: "output",
             icon: "headphones",
             title: "Output",
-            subtitle: outputKnown ? outputFormat : "Output device/format not reported",
+            subtitle: outputKnown ? deviceLine : "Output device not reported",
             status: outputKnown ? .unknown : .unknown,
             statusLabel: outputKnown ? "Route known" : "Unknown",
             confidence: outputKnown ? .reported : .unknown,
-            technicalValue: outputKnown ? outputFormat : nil,
-            explanation: "This is the iOS audio route/sample-rate snapshot available to Hyperion. It is not an LMS final output format and does not expose final bit depth or all OS/device processing.",
-            sourceOfTruth: outputKnown ? "AVAudioSession.currentRoute / sampleRate" : "Not reported",
-            usedFields: outputKnown ? ["AVAudioSession.currentRoute", "AVAudioSession.sampleRate"] : [],
+            technicalValue: outputKnown ? deviceLine : nil,
+            explanation: "iOS audio route snapshot. Does not expose final bit depth, DAC internals, or OS mixing.",
+            sourceOfTruth: outputKnown ? "AVAudioSession.currentRoute + portName" : "Not reported",
+            usedFields: outputKnown ? ["AVAudioSession.currentRoute", "portName", "sampleRate"] : [],
             missingFields: ["final_output_bit_depth", "device_internal_processing"]
         ))
         whyNotBitPerfect.append("Final output bit depth and device/OS processing are not reported.")
@@ -992,29 +1051,84 @@ struct AudioSignalPath: Identifiable, Hashable {
     static let mockPath = AudioSignalPath(
         steps: [
             AudioPathStep(
-                id: "mock-source",
+                id: "source",
                 icon: "opticaldisc",
                 title: "Source",
-                subtitle: "FLAC 44.1 kHz / 16-bit",
+                subtitle: "FLAC / 96 kHz / 24-bit / lossless source",
                 status: .lossless,
-                statusLabel: "Reported",
+                statusLabel: "Lossless source",
                 confidence: .reported,
-                explanation: "Example source metadata reported by LMS."
+                technicalValue: "FLAC / 96 kHz / 24-bit",
+                explanation: "LMS songinfo reports a lossless FLAC source.",
+                sourceOfTruth: "LMS songinfo + Track metadata",
+                usedFields: ["type", "samplerate", "samplesize", "lossless"],
+                missingFields: ["bitrate"]
             ),
             AudioPathStep(
-                id: "mock-output",
+                id: "decode",
+                icon: "waveform",
+                title: "Decode",
+                subtitle: "PCM Float32 96000 Hz 2ch",
+                status: .unknown,
+                statusLabel: "Detected",
+                confidence: .verified,
+                technicalValue: "PCM Float32 96000 Hz 2ch",
+                explanation: "AVAssetTrack format detected by Orpheus engine.",
+                sourceOfTruth: "AVAssetTrack.formatDescriptions (Orpheus engine)"
+            ),
+            AudioPathStep(
+                id: "lms-processing",
+                icon: "network",
+                title: "LMS processing",
+                subtitle: "Direct — no transcode",
+                status: .lossless,
+                statusLabel: "Direct",
+                confidence: .reported,
+                technicalValue: "96 kHz / 24-bit",
+                explanation: "LMS status tags=A confirms source sample rate matches stream.",
+                sourceOfTruth: "LMS status audio_ fields (tags=A)",
+                usedFields: ["audio_samplerate", "audio_bitdepth"]
+            ),
+            AudioPathStep(
+                id: "replaygain",
+                icon: "dial.medium",
+                title: "ReplayGain / volume normalization",
+                subtitle: "ReplayGain value reported",
+                status: .unknown,
+                statusLabel: "Reported tag",
+                confidence: .reported,
+                technicalValue: "Track -1.23 dB",
+                explanation: "Tag present; application not verified.",
+                sourceOfTruth: "LMS songinfo replay_gain field"
+            ),
+            AudioPathStep(
+                id: "volume",
+                icon: "speaker.wave.2",
+                title: "Digital volume",
+                subtitle: "100% — no local attenuation",
+                status: .lossless,
+                statusLabel: "Full scale",
+                confidence: .verified,
+                technicalValue: "100%",
+                sourceOfTruth: "Hyperion PlayerViewModel.volume / AVPlayer.volume"
+            ),
+            AudioPathStep(
+                id: "output",
                 icon: "headphones",
                 title: "Output",
-                subtitle: "Output format not reported by LMS",
+                subtitle: "AirPods Pro · 48 kHz · 2ch",
                 status: .unknown,
-                statusLabel: "Unknown",
-                confidence: .unknown,
-                explanation: "Example intentionally leaves final output unknown."
-            )
+                statusLabel: "Route known",
+                confidence: .reported,
+                technicalValue: "AirPods Pro · 48 kHz · 2ch",
+                explanation: "iOS audio route snapshot.",
+                sourceOfTruth: "AVAudioSession.currentRoute + portName",
+                usedFields: ["AVAudioSession.currentRoute", "portName", "sampleRate"]
+            ),
         ],
         badgeStatus: .unknown,
         badgeLabelOverride: "Direct?",
         diagnostics: SignalPathDiagnostics(notes: ["Preview data; real playback uses LMS/track/player fields."]),
-        whyNotBitPerfect: ["Final output format is not reported in this preview."]
+        whyNotBitPerfect: ["Final output bit depth and device/OS processing are not reported."]
     )
 }
