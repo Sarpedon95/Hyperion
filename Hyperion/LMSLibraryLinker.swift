@@ -37,16 +37,17 @@ final class LMSLibraryLinker: ObservableObject {
         // User-confirmed/created candidates always rank first
         let overrides = OOUserLinkOverrideStore.shared
         let candidates = candidatesByWork[id] ?? []
-        if let confirmed = candidates.first(where: { overrides.isConfirmed(workID: id, albumID: $0.lmsAlbumID) }) {
+        // FIXED: pass trackIDs so the v2 key disambiguates multiple work appearances on same album
+        if let confirmed = candidates.first(where: { overrides.isConfirmed(workID: id, albumID: $0.lmsAlbumID, trackIDs: $0.lmsTrackIDs) }) {
             return confirmed
         }
-        return candidates.first(where: { !overrides.isRejected(workID: id, albumID: $0.lmsAlbumID) })
+        return candidates.first(where: { !overrides.isRejected(workID: id, albumID: $0.lmsAlbumID, trackIDs: $0.lmsTrackIDs) })
     }
 
     func candidates(forWorkID id: String) -> [WorkRecordingCandidate] {
         let overrides = OOUserLinkOverrideStore.shared
         return (candidatesByWork[id] ?? []).filter {
-            !overrides.isRejected(workID: id, albumID: $0.lmsAlbumID)
+            !overrides.isRejected(workID: id, albumID: $0.lmsAlbumID, trackIDs: $0.lmsTrackIDs) // FIXED: v2 key
         }
     }
 
@@ -410,13 +411,14 @@ final class LMSLibraryLinker: ObservableObject {
 
     // MARK: - User overrides (delegates to OOUserLinkOverrideStore)
 
-    func confirmCandidate(workID: String, albumID: Int) {
-        OOUserLinkOverrideStore.shared.confirm(workID: workID, albumID: albumID)
+    // FIXED: trackIDs param forwards v2 key so overrides are disambiguated per track subset
+    func confirmCandidate(workID: String, albumID: Int, trackIDs: [Int] = []) {
+        OOUserLinkOverrideStore.shared.confirm(workID: workID, albumID: albumID, trackIDs: trackIDs)
         objectWillChange.send()
     }
 
-    func rejectCandidate(workID: String, albumID: Int) {
-        OOUserLinkOverrideStore.shared.reject(workID: workID, albumID: albumID)
+    func rejectCandidate(workID: String, albumID: Int, trackIDs: [Int] = []) {
+        OOUserLinkOverrideStore.shared.reject(workID: workID, albumID: albumID, trackIDs: trackIDs)
         objectWillChange.send()
     }
 

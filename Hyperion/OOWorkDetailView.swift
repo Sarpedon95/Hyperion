@@ -358,26 +358,27 @@ struct RecordingCandidateRow: View {
     }
 
     private var isConfirmed: Bool {
-        overrides.isConfirmed(workID: workID, albumID: candidate.lmsAlbumID)
+        // FIXED: pass trackIDs to use v2 key and avoid false matches on multi-work albums
+        overrides.isConfirmed(workID: workID, albumID: candidate.lmsAlbumID, trackIDs: candidate.lmsTrackIDs)
     }
 
     @ViewBuilder
     private var contextMenuItems: some View {
         if isConfirmed {
             Button(role: .destructive) {
-                overrides.remove(workID: workID, albumID: candidate.lmsAlbumID)
+                overrides.remove(workID: workID, albumID: candidate.lmsAlbumID, trackIDs: candidate.lmsTrackIDs) // FIXED: v2 key
                 linker.objectWillChange.send()
             } label: {
                 Label("Remove confirmation", systemImage: "xmark.circle")
             }
         } else {
             Button {
-                linker.confirmCandidate(workID: workID, albumID: candidate.lmsAlbumID)
+                linker.confirmCandidate(workID: workID, albumID: candidate.lmsAlbumID, trackIDs: candidate.lmsTrackIDs) // FIXED: v2 key
             } label: {
                 Label("Confirm this match", systemImage: "checkmark.circle")
             }
             Button(role: .destructive) {
-                linker.rejectCandidate(workID: workID, albumID: candidate.lmsAlbumID)
+                linker.rejectCandidate(workID: workID, albumID: candidate.lmsAlbumID, trackIDs: candidate.lmsTrackIDs) // FIXED: v2 key
             } label: {
                 Label("Not a match", systemImage: "hand.thumbsdown")
             }

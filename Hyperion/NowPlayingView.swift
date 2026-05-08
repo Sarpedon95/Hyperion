@@ -51,7 +51,8 @@ struct NowPlayingView: View {
 
     @ObservedObject private var player     = PlayerViewModel.shared
     @ObservedObject private var likedTracks = LikedTracksStore.shared
-    @ObservedObject private var orpheus    = OrpheusDSPEngine.shared
+    @ObservedObject private var orpheus        = OrpheusDSPEngine.shared
+    @ObservedObject private var profileManager = PlaybackProfileManager.shared
     @Environment(\.dismiss) private var dismiss
 
     @State private var showSignalPath:    Bool = false
@@ -61,6 +62,7 @@ struct NowPlayingView: View {
     @State private var isDraggingProgress: Bool = false
     @State private var dragProgress:      Double = 0
     @State private var isPillPulsing:     Bool = false
+    @State private var showProfileSheet:  Bool = false
 
     // MARK: - Derived
 
@@ -150,6 +152,9 @@ struct NowPlayingView: View {
                     .environment(\.hyperionBottomOverlayHeight, 0)
             }
         }
+        .sheet(isPresented: $showProfileSheet) {
+            ProfileQuickSettingsSheet(profileManager: profileManager, player: player)
+        }
         .preferredColorScheme(.dark)
         .animation(.spring(response: 0.36, dampingFraction: 0.80), value: showQueuePanel)
         .onAppear { isPillPulsing = true }
@@ -203,12 +208,12 @@ struct NowPlayingView: View {
     // MARK: - Artwork
 
     private var artworkSection: some View {
-        let side = UIScreen.main.bounds.width - 48
-        return ZStack {
+        ZStack {
             Color.black.opacity(0.4)
-            ArtworkView(coverid: player.currentTrack?.coverid, size: side, contentMode: .fill)
+            ArtworkView(coverid: player.currentTrack?.coverid, size: 400, contentMode: .fill)
         }
-        .frame(width: side, height: side)
+        .aspectRatio(1, contentMode: .fit)
+        .frame(maxWidth: .infinity)
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .shadow(color: .black.opacity(0.35), radius: 16, x: 0, y: 8)
         .id(player.currentTrack?.id ?? -1)
@@ -237,6 +242,24 @@ struct NowPlayingView: View {
                     .multilineTextAlignment(.center)
                     .lineLimit(1)
                     .frame(maxWidth: .infinity, alignment: .center)
+            }
+
+            if player.currentTrack != nil {
+                Button {
+                    Haptics.light()
+                    showProfileSheet = true
+                } label: {
+                    Text(profileManager.pillLabel(profile: profileManager.activeProfile,
+                                                  source: profileManager.detectionSource))
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.7))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(Color.white.opacity(0.12))
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Playback profile: \(profileManager.activeProfile.displayName). Tap to adjust.")
             }
         }
         .frame(maxWidth: .infinity)
@@ -310,16 +333,23 @@ struct NowPlayingView: View {
                 Image(systemName: player.repeatMode == 1 ? "repeat.1" : "repeat")
                     .font(.system(size: 20))
                     .opacity(player.repeatMode > 0 ? 1.0 : 0.45)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(player.repeatMode == 0 ? "Repeat off" : player.repeatMode == 1 ? "Repeat one" : "Repeat all")
             Spacer()
             Button {
                 Haptics.light()
                 player.previousTrack()
             } label: {
-                Image(systemName: "backward.fill").font(.system(size: 28))
+                Image(systemName: "backward.fill")
+                    .font(.system(size: 28))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Previous track")
             Spacer()
             Button {
                 Haptics.medium()
@@ -343,9 +373,13 @@ struct NowPlayingView: View {
                 Haptics.light()
                 player.nextTrack()
             } label: {
-                Image(systemName: "forward.fill").font(.system(size: 28))
+                Image(systemName: "forward.fill")
+                    .font(.system(size: 28))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Next track")
             Spacer()
             Button {
                 Haptics.light()
@@ -354,8 +388,11 @@ struct NowPlayingView: View {
                 Image(systemName: "shuffle")
                     .font(.system(size: 20))
                     .opacity(player.isShuffle ? 1.0 : 0.45)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(player.isShuffle ? "Shuffle on" : "Shuffle off")
             Spacer()
         }
         .foregroundColor(.white)
@@ -382,6 +419,15 @@ struct NowPlayingView: View {
                         likedTracks.toggle(track)
                     }
                 }
+            }
+            Spacer(minLength: 0)
+            BottomToolbarButton(
+                systemName: "slider.horizontal.3",
+                tint: .white.opacity(0.36),
+                accessibilityLabel: "Playback profile"
+            ) {
+                Haptics.light()
+                showProfileSheet = true
             }
             Spacer(minLength: 0)
             BottomToolbarButton(
@@ -481,7 +527,7 @@ struct NowPlayingView: View {
                     .fill(Color.roonSurface)
                     .ignoresSafeArea(edges: .bottom)
             )
-            .frame(maxHeight: UIScreen.main.bounds.height * 0.65)
+            .containerRelativeFrame(.vertical) { h, _ in max(h * 0.65, 300) }
             .gesture(
                 DragGesture()
                     .onEnded { value in
@@ -751,5 +797,156 @@ private struct InlineWorkGroupView: View {
         }
         .background(Color.roonSurface)
         .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+}
+
+// MARK: - Profile quick settings sheet
+
+private struct ProfileQuickSettingsSheet: View {
+    @ObservedObject var profileManager: PlaybackProfileManager
+    @ObservedObject var player: PlayerViewModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    HStack {
+                        Text("Profile").foregroundColor(.roonPrimary)
+                        Spacer()
+                        Picker("Profile", selection: profilePickerBinding) {
+                            ForEach(PlaybackProfile.allCases) { profile in
+                                Text(profile.displayName).tag(profile)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .tint(.roonAccent)
+                    }
+
+                    if profileManager.detectionSource != .globalDefault {
+                        Button("Reset to auto-detect") {
+                            profileManager.clearManualOverride(for: player.currentTrack)
+                            profileManager.update(for: player.currentTrack)
+                        }
+                        .font(.roonBody(13))
+                        .foregroundColor(.roonAccent)
+                    }
+                } header: {
+                    Text("PROFILE")
+                } footer: {
+                    Text(profileManager.pillLabel(
+                        profile: profileManager.activeProfile,
+                        source:  profileManager.detectionSource
+                    ))
+                    .font(.roonBody(12)).foregroundColor(.roonTertiary)
+                }
+                .listRowBackground(Color.roonSurface)
+
+                Section {
+                    Toggle(isOn: gaplessBinding) {
+                        Text("Gapless Playback").foregroundColor(.roonPrimary)
+                    }
+                    .tint(.roonAccent)
+
+                    Toggle(isOn: crossfadeBinding) {
+                        Text("Crossfade").foregroundColor(.roonPrimary)
+                    }
+                    .tint(.roonAccent)
+
+                    if profileManager.resolvedCrossfadeEnabled {
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text("Duration").font(.roonBody(13)).foregroundColor(.roonSecondary)
+                                Spacer()
+                                Text(String(format: "%.1f s", profileManager.resolvedCrossfadeDuration))
+                                    .font(.roonBody(13)).foregroundColor(.roonTertiary).monospacedDigit()
+                            }
+                            Slider(value: cfDurationBinding, in: 0.5...12, step: 0.5)
+                                .tint(.roonAccent)
+                        }
+                        .padding(.vertical, 2)
+                    }
+
+                    Toggle(isOn: crossfeedBinding) {
+                        Text("Crossfeed (BS2B)").foregroundColor(.roonPrimary)
+                    }
+                    .tint(.roonAccent)
+
+                    if profileManager.resolvedCrossfeedEnabled {
+                        Picker("Preset", selection: crossfeedPresetBinding) {
+                            ForEach(CrossfeedPreset.allCases) { preset in
+                                Text(preset.rawValue).tag(preset)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .foregroundColor(.roonSecondary)
+                    }
+                } header: {
+                    Text("QUICK SETTINGS (THIS SESSION)")
+                } footer: {
+                    Text("Changes apply to the current session only. Permanent profile defaults are in Settings → Playback Profiles.")
+                        .font(.roonBody(12)).foregroundColor(.roonTertiary)
+                }
+                .listRowBackground(Color.roonSurface)
+            }
+            .listStyle(.insetGrouped)
+            .scrollContentBackground(.hidden)
+            .background(Color.roonBase.ignoresSafeArea())
+            .navigationTitle("Playback Profile")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarColorScheme(.dark, for: .navigationBar)
+            .toolbarBackground(Color.roonBase, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                        .foregroundColor(.roonAccent)
+                        .fontWeight(.semibold)
+                }
+            }
+            .preferredColorScheme(.dark)
+        }
+    }
+
+    private var profilePickerBinding: Binding<PlaybackProfile> {
+        Binding(
+            get: { profileManager.activeProfile },
+            set: { profile in profileManager.setManualOverride(profile, for: player.currentTrack) }
+        )
+    }
+
+    private var gaplessBinding: Binding<Bool> {
+        Binding(
+            get: { profileManager.resolvedGaplessEnabled },
+            set: { profileManager.sessionGaplessEnabled = $0 }
+        )
+    }
+
+    private var crossfadeBinding: Binding<Bool> {
+        Binding(
+            get: { profileManager.resolvedCrossfadeEnabled },
+            set: { profileManager.sessionCrossfadeEnabled = $0 }
+        )
+    }
+
+    private var cfDurationBinding: Binding<Double> {
+        Binding(
+            get: { profileManager.resolvedCrossfadeDuration },
+            set: { profileManager.sessionCrossfadeDuration = $0 }
+        )
+    }
+
+    private var crossfeedBinding: Binding<Bool> {
+        Binding(
+            get: { profileManager.resolvedCrossfeedEnabled },
+            set: { profileManager.sessionCrossfeedEnabled = $0 }
+        )
+    }
+
+    private var crossfeedPresetBinding: Binding<CrossfeedPreset> {
+        Binding(
+            get: { profileManager.resolvedCrossfeedPreset },
+            set: { profileManager.sessionCrossfeedPreset = $0 }
+        )
     }
 }

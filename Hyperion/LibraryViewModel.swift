@@ -304,16 +304,15 @@ final class LibraryViewModel: ObservableObject {
 
     func loadSongs() async {
         if !songs.isEmpty {
-            print("[LoadSongs] Already loaded (\(songs.count) songs) — skipping")
+            ServerLogStore.shared.debug("[LoadSongs] Already loaded (\(songs.count) songs) — skipping")
             return
         }
         if let existing = songsLoadTask {
-            // Caller joining an in-flight load: wait for it, then ensure songs is populated.
-            print("[LoadSongs] In-flight load already running — joining it")
+            ServerLogStore.shared.debug("[LoadSongs] In-flight load already running — joining it")
             _ = try? await existing.value
             return
         }
-        print("[LoadSongs] Starting full library song load")
+        ServerLogStore.shared.debug("[LoadSongs] Starting full library song load")
         isLoadingSongs = true
         let pageSize = self.pageSize
         let task = Task<[Track], Error> {
@@ -341,6 +340,13 @@ final class LibraryViewModel: ObservableObject {
         } catch {
             self.error = error.localizedDescription
         }
+    }
+
+    // ADDED: server-side text filter — avoids loading the full library just for a subset.
+    // Returns up to `limit` tracks whose title/artist match `query` via LMS search.
+    func loadSongs(matching query: String, limit: Int = 100) async throws -> [Track] {
+        guard !query.trimmingCharacters(in: .whitespaces).isEmpty else { return [] }
+        return try await LyrionAPI.shared.searchTracks(term: query, count: limit)
     }
 
     // MARK: - Works

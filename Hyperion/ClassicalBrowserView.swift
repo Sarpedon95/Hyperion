@@ -149,6 +149,9 @@ private struct ComposersTab: View {
                 .frame(width: 28, height: 28)
                 .background(selected ? Color.roonAccent : Color.clear)
                 .clipShape(Circle())
+                // FIXED: 44pt minimum tap target — invisible padding beyond the visible circle
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
@@ -610,7 +613,7 @@ private struct CachedRemoteImage<Placeholder: View>: View {
             image = await ArtworkCache.shared.loadImage(
                 url: url,
                 targetPoints: size,
-                scale: UIScreen.main.scale
+                scale: UITraitCollection.current.displayScale > 0 ? UITraitCollection.current.displayScale : 2
             )
         }
     }

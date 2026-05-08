@@ -213,15 +213,18 @@ final class LyricsService {
 
     // MARK: - Disk cache
 
+    // FIXED: use Caches directory (OS can evict on low storage; no iCloud backup).
     private var cacheDir: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("lyrics_cache", isDirectory: true)
     }
 
-    // DJB2 — stable across sessions (unlike Swift's hashValue).
-    // "v2|" prefix busts old v1 negative-result entries that blocked the ladder.
+    private static let cacheTTL: TimeInterval = 30 * 24 * 60 * 60 // 30 days
+
+    // FIXED: v3 key — artist + track only (no album) deduplicates same track on multiple albums.
+    // v2 → v3 bust automatically: old hashes never collide with new ones.
     private func cacheKey(artist: String, track: String, album: String) -> String {
-        let raw = "v2|\(artist.lowercased())|\(track.lowercased())|\(album.lowercased())"
+        let raw = "v3|\(artist.lowercased())|\(track.lowercased())"
         var hash: UInt64 = 5381
         for byte in raw.utf8 { hash = (hash &* 33) &+ UInt64(byte) }
         return String(format: "%016llx", hash)
@@ -234,6 +237,11 @@ final class LyricsService {
     private func loadFromCache(key: String) -> LyricsResult? {
         guard let data = try? Data(contentsOf: cacheURL(for: key)),
               let dto  = try? JSONDecoder().decode(CacheDTO.self, from: data) else { return nil }
+        // FIXED: reject stale entries older than 30 days
+        if let fetchedAt = dto.fetchedAt, Date().timeIntervalSince(fetchedAt) > Self.cacheTTL {
+            try? FileManager.default.removeItem(at: cacheURL(for: key))
+            return nil
+        }
         return dto.toResult()
     }
 
@@ -253,6 +261,8 @@ final class LyricsService {
         let kind:      Kind
         let lines:     [LineDTO]?
         let plainText: String?
+        // FIXED: timestamp for 30-day TTL; nil means pre-v3 entry (treated as fresh for compat)
+        let fetchedAt: Date?
 
         init?(from result: LyricsResult) {
             switch result {
@@ -265,6 +275,7 @@ final class LyricsService {
             case .unavailable:
                 kind = .unavailable; lines = nil; plainText = nil
             }
+            fetchedAt = Date()
         }
 
         func toResult() -> LyricsResult {

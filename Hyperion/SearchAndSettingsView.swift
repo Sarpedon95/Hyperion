@@ -399,9 +399,11 @@ private struct RecentSearchesSection: View {
                             Image(systemName: "xmark")
                                 .font(.system(size: 12, weight: .semibold))
                                 .foregroundColor(.roonTertiary)
-                                .frame(width: 28, height: 28)
+                                .frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel("Remove recent search")
                     }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 12)
@@ -918,7 +920,8 @@ struct SettingsView: View {
     @ObservedObject private var playlistStore = PlaylistStore.shared
     @ObservedObject private var audiomuse    = AudiomuseManager.shared
     @ObservedObject private var lastFmAuth   = LastFmAuthManager.shared
-    @ObservedObject private var discogsAuth  = DiscogsAuthManager.shared
+    @ObservedObject private var discogsAuth    = DiscogsAuthManager.shared
+    @ObservedObject private var profileManager = PlaybackProfileManager.shared
     @Environment(\.dismiss) private var dismiss
 
     @State private var localURL: String     = ""
@@ -1163,36 +1166,8 @@ struct SettingsView: View {
                 }
                 .listRowBackground(Color.roonSurface)
 
-                Section {
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack {
-                            Text("Crossfade").foregroundColor(.roonPrimary)
-                            Spacer()
-                            Text(player.crossfadeDuration == 0
-                                 ? "Off"
-                                 : String(format: "%.1f s", player.crossfadeDuration))
-                                .foregroundColor(.roonSecondary)
-                                .monospacedDigit()
-                        }
-                        Slider(value: $player.crossfadeDuration, in: 0...12, step: 0.5)
-                            .tint(.roonAccent)
-                    }
-                    .padding(.vertical, 4)
-                    HStack(alignment: .top, spacing: 10) {
-                        Image(systemName: "waveform.path.badge.minus")
-                            .foregroundColor(.roonSecondary)
-                            .font(.system(size: 13))
-                            .padding(.top, 1)
-                        Text("Gapless playback is always active (AVPlayer path). Crossfade fades the current track out before the next one begins.")
-                            .font(.roonBody(12))
-                            .foregroundColor(.roonSecondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                } header: { Text("PLAYBACK") } footer: {
-                    Text("Crossfade applies to both the Orpheus DSP engine and AVPlayer paths.")
-                        .font(.roonBody(12)).foregroundColor(.roonTertiary)
-                }
-                .listRowBackground(Color.roonSurface)
+                PlaybackProfilesSection(profileManager: profileManager)
+                    .listRowBackground(Color.roonSurface)
 
                 Section {
                     Toggle(isOn: Binding(
@@ -1370,6 +1345,152 @@ struct SettingsView: View {
         case .info:  return .roonPrimary
         case .warn:  return .orange
         case .error: return .red
+        }
+    }
+}
+
+// MARK: - Playback Profiles Settings
+
+private struct PlaybackProfilesSection: View {
+    @ObservedObject var profileManager: PlaybackProfileManager
+    @State private var expandedProfiles: Set<PlaybackProfile> = []
+
+    var body: some View {
+        Section {
+            HStack {
+                Text("Default Profile").foregroundColor(.roonPrimary)
+                Spacer()
+                Picker("Default Profile", selection: $profileManager.globalDefaultProfile) {
+                    ForEach(PlaybackProfile.allCases) { profile in
+                        Text(profile.displayName).tag(profile)
+                    }
+                }
+                .pickerStyle(.menu)
+                .tint(.roonAccent)
+            }
+
+            ForEach(PlaybackProfile.allCases) { profile in
+                DisclosureGroup(
+                    isExpanded: Binding(
+                        get: { expandedProfiles.contains(profile) },
+                        set: { isOpen in
+                            if isOpen { expandedProfiles.insert(profile) }
+                            else { expandedProfiles.remove(profile) }
+                        }
+                    )
+                ) {
+                    ProfileSettingsDetail(profile: profile, profileManager: profileManager)
+                } label: {
+                    HStack(spacing: 8) {
+                        Text(profile.displayName).foregroundColor(.roonPrimary)
+                        Spacer()
+                        profileBadges(profileManager.settings(for: profile))
+                    }
+                }
+                .tint(.roonAccent)
+            }
+        } header: {
+            Text("PLAYBACK PROFILES")
+        } footer: {
+            Text("Profiles are auto-detected from track genre tags. The default profile is used as a fallback. Per-album overrides can be set from the album detail view.")
+                .font(.roonBody(12)).foregroundColor(.roonTertiary)
+        }
+    }
+
+    @ViewBuilder
+    private func profileBadges(_ s: ProfileSettings) -> some View {
+        HStack(spacing: 4) {
+            if s.gaplessEnabled   { badge("Gapless") }
+            if s.crossfadeEnabled { badge("Xfade") }
+            if s.crossfeedEnabled { badge("Xfeed") }
+        }
+    }
+
+    private func badge(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundColor(.roonAccent)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background(Color.roonAccent.opacity(0.12))
+            .clipShape(Capsule())
+    }
+}
+
+private struct ProfileSettingsDetail: View {
+    let profile: PlaybackProfile
+    @ObservedObject var profileManager: PlaybackProfileManager
+
+    private var settings: ProfileSettings {
+        profileManager.settings(for: profile)
+    }
+
+    var body: some View {
+        Toggle(isOn: Binding(
+            get: { settings.gaplessEnabled },
+            set: { v in profileManager.updateSettings(for: profile) { $0.gaplessEnabled = v } }
+        )) {
+            Text("Gapless Playback").foregroundColor(.roonPrimary)
+        }
+        .tint(.roonAccent)
+
+        Toggle(isOn: Binding(
+            get: { settings.crossfadeEnabled },
+            set: { v in profileManager.updateSettings(for: profile) { $0.crossfadeEnabled = v } }
+        )) {
+            Text("Crossfade").foregroundColor(.roonPrimary)
+        }
+        .tint(.roonAccent)
+
+        if settings.crossfadeEnabled {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("Duration").font(.roonBody(13)).foregroundColor(.roonSecondary)
+                    Spacer()
+                    Text(String(format: "%.1f s", settings.crossfadeDuration))
+                        .font(.roonBody(13)).foregroundColor(.roonTertiary).monospacedDigit()
+                }
+                Slider(value: Binding(
+                    get: { settings.crossfadeDuration },
+                    set: { v in profileManager.updateSettings(for: profile) { $0.crossfadeDuration = v } }
+                ), in: 0.5...12, step: 0.5)
+                .tint(.roonAccent)
+            }
+            .padding(.vertical, 2)
+        }
+
+        Toggle(isOn: Binding(
+            get: { settings.crossfeedEnabled },
+            set: { v in profileManager.updateSettings(for: profile) { $0.crossfeedEnabled = v } }
+        )) {
+            Text("Crossfeed (BS2B)").foregroundColor(.roonPrimary)
+        }
+        .tint(.roonAccent)
+
+        if settings.crossfeedEnabled {
+            Picker("Preset", selection: Binding(
+                get: { settings.crossfeedPreset },
+                set: { v in profileManager.updateSettings(for: profile) { $0.crossfeedPreset = v } }
+            )) {
+                ForEach(CrossfeedPreset.allCases) { preset in
+                    Text(preset.rawValue).tag(preset)
+                }
+            }
+            .pickerStyle(.menu)
+            .foregroundColor(.roonSecondary)
+        }
+
+        if !settings.gaplessEnabled {
+            Picker("Gap Between Tracks", selection: Binding(
+                get: { settings.interTrackGap },
+                set: { v in profileManager.updateSettings(for: profile) { $0.interTrackGap = v } }
+            )) {
+                ForEach(InterTrackGap.allCases) { gap in
+                    Text(gap.displayName).tag(gap)
+                }
+            }
+            .pickerStyle(.menu)
+            .foregroundColor(.roonSecondary)
         }
     }
 }

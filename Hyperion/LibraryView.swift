@@ -1708,11 +1708,13 @@ struct WorkGroupSectionView: View {
                     Image(systemName: isCollapsed ? "chevron.down" : "chevron.up")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundColor(.roonTertiary)
-                        .frame(width: 36, height: 36)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .padding(.trailing, 10)
-                .padding(.top, 14)
+                .accessibilityLabel(isCollapsed ? "Expand work" : "Collapse work")
+                .padding(.trailing, 6)
+                .padding(.top, 10)
             }
             .contentShape(Rectangle())
             .onTapGesture {
@@ -2312,7 +2314,7 @@ struct ArtistDetailView: View {
                     Color.roonElevated
                 }
             }
-            .frame(height: UIScreen.main.bounds.height * 0.45)
+            .containerRelativeFrame(.vertical) { h, _ in max(h * 0.45, 280) }
             .clipped()
             .overlay(
                 LinearGradient(

@@ -109,6 +109,39 @@ final class OrpheusPlaybackEngine {
         didSet { playerNode.volume = max(0, min(1, volume)) }
     }
 
+    // ADDED: Task 11 — whether this stream supports crossfade.
+    // Disabled for: streaming (no seek = no precise end-of-track timing),
+    // short tracks (< 30 s would fade most of the content), and unknown duration.
+    var crossfadeEligible: Bool {
+        guard streamKind != .streamLike,     // streams have no precise EOS timing
+              durationKnown                   // skip if duration is unknown
+        else { return false }
+        return true
+    }
+
+    // ADDED: Task 11 — volume ramp using a high-frequency task loop for smooth fade.
+    // Equal-power curve: cos for fade-out, sin for fade-in (complementary half-power).
+    @discardableResult
+    func rampVolume(to targetVolume: Float, over duration: TimeInterval) -> Task<Void, Never> {
+        let startVolume = volume
+        let steps       = max(1, Int(duration / 0.016)) // ~60 fps
+        return Task { @MainActor [weak self] in
+            for i in 0..<steps {
+                guard let self, !Task.isCancelled else { return }
+                let t = Float(i + 1) / Float(steps)
+                // Equal-power: fade-out (cos) when going to 0, fade-in (sin) when going to 1.
+                let factor: Float = targetVolume < startVolume
+                    ? cos(t * .pi / 2)
+                    : sin(t * .pi / 2)
+                self.volume = startVolume + (targetVolume - startVolume) * (
+                    targetVolume < startVolume ? (1 - factor) : factor
+                )
+                try? await Task.sleep(nanoseconds: 16_000_000)
+            }
+            self?.volume = targetVolume
+        }
+    }
+
     // MARK: - Diagnostics (MainActor-safe, exposed to debug UI)
 
     private(set) var playbackMode: OrpheusPlaybackMode = .fileLike
@@ -296,6 +329,125 @@ final class OrpheusPlaybackEngine {
     }
 
     // MARK: - Playback control
+
+    /// Starts buffer feeding without resetting the player node.
+    /// Call this only when the node is already playing the previous track's tail buffers
+    /// (i.e. during a gapless track transition). `preloadTarget = 0` suppresses the
+    /// `node.play()` call so the already-running node is not disturbed.
+    func playGapless() {
+        guard let fmt = pcmFormat else {
+            let msg = "OrpheusPlaybackEngine.playGapless() called before load()"
+            lastError = msg
+            onError?(msg)
+            return
+        }
+
+        sessionID += 1
+        let sid = sessionID
+
+        isPlaying               = true
+        isBuffering             = false
+        didStartAudiblePlayback = true
+        preloadFramesAccumulated = 0
+
+        let node   = playerNode
+        let state  = rs
+        let format = fmt
+        let mode   = playbackMode
+        let fq     = feedQueue
+
+        state.generation += 1
+        let gen = state.generation
+
+        feedQueue.async {
+            guard state.generation == gen else { return }
+            state.isEOS               = false
+            state.scheduledBufferCount = 0
+            state.isUnderrun          = false
+
+            OPEBufferLoop.feed(
+                state:     state,
+                node:      node,
+                format:    format,
+                gen:       gen,
+                mode:      mode,
+                feedQueue: fq,
+                onStart:   {},   // node is already playing — no-op
+                onEnd: {
+                    Task { @MainActor [weak self] in
+                        guard let self, self.sessionID == sid else { return }
+                        self.isPlaying = false
+                        self.stopProgressTimer()
+                        self.onPlaybackEnded?()
+                    }
+                },
+                onError: { msg in
+                    Task { @MainActor [weak self] in
+                        guard let self, self.sessionID == sid else { return }
+                        self.lastError = msg
+                        self.onError?(msg)
+                    }
+                },
+                onUnderrun: {
+                    Task { @MainActor [weak self] in
+                        guard let self, self.sessionID == sid else { return }
+                        self.isBuffering = true
+                        self.onBufferingChanged?(true)
+                    }
+                },
+                onRecovery: {
+                    Task { @MainActor [weak self] in
+                        guard let self, self.sessionID == sid else { return }
+                        self.isBuffering = false
+                        self.onBufferingChanged?(false)
+                    }
+                },
+                preloadTarget: 0   // skip node.play() — node is already running
+            )
+        }
+
+        startProgressTimer()
+        onRoutingConfirmed?(true)
+    }
+
+    /// Adjust seekOffset so that time reads correctly after a gapless handoff.
+    /// `nodeElapsedAtHandoff` is the cumulative AVAudioPlayerNode sampleTime / sampleRate
+    /// at the moment the previous track's last buffer finished playing.
+    func configureGaplessSeekOffset(nodeElapsedAtHandoff: Double) {
+        seekOffset = -nodeElapsedAtHandoff
+    }
+
+    /// Cancel the buffer loop and tear down readers without stopping or resetting
+    /// the player node. Used during gapless handoff so the next engine's already-
+    /// scheduled buffers continue playing uninterrupted.
+    func stopWithoutResettingNode() {
+        sessionID += 1
+        isPlaying               = false
+        isBuffering             = false
+        didStartAudiblePlayback = false
+        stopProgressTimer()
+
+        let state = rs
+        state.generation += 1
+        feedQueue.async {
+            state.isEOS               = true
+            state.isUnderrun          = false
+            state.scheduledBufferCount = 0
+            state.assetReader?.cancelReading()
+            state.assetReader  = nil
+            state.readerOutput = nil
+        }
+
+        onRoutingConfirmed?(false)
+        onTimeUpdate         = nil
+        onDurationKnown      = nil
+        onBufferingChanged   = nil
+        onPlaybackEnded      = nil
+        onError              = nil
+        onNearEnd            = nil
+        onRoutingConfirmed   = nil
+        onDecodedFormatKnown = nil
+    }
 
     /// Starts playback from the reader's current position.
     /// Also used to restart after an interruption that stopped the AVAudioEngine.
@@ -682,7 +834,7 @@ final class OrpheusPlaybackEngine {
 
     // MARK: - Progress timer
 
-    private func startProgressTimer() {
+    func startProgressTimer() {
         stopProgressTimer()
         let node    = playerNode
         let mode    = playbackMode

@@ -166,6 +166,13 @@ final class OrpheusDSPEngine: NSObject, ObservableObject {
     @Published var crossfeedDelay: Float     = 0.3   // ms ITD
     @Published var crossfeedBypassed: Bool   = false
 
+    // Driven by PlaybackProfileManager — bypasses crossfeed for non-classical profiles
+    // without touching the user's permanent crossfeedBypassed setting. Defaults true
+    // (bypassed) until a profile with crossfeedEnabled=true is resolved.
+    @Published var profileDrivenCrossfeedBypassed: Bool = true {
+        didSet { applyCrossfeed() }
+    }
+
     // True when the current audio output is wired or Bluetooth headphones.
     // Crossfeed is auto-bypassed for speaker / AirPlay / line output.
     @Published private(set) var isHeadphoneOutput: Bool = false
@@ -252,8 +259,20 @@ final class OrpheusDSPEngine: NSObject, ObservableObject {
         }
     }
 
+    /// Apply a CrossfeedPreset from the PlaybackProfileManager without touching the
+    /// user's permanent bypass preference. Preset parameters (strength/frequency/delay)
+    /// are written to the DSP engine and take effect immediately.
+    func applyCrossfeedPreset(_ preset: CrossfeedPreset) {
+        crossfeedLevel     = preset.strength
+        crossfeedFrequency = preset.cutoffHz
+        crossfeedDelay     = preset.delayMs
+        applyCrossfeed()
+    }
+
     func applyCrossfeed() {
-        let effectiveBypassed = isPureModeEnabled || crossfeedBypassed || !isHeadphoneOutput
+        // profileDrivenCrossfeedBypassed is set by PlaybackProfileManager based on the
+        // resolved profile — it does not modify the user's crossfeedBypassed preference.
+        let effectiveBypassed = isPureModeEnabled || crossfeedBypassed || profileDrivenCrossfeedBypassed || !isHeadphoneOutput
 
         if let au = audioManager.crossfeedAU {
             // Real Bauer DSP via custom AUAudioUnit

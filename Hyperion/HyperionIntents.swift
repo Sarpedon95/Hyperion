@@ -209,6 +209,83 @@ struct PlayComposerIntent: AppIntent {
     }
 }
 
+// MARK: - Artist entity (ADDED: Task 10)
+
+struct ArtistEntity: AppEntity {
+    static let typeDisplayRepresentation: TypeDisplayRepresentation = "Artist"
+    static let defaultQuery = ArtistEntityQuery()
+
+    var id: String
+    var name: String
+
+    var displayRepresentation: DisplayRepresentation {
+        DisplayRepresentation(title: "\(name)")
+    }
+}
+
+struct ArtistEntityQuery: EntityStringQuery {
+    func entities(for identifiers: [String]) async throws -> [ArtistEntity] {
+        await LibraryViewModel.shared.loadArtists()
+        return await MainActor.run {
+            LibraryViewModel.shared.artists
+                .filter { identifiers.contains(String($0.id)) }
+                .map { ArtistEntity(id: String($0.id), name: $0.name) }
+        }
+    }
+
+    func entities(matching searchTerm: String) async throws -> [ArtistEntity] {
+        await LibraryViewModel.shared.loadArtists()
+        let needle = searchTerm.lowercased()
+        return await MainActor.run {
+            Array(
+                LibraryViewModel.shared.artists
+                    .filter { $0.name.lowercased().contains(needle) }
+                    .prefix(10)
+                    .map { ArtistEntity(id: String($0.id), name: $0.name) }
+            )
+        }
+    }
+}
+
+// MARK: - Play artist (ADDED: Task 10)
+
+struct PlayArtistIntent: AppIntent {
+    static let title: LocalizedStringResource = "Play an Artist"
+    static let description = IntentDescription("Play tracks by an artist from your Hyperion library.")
+    static let openAppWhenRun: Bool = false
+
+    @Parameter(title: "Artist")
+    var artist: ArtistEntity
+
+    @MainActor
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        guard let artistID = Int(artist.id) else { throw HyperionIntentError.noTracksFound }
+        let tracks = try await LyrionAPI.shared.getTracksForArtist(artistID: artistID)
+        guard !tracks.isEmpty else { throw HyperionIntentError.noTracksFound }
+        PlayerViewModel.shared.playTracks(tracks)
+        return .result(dialog: "Playing \(artist.name)")
+    }
+}
+
+// MARK: - Skip track (ADDED: Task 10)
+
+struct SkipTrackIntent: AppIntent {
+    static let title: LocalizedStringResource = "Skip Track"
+    static let description = IntentDescription("Skip to the next track in Hyperion.")
+    static let openAppWhenRun: Bool = false
+
+    @MainActor
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        let player = PlayerViewModel.shared
+        guard !player.queue.isEmpty else {
+            return .result(dialog: "Nothing is in the queue.")
+        }
+        player.nextTrack()
+        let title = player.currentTrack?.title ?? ""
+        return .result(dialog: "Skipping\(title.isEmpty ? "" : " to \(title)")")
+    }
+}
+
 // MARK: - Errors
 
 enum HyperionIntentError: Error, CustomLocalizedStringResourceConvertible {
@@ -265,6 +342,25 @@ struct HyperionShortcuts: AppShortcutsProvider {
             ],
             shortTitle: "Play by Composer",
             systemImageName: "person.badge.key.fill"
+        )
+        // ADDED: Task 10
+        AppShortcut(
+            intent: PlayArtistIntent(),
+            phrases: [
+                "Play \(\.$artist) in \(.applicationName)",
+                "Play music by \(\.$artist) with \(.applicationName)"
+            ],
+            shortTitle: "Play an Artist",
+            systemImageName: "music.microphone"
+        )
+        AppShortcut(
+            intent: SkipTrackIntent(),
+            phrases: [
+                "Skip the track in \(.applicationName)",
+                "Next track in \(.applicationName)"
+            ],
+            shortTitle: "Skip Track",
+            systemImageName: "forward.fill"
         )
     }
 }

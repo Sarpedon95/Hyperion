@@ -36,6 +36,7 @@ struct HyperionApp: App {
                         phaseName = "background"
                         PlaylistStore.shared.saveNow()
                         LikedTracksStore.shared.saveNow()
+                        AppDelegate.scheduleLibraryRefresh() // ADDED: BGAppRefreshTask
                     @unknown default: phaseName = "unknown"
                     }
                     player.handleScenePhaseChange(phaseName)
