@@ -50,6 +50,8 @@ struct ServerPlaylistListView: View {
                     } label: {
                         ServerPlaylistRowView(playlist: playlist)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
                     .listRowBackground(Color.clear)
                     .listRowSeparatorTint(Color.roonBorder)
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
@@ -205,6 +207,8 @@ struct ServerPlaylistDetailView: View {
                                 SongRowView(track: track, isActive: player.currentTrack?.id == track.id)
                             }
                             .buttonStyle(.plain)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
                             .contextMenu {
                                 Button("Play", systemImage: "play.fill") {
                                     player.playTracks(tracks, startingAt: index)

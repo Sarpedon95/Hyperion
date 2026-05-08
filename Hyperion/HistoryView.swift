@@ -53,6 +53,8 @@ struct HistoryView: View {
                             .padding(.horizontal, 4)
                             .padding(.vertical, 4)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
                     .listRowBackground(Color.clear)
                     .listRowSeparatorTint(Color.roonBorder)
                 }
@@ -83,6 +85,8 @@ struct HistoryView: View {
                             subtitle: pluralPlays(pair.value)
                         )
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
                     .listRowBackground(Color.clear)
                     .listRowSeparatorTint(Color.roonBorder)
                 }
@@ -114,6 +118,8 @@ struct HistoryView: View {
                                 subtitle: pluralPlays(pair.value)
                             )
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
                         .listRowBackground(Color.clear)
                         .listRowSeparatorTint(Color.roonBorder)
                     } else {

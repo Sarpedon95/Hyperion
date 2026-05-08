@@ -93,6 +93,8 @@ struct DownloadsView: View {
                                               isActive: player.currentTrack?.id == downloaded.id)
                             }
                             .buttonStyle(.plain)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
                             .listRowBackground(Color.clear)
                             .listRowSeparatorTint(Color.roonBorder)
                             .swipeActions(edge: .trailing, allowsFullSwipe: true) {

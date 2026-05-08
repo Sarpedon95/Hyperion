@@ -374,6 +374,8 @@ private struct JournalEntryRow: View {
             .padding(.vertical, 4)
         }
         .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
     }
 }
 
@@ -429,6 +431,8 @@ struct JournalEditSheet: View {
                             }
                         }
                         .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
                         .listRowBackground(Color.roonSurface)
                     }
                 }

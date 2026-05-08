@@ -21,6 +21,8 @@ struct LibraryView: View {
                             LibraryMenuRow(icon: "music.note",               label: "Songs")
                         }
                         .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
 
                         Color.roonBorder.frame(height: 0.5).padding(.leading, 66)
 
@@ -28,6 +30,8 @@ struct LibraryView: View {
                             LibraryMenuRow(icon: "heart.fill",               label: "Liked Tracks")
                         }
                         .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
 
                         Color.roonBorder.frame(height: 0.5).padding(.leading, 66)
 
@@ -35,6 +39,8 @@ struct LibraryView: View {
                             LibraryMenuRow(icon: "music.note.list",          label: "Playlists")
                         }
                         .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
 
                         Color.roonBorder.frame(height: 0.5).padding(.leading, 66)
 
@@ -42,6 +48,8 @@ struct LibraryView: View {
                             LibraryMenuRow(icon: "server.rack",              label: "Server Playlists")
                         }
                         .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
 
                         Color.roonBorder.frame(height: 0.5).padding(.leading, 66)
 
@@ -49,6 +57,8 @@ struct LibraryView: View {
                             LibraryMenuRow(icon: "square.stack.fill",        label: "Albums")
                         }
                         .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
 
                         Color.roonBorder.frame(height: 0.5).padding(.leading, 66)
 
@@ -56,6 +66,8 @@ struct LibraryView: View {
                             LibraryMenuRow(icon: "person.crop.circle.fill",  label: "Artists")
                         }
                         .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
 
                         Color.roonBorder.frame(height: 0.5).padding(.leading, 66)
 
@@ -63,6 +75,8 @@ struct LibraryView: View {
                             LibraryMenuRow(icon: "guitars.fill",             label: "Genres")
                         }
                         .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
 
                         Color.roonBorder.frame(height: 0.5).padding(.leading, 66)
 
@@ -70,6 +84,8 @@ struct LibraryView: View {
                             LibraryMenuRow(icon: "person.badge.key.fill",    label: "Composers")
                         }
                         .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
 
                         Color.roonBorder.frame(height: 0.5).padding(.leading, 66)
 
@@ -77,6 +93,8 @@ struct LibraryView: View {
                             LibraryMenuRow(icon: "music.quarternote.3",      label: "Works")
                         }
                         .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
 
                         Color.roonBorder.frame(height: 0.5).padding(.leading, 66)
 
@@ -84,6 +102,8 @@ struct LibraryView: View {
                             LibraryMenuRow(icon: "music.note.tv",             label: "Classical")
                         }
                         .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
 
                         Color.roonBorder.frame(height: 0.5).padding(.leading, 66)
 
@@ -91,6 +111,8 @@ struct LibraryView: View {
                             LibraryMenuRow(icon: "chart.bar.fill",            label: "History")
                         }
                         .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
 
                         Color.roonBorder.frame(height: 0.5).padding(.leading, 66)
 
@@ -98,6 +120,8 @@ struct LibraryView: View {
                             LibraryMenuRow(icon: "chart.xyaxis.line",         label: "Listening Stats")
                         }
                         .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
 
                         Color.roonBorder.frame(height: 0.5).padding(.leading, 66)
 
@@ -105,6 +129,8 @@ struct LibraryView: View {
                             LibraryMenuRow(icon: "book.closed.fill",           label: "Listening Journal")
                         }
                         .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
 
                         Color.roonBorder.frame(height: 0.5).padding(.leading, 66)
 
@@ -112,6 +138,8 @@ struct LibraryView: View {
                             LibraryMenuRow(icon: "arrow.down.circle.fill",    label: "Offline Library")
                         }
                         .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
 
                         Color.roonBorder.frame(height: 0.5).padding(.leading, 66)
 
@@ -119,6 +147,8 @@ struct LibraryView: View {
                             LibraryMenuRow(icon: "arrow.down.circle.fill",   label: "Downloads")
                         }
                         .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
                     }
                     .background(Color.roonSurface)
                     .clipShape(RoundedRectangle(cornerRadius: 14))
@@ -193,6 +223,8 @@ struct ComposerListView: View {
                 } label: {
                     ComposerRowView(composer: composer)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
                 .listRowBackground(Color.clear)
                 .listRowSeparatorTint(Color.roonBorder)
             }
@@ -269,6 +301,8 @@ struct WorkListView: View {
                 } label: {
                     WorkRowView(work: work, showComposer: composerID == nil)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
                 .listRowBackground(Color.clear)
                 .listRowSeparatorTint(Color.roonBorder)
             }
@@ -1815,6 +1849,8 @@ struct SongListView: View {
                     SongRowView(track: track, isActive: player.currentTrack?.id == track.id)
                 }
                 .buttonStyle(.plain)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
                 .listRowBackground(Color.clear)
                 .listRowSeparatorTint(Color.roonBorder)
             }
@@ -2034,6 +2070,8 @@ struct LikedTracksView: View {
                         SongRowView(track: track, isActive: player.currentTrack?.id == track.id)
                     }
                     .buttonStyle(.plain)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
                     .listRowBackground(Color.clear)
                     .listRowSeparatorTint(Color.roonBorder)
                 }
@@ -2085,6 +2123,8 @@ struct ArtistListView: View {
                 } label: {
                     ArtistRowView(artist: artist)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
                 .listRowBackground(Color.clear)
                 .listRowSeparatorTint(Color.roonBorder)
             }

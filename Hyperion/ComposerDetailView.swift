@@ -160,6 +160,8 @@ struct ComposerDetailView: View {
                         OOWorkRow(work: work, composer: composer)
                     }
                     .buttonStyle(.plain)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
                     Divider().background(Color.roonBorder).padding(.leading, 16)
                 }
             }

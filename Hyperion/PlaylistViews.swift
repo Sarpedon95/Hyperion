@@ -54,6 +54,8 @@ struct AddToPlaylistSheet: View {
                                 }
                             }
                             .buttonStyle(.plain)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
                         }
                     }
                 }
@@ -103,6 +105,8 @@ struct PlaylistListView: View {
                     } label: {
                         PlaylistRowView(playlist: playlist)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
                     .listRowBackground(Color.clear)
                     .listRowSeparatorTint(Color.roonBorder)
                 }
@@ -214,6 +218,8 @@ struct PlaylistDetailView: View {
                                         SongRowView(track: track, isActive: player.currentTrack?.id == track.id)
                                     }
                                     .buttonStyle(.plain)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .contentShape(Rectangle())
                                     .contextMenu {
                                         Button("Play", systemImage: "play.fill") {
                                             if let absolute = playlist.tracks.firstIndex(where: { $0.id == track.id }) {

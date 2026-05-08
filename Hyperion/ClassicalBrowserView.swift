@@ -765,6 +765,8 @@ private struct ConductorsBrowserTab: View {
                                     }
                                 }
                             }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
                             .listRowBackground(Color.roonSurface)
                             .listRowSeparatorTint(Color.roonBorder)
                         }
@@ -854,6 +856,8 @@ private struct ConductorDetailView: View {
                         }
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
                 .listRowBackground(Color.roonSurface)
                 .listRowSeparatorTint(Color.roonBorder)
             }
