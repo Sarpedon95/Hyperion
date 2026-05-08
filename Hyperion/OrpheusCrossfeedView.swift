@@ -2,7 +2,7 @@ import SwiftUI
 
 // MARK: - Crossfeed Presets
 
-private enum CrossfeedPreset: String, CaseIterable {
+private enum OrpheusManualCrossfeedPreset: String, CaseIterable {
     case off     = "Off"
     case mild    = "Mild"
     case natural = "Natural"
@@ -34,9 +34,9 @@ struct OrpheusCrossfeedView: View {
                 set: { dsp.crossfeedDelay = Float($0); dsp.applyCrossfeed() })
     }
 
-    private var activePreset: CrossfeedPreset? {
+    private var activePreset: OrpheusManualCrossfeedPreset? {
         if dsp.crossfeedBypassed { return .off }
-        return CrossfeedPreset.allCases.first {
+        return OrpheusManualCrossfeedPreset.allCases.first {
             $0 != .off &&
             abs($0.strength - dsp.crossfeedLevel)   < 0.01 &&
             abs($0.cutoff   - dsp.crossfeedFrequency) < 1 &&
@@ -75,7 +75,7 @@ struct OrpheusCrossfeedView: View {
             // Presets
             Section("PRESET") {
                 HStack(spacing: 8) {
-                    ForEach(CrossfeedPreset.allCases, id: \.rawValue) { preset in
+                    ForEach(OrpheusManualCrossfeedPreset.allCases, id: \.rawValue) { preset in
                         PresetChip(
                             label: preset.rawValue,
                             isActive: activePreset == preset
@@ -141,7 +141,7 @@ struct OrpheusCrossfeedView: View {
         .toolbarColorScheme(.dark, for: .navigationBar)
     }
 
-    private func applyPreset(_ preset: CrossfeedPreset) {
+    private func applyPreset(_ preset: OrpheusManualCrossfeedPreset) {
         Haptics.light()
         dsp.crossfeedBypassed  = preset.bypassed
         dsp.crossfeedLevel     = preset.strength

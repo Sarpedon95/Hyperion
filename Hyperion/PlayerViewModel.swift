@@ -5,6 +5,7 @@ import Foundation
 import Combine
 import AVFoundation
 import MediaPlayer
+import SwiftUI
 import UIKit
 import WidgetKit
 
@@ -171,7 +172,7 @@ final class PlayerViewModel: ObservableObject {
 
     // ADDED: Task 9 — dominant colour from current artwork; falls back to .roonAccent.
     @Published var accentColor: Color = .roonAccent
-    private var accentColorExtractionTask: Task<Void, Never>?
+    var accentColorExtractionTask: Task<Void, Never>?
 
     // MARK: - Last.fm scrobbling state
     var scrobbleTrackID: Int?
@@ -338,7 +339,7 @@ final class PlayerViewModel: ObservableObject {
         recomputeUpcoming()
     }
 
-    private func recomputeUpcoming() {
+    func recomputeUpcoming() {
         upcomingWorkGroups = queueWorkGroups.compactMap { group in
             let upcoming = group.tracks.filter { $0.index > currentIndex }
             guard !upcoming.isEmpty else { return nil }
