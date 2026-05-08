@@ -208,12 +208,17 @@ struct NowPlayingView: View {
     // MARK: - Artwork
 
     private var artworkSection: some View {
-        ZStack {
-            Color.black.opacity(0.4)
-            ArtworkView(coverid: player.currentTrack?.coverid, size: 400, contentMode: .fill)
+        // GeometryReader fills the square proposed by .aspectRatio(1) so geo.size.width
+        // is the exact pixel-perfect side length — avoids Color-inside-ZStack height explosion
+        // when the ScrollView proposes unconstrained height.
+        GeometryReader { geo in
+            ArtworkView(
+                coverid: player.currentTrack?.coverid,
+                size:    geo.size.width,
+                contentMode: .fill
+            )
         }
         .aspectRatio(1, contentMode: .fit)
-        .frame(maxWidth: .infinity)
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .shadow(color: .black.opacity(0.35), radius: 16, x: 0, y: 8)
         .id(player.currentTrack?.id ?? -1)
@@ -664,17 +669,15 @@ struct FlatTintBackground: View {
                 Image(uiImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
-                    .blur(radius: 120)
-                    .scaleEffect(2.0)
-                    .saturation(0.4)
-                    .brightness(-0.28)
-                    .hueRotation(.degrees(50))
+                    .blur(radius: 70)
+                    .scaleEffect(1.5)
+                    .saturation(0.7)
                     .drawingGroup()
             } else {
                 Color.roonBase
             }
         }
-        .overlay(Color(hex: "#1a1e14").opacity(0.55))
+        .overlay(Color.black.opacity(0.60))
         .task(id: coverid) {
             let scale = max(displayScale, 1)
             if let cached = ArtworkCache.shared.cachedImage(
