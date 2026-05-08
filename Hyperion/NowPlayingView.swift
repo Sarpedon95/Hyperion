@@ -192,6 +192,7 @@ struct NowPlayingView: View {
                 }
             }
             .simultaneousGesture(swipeDownToDismissGesture)
+            .simultaneousGesture(DragGesture(minimumDistance: 0))
             .offset(y: dragOffset)
             .animation(isDraggingDown ? .none : .spring(response: 0.34, dampingFraction: 0.84), value: dragOffset)
 
@@ -1217,7 +1218,8 @@ struct ProgressBarView: View {
                         let finalProgress = dragProgress
                         onSeek(finalProgress)
                         isDragging = false
-                    }
+                    },
+                including: .all
             )
         }
         .frame(height: 28)
