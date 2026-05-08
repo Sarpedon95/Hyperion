@@ -5,8 +5,14 @@ import UIKit
 
 struct LibraryView: View {
 
+    @Binding var path: NavigationPath
+
+    init(path: Binding<NavigationPath> = .constant(NavigationPath())) {
+        _path = path
+    }
+
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     Text("My Library")

@@ -3,6 +3,12 @@ import UIKit
 
 struct QueueView: View {
 
+    @Binding var path: NavigationPath
+
+    init(path: Binding<NavigationPath> = .constant(NavigationPath())) {
+        _path = path
+    }
+
     @ObservedObject private var player = PlayerViewModel.shared
     @ObservedObject private var playlists = PlaylistStore.shared
     @State private var showingClearConfirm: Bool = false
@@ -10,7 +16,7 @@ struct QueueView: View {
     @State private var queuePlaylistName: String = ""
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             content
                 .background(Color.roonBase.ignoresSafeArea())
                 .navigationTitle("Queue")

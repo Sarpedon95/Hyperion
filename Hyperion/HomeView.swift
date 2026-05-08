@@ -2,6 +2,12 @@ import SwiftUI
 
 struct HomeView: View {
 
+    @Binding var path: NavigationPath
+
+    init(path: Binding<NavigationPath> = .constant(NavigationPath())) {
+        _path = path
+    }
+
     @ObservedObject private var library    = LibraryViewModel.shared
     @ObservedObject private var connection = ConnectionManager.shared
     @ObservedObject private var mixGen     = MixGenerator.shared
@@ -17,7 +23,7 @@ struct HomeView: View {
     enum RecentActivityTab { case played, added }
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
 

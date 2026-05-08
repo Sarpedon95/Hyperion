@@ -17,6 +17,7 @@ final class PlayerViewModel: ObservableObject {
     @Published var currentTrack: Track? = nil {
         didSet {
             guard let track = currentTrack, track.id != oldValue?.id else { return }
+            updateNowPlayingInfo(track: track)
             LyricsService.shared.prefetch(for: track)
             handleTrackChangeForScrobbling(track)
         }

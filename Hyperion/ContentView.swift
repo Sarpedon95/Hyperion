@@ -13,6 +13,20 @@ struct ContentView: View {
 
     @State private var selectedTab: Tab = .home
     @State private var showingNowPlaying: Bool = false
+
+    // Per-tab navigation paths and recreation IDs for pop-to-root on re-tap.
+    // Paths are passed to each tab's NavigationStack; IDs force-recreate the
+    // stack when the user taps the already-active tab (Spotify-style).
+    @State private var homePath    = NavigationPath()
+    @State private var searchPath  = NavigationPath()
+    @State private var libraryPath = NavigationPath()
+    @State private var queuePath   = NavigationPath()
+    @State private var orpheusPath = NavigationPath()
+    @State private var homeNavID    = UUID()
+    @State private var searchNavID  = UUID()
+    @State private var libraryNavID = UUID()
+    @State private var queueNavID   = UUID()
+    @State private var orpheusNavID = UUID()
     /// Set to true after the first launch restore attempt so we only show
     /// the resume banner once per cold start.
     @State private var didAttemptRestore: Bool = false
@@ -339,16 +353,26 @@ struct ContentView: View {
 
     private var tabBar: some View {
         HStack(spacing: 0) {
-            RoonTabButton(icon: "house",           selectedIcon: "house.fill",              tab: .home,    selected: $selectedTab)
-            RoonTabButton(icon: "magnifyingglass", selectedIcon: "magnifyingglass.circle.fill", tab: .search,  selected: $selectedTab)
-            RoonTabButton(icon: "books.vertical",  selectedIcon: "books.vertical.fill",     tab: .library, selected: $selectedTab)
+            RoonTabButton(icon: "house",           selectedIcon: "house.fill",                  tab: .home,    selected: $selectedTab) {
+                homePath = NavigationPath(); homeNavID = UUID()
+            }
+            RoonTabButton(icon: "magnifyingglass", selectedIcon: "magnifyingglass.circle.fill", tab: .search,  selected: $selectedTab) {
+                searchPath = NavigationPath(); searchNavID = UUID()
+            }
+            RoonTabButton(icon: "books.vertical",  selectedIcon: "books.vertical.fill",         tab: .library, selected: $selectedTab) {
+                libraryPath = NavigationPath(); libraryNavID = UUID()
+            }
             // PASS 6 — selected Queue icon now switches to a filled rect-list
             // variant so the user gets the same visual feedback as the other
             // tabs. Previously both states used `list.bullet` so the active
             // state was indicated by colour only — failed accessibility's
             // recommendation to not rely on colour alone.
-            RoonTabButton(icon: "list.bullet",     selectedIcon: "list.bullet.rectangle.fill", tab: .queue,   selected: $selectedTab)
-            RoonTabButton(icon: "waveform",        selectedIcon: "waveform.circle.fill",        tab: .orpheus, selected: $selectedTab)
+            RoonTabButton(icon: "list.bullet",     selectedIcon: "list.bullet.rectangle.fill",  tab: .queue,   selected: $selectedTab) {
+                queuePath = NavigationPath(); queueNavID = UUID()
+            }
+            RoonTabButton(icon: "waveform",        selectedIcon: "waveform.circle.fill",        tab: .orpheus, selected: $selectedTab) {
+                orpheusPath = NavigationPath(); orpheusNavID = UUID()
+            }
         }
         .disabled(!isInitialized)
     }
@@ -356,11 +380,11 @@ struct ContentView: View {
     @ViewBuilder
     private var activeTabView: some View {
         switch selectedTab {
-        case .home:    HomeView()
-        case .search:  SearchView()
-        case .library: LibraryView()
-        case .queue:   QueueView()
-        case .orpheus: OrpheusView()
+        case .home:    HomeView(path: $homePath).id(homeNavID)
+        case .search:  SearchView(path: $searchPath).id(searchNavID)
+        case .library: LibraryView(path: $libraryPath).id(libraryNavID)
+        case .queue:   QueueView(path: $queuePath).id(queueNavID)
+        case .orpheus: OrpheusView(path: $orpheusPath).id(orpheusNavID)
         }
     }
 }
@@ -372,6 +396,21 @@ struct RoonTabButton: View {
     let selectedIcon: String
     let tab: ContentView.Tab
     @Binding var selected: ContentView.Tab
+    var onRetap: (() -> Void)?
+
+    init(
+        icon: String,
+        selectedIcon: String,
+        tab: ContentView.Tab,
+        selected: Binding<ContentView.Tab>,
+        onRetap: (() -> Void)? = nil
+    ) {
+        self.icon = icon
+        self.selectedIcon = selectedIcon
+        self.tab = tab
+        _selected = selected
+        self.onRetap = onRetap
+    }
 
     private var isSelected: Bool { selected == tab }
 
@@ -389,10 +428,12 @@ struct RoonTabButton: View {
 
     var body: some View {
         Button {
-            if selected != tab {
-                Haptics.light()
+            Haptics.light()
+            if selected == tab {
+                onRetap?()
+            } else {
+                selected = tab
             }
-            selected = tab
         } label: {
             Image(systemName: isSelected ? selectedIcon : icon)
                 .font(.system(size: 22, weight: isSelected ? .semibold : .regular))

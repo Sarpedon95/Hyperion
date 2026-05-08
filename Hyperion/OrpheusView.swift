@@ -6,6 +6,12 @@ import CoreBluetooth
 
 struct OrpheusView: View {
 
+    @Binding var path: NavigationPath
+
+    init(path: Binding<NavigationPath> = .constant(NavigationPath())) {
+        _path = path
+    }
+
     @StateObject private var dsp = OrpheusDSPEngine.shared
     @State private var showingPresetSheet = false
     @State private var newPresetName = ""
@@ -13,7 +19,7 @@ struct OrpheusView: View {
     private let columns = [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)]
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     orpheusHeader

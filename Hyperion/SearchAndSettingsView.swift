@@ -120,11 +120,17 @@ final class SearchViewModel: ObservableObject {
 
 struct SearchView: View {
 
+    @Binding var path: NavigationPath
+
+    init(path: Binding<NavigationPath> = .constant(NavigationPath())) {
+        _path = path
+    }
+
     @ObservedObject private var library = LibraryViewModel.shared
     @StateObject private var vm = SearchViewModel()
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             VStack(alignment: .leading, spacing: 0) {
                 Text("Search")
                     .font(.roonTitle(34))
