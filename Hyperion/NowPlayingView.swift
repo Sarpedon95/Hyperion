@@ -156,37 +156,41 @@ struct NowPlayingView: View {
                 .overlay(backgroundChrome)
                 .opacity(isDraggingDown ? max(0.45, 1.0 - dragOffset / 260) : 1.0)
 
-            VStack(spacing: 0) {
-                headerBar
-                    .frame(height: 44)
-                    .padding(.top, UIApplication.shared.connectedScenes
-                        .compactMap { $0 as? UIWindowScene }
-                        .first?.windows.first?.safeAreaInsets.top ?? 50)
-                if showInlineLyrics {
-                    lyricsCompactHeader
-                    Color.clear.frame(height: 8)
-                    progressSection.frame(height: 56).clipped(antialiased: false)
-                    if let track = player.currentTrack {
+            ScrollView {
+                VStack(spacing: 0) {
+                    headerBar
+                        .frame(height: 44)
+                        .padding(.horizontal, 16)
+
+                    if showInlineLyrics, let track = player.currentTrack {
+                        lyricsCompactHeader
                         InlineLyricsSection(track: track, expandToFill: true)
-                            .frame(height: lyricsScrollHeight)
+                            .frame(height: 260)
+                            .padding(.horizontal, 24)
                     } else {
-                        Spacer(minLength: 0)
+                        artworkSection(side: UIScreen.main.bounds.width - 48)
+                            .padding(.horizontal, 24)
+                            .padding(.top, 12)
+
+                        trackInfo
+                            .padding(.horizontal, 24)
+                            .padding(.top, 16)
                     }
-                    Color.clear.frame(height: 8)
-                } else {
-                    artworkSection(side: min(UIScreen.main.bounds.width - 48, UIScreen.main.bounds.height * 0.35))
-                    Color.clear.frame(height: 12)
-                    trackInfo.frame(height: 60)
-                    Color.clear.frame(height: 8)
-                    progressSection.frame(height: 56).clipped(antialiased: false)
-                    Color.clear.frame(height: 16)
+
+                    progressSection
+                        .padding(.horizontal, 24)
+                        .padding(.top, 12)
+
+                    transportControls
+                        .padding(.horizontal, 16)
+                        .padding(.top, 8)
+
+                    bottomToolbar
+                        .padding(.horizontal, 16)
+                        .padding(.top, 8)
+                        .padding(.bottom, 24)
                 }
-                transportControls.frame(height: 80)
-                Color.clear.frame(height: 16)
-                bottomToolbar.frame(height: 60)
             }
-            .frame(maxWidth: .infinity)
-            .ignoresSafeArea(.all, edges: .top)
             .simultaneousGesture(swipeDownToDismissGesture)
             .offset(y: dragOffset)
             .animation(isDraggingDown ? .none : .spring(response: 0.34, dampingFraction: 0.84), value: dragOffset)
@@ -711,16 +715,6 @@ struct NowPlayingView: View {
     }
 
     // MARK: - Lyrics compact header (shown when inline lyrics are active)
-
-    private var lyricsScrollHeight: CGFloat {
-        let scene = UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }.first
-        let safeTop    = scene?.windows.first?.safeAreaInsets.top    ?? 47
-        let safeBottom = scene?.windows.first?.safeAreaInsets.bottom ?? 34
-        // fixed slots: safeTop + headerBar + compactHeader + gap + progress + gap + gap + transport + gap + toolbar + safeBottom
-        let occupied: CGFloat = (safeTop + 44) + 136 + 8 + 56 + 8 + 8 + 80 + 16 + 60 + safeBottom
-        return max(200, UIScreen.main.bounds.height - occupied)
-    }
 
     private var lyricsCompactHeader: some View {
         HStack(alignment: .center, spacing: 16) {
