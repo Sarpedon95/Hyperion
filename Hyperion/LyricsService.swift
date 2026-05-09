@@ -71,6 +71,9 @@ final class LyricsService {
     // In-memory cache keyed by track ID — survives the session, avoids disk I/O on repeat visits.
     private var memoryCache: [Int: LyricsResult] = [:]
 
+    // Mirrors the on-disk pin store so reads never block the main thread.
+    private var pinStoreCache: PinStore?
+
     // MARK: - Public
 
     /// Synchronous memory-cache probe — returns instantly if lyrics were already fetched.
@@ -122,7 +125,7 @@ final class LyricsService {
 
         let key = cacheKey(artist: artistName, track: trackName, album: albumName ?? "")
 
-        if let cached = loadFromCache(key: key) {
+        if let cached = await loadFromCache(key: key) {
             lyricsLog("Cache hit — '\(trackName)' by '\(artistName)'")
             if let tid = trackID { memoryCache[tid] = cached }
             return cached
@@ -187,8 +190,15 @@ final class LyricsService {
     private typealias PinStore = [String: CacheDTO]
 
     private func loadPins() -> PinStore {
-        guard let data = try? Data(contentsOf: pinsURL),
-              let store = try? JSONDecoder().decode(PinStore.self, from: data) else { return [:] }
+        if let cached = pinStoreCache { return cached }
+        let store: PinStore
+        if let data = try? Data(contentsOf: pinsURL),
+           let decoded = try? JSONDecoder().decode(PinStore.self, from: data) {
+            store = decoded
+        } else {
+            store = [:]
+        }
+        pinStoreCache = store
         return store
     }
 
@@ -201,13 +211,21 @@ final class LyricsService {
         guard let dto = CacheDTO(from: result) else { return }
         var store = loadPins()
         store[String(trackID)] = dto
-        guard let data = try? JSONEncoder().encode(store) else { return }
-        try? data.write(to: pinsURL, options: .atomicWrite)
+        pinStoreCache = store
+        // Flush to disk off the main thread.
+        let url = pinsURL
+        Task.detached(priority: .background) {
+            guard let data = try? JSONEncoder().encode(store) else { return }
+            try? data.write(to: url, options: .atomicWrite)
+        }
     }
 
     /// Wipe the entire on-disk lyrics cache (e.g. after a lookup-logic upgrade).
     func clearCache() {
-        try? FileManager.default.removeItem(at: cacheDir)
+        let dir = cacheDir
+        Task.detached(priority: .background) {
+            try? FileManager.default.removeItem(at: dir)
+        }
         lyricsLog("Cache cleared")
     }
 
@@ -234,22 +252,30 @@ final class LyricsService {
         cacheDir.appendingPathComponent("\(key).json")
     }
 
-    private func loadFromCache(key: String) -> LyricsResult? {
-        guard let data = try? Data(contentsOf: cacheURL(for: key)),
-              let dto  = try? JSONDecoder().decode(CacheDTO.self, from: data) else { return nil }
-        // FIXED: reject stale entries older than 30 days
-        if let fetchedAt = dto.fetchedAt, Date().timeIntervalSince(fetchedAt) > Self.cacheTTL {
-            try? FileManager.default.removeItem(at: cacheURL(for: key))
-            return nil
-        }
-        return dto.toResult()
+    private func loadFromCache(key: String) async -> LyricsResult? {
+        let url = cacheURL(for: key)
+        let ttl = Self.cacheTTL
+        return await Task.detached(priority: .utility) {
+            guard let data = try? Data(contentsOf: url),
+                  let dto  = try? JSONDecoder().decode(CacheDTO.self, from: data) else { return nil }
+            // Reject stale entries older than 30 days.
+            if let fetchedAt = dto.fetchedAt, Date().timeIntervalSince(fetchedAt) > ttl {
+                try? FileManager.default.removeItem(at: url)
+                return nil
+            }
+            return dto.toResult()
+        }.value
     }
 
     private func saveToCache(_ result: LyricsResult, key: String) {
-        try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
-        guard let dto  = CacheDTO(from: result),
-              let data = try? JSONEncoder().encode(dto) else { return }
-        try? data.write(to: cacheURL(for: key), options: .atomicWrite)
+        let url = cacheURL(for: key)
+        let dir = cacheDir
+        Task.detached(priority: .background) {
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            guard let dto  = CacheDTO(from: result),
+                  let data = try? JSONEncoder().encode(dto) else { return }
+            try? data.write(to: url, options: .atomicWrite)
+        }
     }
 
     // MARK: - Cache DTO

@@ -137,14 +137,8 @@ extension PlayerViewModel {
     // MARK: - Artwork (delegates to ArtworkCache)
 
     func loadImage(from url: URL, targetPoints: CGFloat = 600) async -> UIImage? {
-        let scale: CGFloat
-        if #available(iOS 17.0, *) {
-            scale = UITraitCollection.current.displayScale > 0
-                ? UITraitCollection.current.displayScale : 2.0
-        } else {
-            scale = UITraitCollection.current.displayScale > 0
-                ? UITraitCollection.current.displayScale : UIScreen.main.scale
-        }
+        let scale = UITraitCollection.current.displayScale > 0
+            ? UITraitCollection.current.displayScale : 2.0
         return await ArtworkCache.shared.loadImage(url: url, targetPoints: targetPoints, scale: scale)
     }
 }

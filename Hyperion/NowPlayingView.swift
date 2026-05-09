@@ -210,8 +210,12 @@ struct NowPlayingView: View {
         // Side length = screen width minus 24 pt padding on each side.
         // ArtworkView's internal .frame(width:height:) needs an explicit point value;
         // GeometryReader inside a ScrollView can report 0 on first pass and causes
-        // unconstrained-height artifacts, so we derive size from screen bounds directly.
-        let side = UIScreen.main.bounds.width - 48
+        // unconstrained-height artifacts, so we derive size from the window scene's
+        // screen (non-deprecated replacement for UIScreen.main.bounds.width).
+        let screenWidth = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first?.screen.bounds.width ?? 390
+        let side = screenWidth - 48
         return ArtworkView(
             coverid:     player.currentTrack?.coverid,
             size:        side,
@@ -770,8 +774,11 @@ private struct InlineWorkGroupView: View {
                         .frame(width: 22, alignment: .trailing)
 
                     Text(item.track.title)
-                        .font(.roonBody(13))
-                        .foregroundColor(item.index > player.currentIndex ? .roonSecondary : .roonPrimary)
+                        .font(.roonBody(13, weight: item.index == player.currentIndex ? .semibold : .regular))
+                        .foregroundColor(
+                            item.index == player.currentIndex ? .roonAccent :
+                            item.index  < player.currentIndex ? .roonTertiary : .roonSecondary
+                        )
                         .lineLimit(2)
 
                     Spacer()

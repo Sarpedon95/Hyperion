@@ -40,11 +40,12 @@ actor ArtworkColorExtractor {
         pixels.reserveCapacity(w * h)
         for i in stride(from: 0, to: data.count, by: 4) {
             let a = Float(data[i + 3]) / 255
-            guard a > 0.5 else { continue } // skip transparent pixels
+            guard a > 0.5 else { continue } // skip transparent/near-transparent pixels
+            // Undo premultiplication: stored bytes = actual * alpha, so divide by alpha.
             pixels.append((
-                r: Float(data[i])     / 255,
-                g: Float(data[i + 1]) / 255,
-                b: Float(data[i + 2]) / 255
+                r: Float(data[i])     / (255 * a),
+                g: Float(data[i + 1]) / (255 * a),
+                b: Float(data[i + 2]) / (255 * a)
             ))
         }
         return pixels
@@ -57,7 +58,7 @@ actor ArtworkColorExtractor {
         for px in pixels {
             let (h, s, l) = rgbToHsl(px.r, px.g, px.b)
             guard s > 0.3, l > 0.15, l < 0.85 else { continue } // skip grey/black/white
-            if best == nil || s > best!.sat { best = (h, s, l) }
+            if best.map({ s > $0.sat }) ?? true { best = (h, s, l) }
         }
 
         guard let chosen = best else { return nil }

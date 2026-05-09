@@ -459,6 +459,27 @@ final class LyrionAPI {
         return Self.parseTracks(result["titles_loop"] as? [[String: Any]] ?? [])
     }
 
+    func getSong(id: Int) async throws -> Track? {
+        try Task.checkCancellation()
+        let result = try await request(params: [
+            "songinfo", 0, 100, "track_id:\(id)", "tags:\(trackTags)"
+        ])
+        // songinfo_loop is [[singleKey: value]] — flatten into one dict for parseTracks.
+        guard let arr = result["songinfo_loop"] as? [[String: Any]], !arr.isEmpty else { return nil }
+        var merged: [String: Any] = [:]
+        for entry in arr { for (k, v) in entry { merged[k] = v } }
+        return Self.parseTracks([merged]).first
+    }
+
+    func getTracksForComposer(composerID: Int, count: Int = 500) async throws -> [Track] {
+        try Task.checkCancellation()
+        let result = try await request(params: [
+            "titles", 0, count, "composer_id:\(composerID)",
+            "tags:\(trackTags)", "sort:title"
+        ])
+        return Self.parseTracks(result["titles_loop"] as? [[String: Any]] ?? [])
+    }
+
     func getTracksForWork(workID: Int) async throws -> [Track] {
         try Task.checkCancellation()
         let result = try await request(params: [

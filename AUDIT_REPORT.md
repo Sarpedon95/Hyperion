@@ -1,6 +1,6 @@
 # Hyperion — Deep Audit Report
 
-**Date:** 2026-05-08  
+**Date:** 2026-05-09 (updated)  
 **Scope:** All Swift source files in `/Hyperion/Hyperion/` (76 files, ~25,000 lines)  
 **Phases:** Bug Fixing · Performance · Polish · Summary
 
@@ -108,9 +108,15 @@ No new performance regressions found. The following improvements were already in
 | Area | Detail | Severity |
 |------|--------|----------|
 | ~~`UIScreen.main.bounds.size` (PlayerViewModel lock screen art)~~ | **Fixed in Phase 5** — replaced with `connectedScenes` | ✅ Resolved |
+| ~~`UIScreen.main.bounds.width - 48` (NowPlayingView artwork)~~ | **Fixed in Phase 6** — replaced with `UIWindowScene.screen.bounds.width` | ✅ Resolved |
+| ~~`UIScreen.main.scale` fallback (PlayerViewModel+Queue)~~ | **Fixed in Phase 6** — collapsed to `UITraitCollection.current.displayScale` | ✅ Resolved |
 | ~~Alphabet scrubber buttons in `ClassicalBrowserView`~~ | **Fixed in Phase 5** — 44pt invisible frame added | ✅ Resolved |
 | ~~`OOUserLinkOverrides` key scheme~~ | **Fixed in Phase 5** — v2 key scheme with track IDs | ✅ Resolved |
 | ~~`LyricsService` memory cache~~ | **Fixed in Phase 5** — disk cache with 30-day TTL + deduplication | ✅ Resolved |
+| ~~`LyricsService` synchronous file I/O on `@MainActor`~~ | **Fixed in Phase 6** — all reads/writes moved to `Task.detached` | ✅ Resolved |
+| ~~`PlayComposerIntent` full library load~~ | **Fixed in Phase 6** — `getTracksForComposer(composerID:)` server-side query | ✅ Resolved |
+| ~~`TrackEntityQuery` full library load for Siri search~~ | **Fixed in Phase 6** — `LyrionAPI.searchTracks` + `getSong(id:)` fallback | ✅ Resolved |
+| ~~`ArtworkColorExtractor` premultiplied alpha~~ | **Fixed in Phase 6** — divide by alpha before HSL conversion | ✅ Resolved |
 | `LibraryViewModel.loadSongs()` | Still a blocking full-library load for non-search flows; `loadSongs(matching:)` added for filtered lookups | Low |
 | ~~`PlayerViewModel.swift` file size (~3,000 lines)~~ | **Fixed in Phase 5** — split into 6 focused extension files | ✅ Resolved |
 
@@ -215,3 +221,30 @@ Already fully implemented: `NowPlayingWidgetStore.writeArtwork` writes a JPEG th
 `PlayerViewModel+Playback.swift` `startCrossfadeOut/In`:
 - `startCrossfadeOut` now returns early if `orpheusEngine?.crossfadeEligible == false`
 - Both fade functions delegate to `engine.rampVolume(to:over:)` when Orpheus is active, falling back to the existing AVPlayer task loop otherwise
+
+---
+
+## Phase 6 — Additional Bug Fixes & Performance (2026-05-09)
+
+### Bug Fixes
+
+| # | File | Issue | Fix |
+|---|------|-------|-----|
+| 1 | `NowPlayingView.swift:214` | `UIScreen.main.bounds.width - 48` — deprecated `UIScreen.main` API for artwork side length | Replaced with `UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first?.screen.bounds.width ?? 390`, consistent with the existing pattern in `PlayerViewModel+NowPlayingInfo.swift` |
+| 2 | `ArtworkColorExtractor.swift:44–48` | `renderPixels()` reads RGBA bytes from a `CGImageAlphaInfo.premultipliedLast` context but divides by 255 without undoing premultiplication. For a pixel (r=255,g=0,b=0,α=0.8), stored bytes are (204,0,0,204) but were read as r=0.8 instead of r=1.0, skewing HSL saturation and lightness for colour selection | Divide each channel by `255 * a` (undo premultiplication): `Float(data[i]) / (255 * a)` |
+| 3 | `ArtworkColorExtractor.swift:61` | Force-unwrap `best!.sat` inside `if best == nil \|\| s > best!.sat` — safe via short-circuit but stylistically poor | Replaced with `if best.map({ s > $0.sat }) ?? true` |
+| 4 | `LyricsService.swift:189–205` | `loadPins()` calls `Data(contentsOf:)` on `@MainActor` on every lyrics lookup; `savePin()` calls `data.write(to:)` synchronously on `@MainActor` — both block the main thread | Added `pinStoreCache: PinStore?`; `loadPins()` reads from disk at most once then serves from memory; `savePin()` updates the cache synchronously and flushes to disk via `Task.detached(priority: .background)` |
+| 5 | `LyricsService.swift:252–267` | `loadFromCache()` and `saveToCache()` do synchronous file I/O on `@MainActor` on every lyrics fetch/store | Made `loadFromCache()` `async`; file read runs in `Task.detached(priority: .utility)`. `saveToCache()` now uses `Task.detached(priority: .background)` for the write. Updated the single call site to `await loadFromCache(key:)`. `clearCache()` also moved its `removeItem` call to `Task.detached` |
+| 6 | `HyperionIntents.swift:199–208` | `PlayComposerIntent.perform()` called `LibraryViewModel.shared.loadSongs()` (full library, potentially tens of thousands of tracks) then filtered in-memory by composer name — O(n) on the entire library for a Siri shortcut | Added `LyrionAPI.getTracksForComposer(composerID:)` (server-side `titles + composer_id:X` query); `perform()` now uses the targeted fetch via the stored `composer.id` |
+| 7 | `HyperionIntents.swift:49–63` | `TrackEntityQuery.entities(matching:)` called `loadSongs()` then filtered 10 results in-memory — same full-library problem for Siri "Play a Track" search | Replaced with `LyrionAPI.searchTracks(term:count:10)` — server-side full-text search, returns in < 100 ms |
+| 8 | `HyperionIntents.swift:40–47` | `TrackEntityQuery.entities(for:)` loaded full library to resolve track IDs from a previous Siri invocation | Now checks `LibraryViewModel.shared.songs` (free if already loaded); falls back to concurrent per-ID `LyrionAPI.getSong(id:)` calls via `withThrowingTaskGroup` |
+| 9 | `HyperionIntents.swift:77–84` | `PlayTrackIntent.perform()` used `LibraryViewModel.shared.songs` which is empty on cold launch from Siri — always fails without a prior app launch | Added `LyrionAPI.getSong(id:)` fallback when in-memory lookup fails |
+| 10 | `PlayerViewModel+Queue.swift:140–147` | `#available(iOS 17.0, *)` branch in `loadImage(from:)` fell back to deprecated `UIScreen.main.scale` for iOS < 17 | Collapsed to single `UITraitCollection.current.displayScale > 0 ? ... : 2.0` — correct on all supported iOS versions |
+| 11 | `NowPlayingView.swift:778` | `InlineWorkGroupView` track colour: `item.index > player.currentIndex ? .roonSecondary : .roonPrimary` — current and all past tracks were styled identically (`.roonPrimary`), making it impossible to see the current position in a work | Three-state colouring: past = `.roonTertiary`, current = `.roonAccent` + `.semibold` weight, future = `.roonSecondary` |
+
+### New API Additions
+
+| File | Addition |
+|------|----------|
+| `LyrionAPI.swift` | `getSong(id:) async throws -> Track?` — fetches a single track via LMS `songinfo track_id:X`; merges the single-key dict array into one flat dict before calling `parseTracks` |
+| `LyrionAPI.swift` | `getTracksForComposer(composerID:count:) async throws -> [Track]` — server-side `titles + composer_id:X + sort:title` query, parallel to the existing `getTracksForArtist` |

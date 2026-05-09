@@ -38,28 +38,31 @@ struct TrackEntity: AppEntity {
 
 struct TrackEntityQuery: EntityStringQuery {
     func entities(for identifiers: [String]) async throws -> [TrackEntity] {
-        await LibraryViewModel.shared.loadSongs()
-        return await MainActor.run {
-            LibraryViewModel.shared.songs
+        // Try in-memory first; fall back to per-ID server fetch if library isn't loaded.
+        let inMemory = await MainActor.run { LibraryViewModel.shared.songs }
+        if !inMemory.isEmpty {
+            return inMemory
                 .filter { identifiers.contains(String($0.id)) }
                 .map { TrackEntity(id: String($0.id), title: $0.title, artist: $0.trackartist ?? $0.albumartist ?? "") }
+        }
+        return try await withThrowingTaskGroup(of: TrackEntity?.self) { group in
+            for idStr in identifiers {
+                if let id = Int(idStr) {
+                    group.addTask {
+                        guard let t = try await LyrionAPI.shared.getSong(id: id) else { return nil }
+                        return TrackEntity(id: String(t.id), title: t.title, artist: t.trackartist ?? t.albumartist ?? "")
+                    }
+                }
+            }
+            var results: [TrackEntity] = []
+            for try await entity in group { if let e = entity { results.append(e) } }
+            return results
         }
     }
 
     func entities(matching searchTerm: String) async throws -> [TrackEntity] {
-        await LibraryViewModel.shared.loadSongs()
-        let needle = searchTerm.lowercased()
-        return await MainActor.run {
-            Array(
-                LibraryViewModel.shared.songs
-                    .filter {
-                        $0.title.lowercased().contains(needle) ||
-                        ($0.trackartist ?? $0.albumartist ?? "").lowercased().contains(needle)
-                    }
-                    .prefix(10)
-                    .map { TrackEntity(id: String($0.id), title: $0.title, artist: $0.trackartist ?? $0.albumartist ?? "") }
-            )
-        }
+        let tracks = try await LyrionAPI.shared.searchTracks(term: searchTerm, count: 10)
+        return tracks.map { TrackEntity(id: String($0.id), title: $0.title, artist: $0.trackartist ?? $0.albumartist ?? "") }
     }
 }
 
@@ -75,8 +78,14 @@ struct PlayTrackIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        let songs = LibraryViewModel.shared.songs
-        guard let match = songs.first(where: { String($0.id) == track.id }) else {
+        // Prefer the in-memory library (O(n) scan but zero network) when already loaded.
+        let inMemory = LibraryViewModel.shared.songs.first(where: { String($0.id) == track.id })
+        let match: Track
+        if let t = inMemory {
+            match = t
+        } else if let id = Int(track.id), let fetched = try await LyrionAPI.shared.getSong(id: id) {
+            match = fetched
+        } else {
             throw HyperionIntentError.trackNotFound
         }
         PlayerViewModel.shared.playSingleTrack(match)
@@ -197,12 +206,8 @@ struct PlayComposerIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        await LibraryViewModel.shared.loadSongs()
-        let folded = SearchTextNormalizer.folded(composer.name)
-        let tracks = LibraryViewModel.shared.songs.filter {
-            SearchTextNormalizer.folded($0.composer ?? "") == folded ||
-            SearchTextNormalizer.folded($0.albumartist ?? "") == folded
-        }
+        guard let composerID = Int(composer.id) else { throw HyperionIntentError.noTracksFound }
+        let tracks = try await LyrionAPI.shared.getTracksForComposer(composerID: composerID)
         guard !tracks.isEmpty else { throw HyperionIntentError.noTracksFound }
         PlayerViewModel.shared.playTracks(tracks)
         return .result(dialog: "Playing \(composer.name)")
