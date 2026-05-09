@@ -107,7 +107,6 @@ struct NowPlayingView: View {
                         .padding(.top, 8)
 
                     artworkSection
-                        .padding(.horizontal, 24)
                         .padding(.top, 20)
 
                     trackInfo
@@ -208,18 +207,20 @@ struct NowPlayingView: View {
     // MARK: - Artwork
 
     private var artworkSection: some View {
-        // GeometryReader fills the square proposed by .aspectRatio(1) so geo.size.width
-        // is the exact pixel-perfect side length — avoids Color-inside-ZStack height explosion
-        // when the ScrollView proposes unconstrained height.
-        GeometryReader { geo in
-            ArtworkView(
-                coverid: player.currentTrack?.coverid,
-                size:    geo.size.width,
-                contentMode: .fill
-            )
-        }
+        // Side length = screen width minus 24 pt padding on each side.
+        // ArtworkView's internal .frame(width:height:) needs an explicit point value;
+        // GeometryReader inside a ScrollView can report 0 on first pass and causes
+        // unconstrained-height artifacts, so we derive size from screen bounds directly.
+        let side = UIScreen.main.bounds.width - 48
+        return ArtworkView(
+            coverid:     player.currentTrack?.coverid,
+            size:        side,
+            contentMode: .fit          // .fit never zooms or crops
+        )
+        .frame(maxWidth: .infinity)
         .aspectRatio(1, contentMode: .fit)
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .padding(.horizontal, 24)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .shadow(color: .black.opacity(0.35), radius: 16, x: 0, y: 8)
         .id(player.currentTrack?.id ?? -1)
     }
