@@ -316,7 +316,10 @@ struct HyperionShortcuts: AppShortcutsProvider {
             intent: TogglePlaybackIntent(),
             phrases: [
                 "Toggle playback in \(.applicationName)",
-                "Play or pause \(.applicationName)"
+                "Play or pause \(.applicationName)",
+                // ADDED: Task 10 — "Pause/Resume Hyperion" phrases from spec.
+                "Pause \(.applicationName)",
+                "Resume \(.applicationName)"
             ],
             shortTitle: "Toggle Playback",
             systemImageName: "playpause.fill"

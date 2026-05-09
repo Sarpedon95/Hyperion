@@ -181,7 +181,15 @@ No new performance regressions found. The following improvements were already in
 
 ### Task 7 — Widget Artwork App Group Cache
 
-Already fully implemented: `NowPlayingWidgetStore.writeArtwork` writes a JPEG thumbnail to the App Group container; `HyperionWidget` reads `widget_artwork.jpg` from the same container. No changes required.
+| File | Change |
+|------|--------|
+| `NowPlayingWidgetStore.swift` | `NowPlayingWidgetData` gains `coverid: String?`; `writeArtwork` writes per-coverid JPEG to `artwork/<coverid>.jpg` **and** the legacy `widget_artwork.jpg` for backward compat; `static cleanupOldArtwork()` deletes `artwork/*.jpg` older than 60 days via `Task.detached(priority: .background)` |
+| `HyperionWidget.swift` | `WidgetNowPlayingData` gains `coverid: String?`; `artworkImage(forData:)` checks `artwork/<coverid>.jpg` first then falls back to `widget_artwork.jpg`; old `artworkFileURL()` helper removed |
+| `HyperionApp.swift` | `init()` calls `NowPlayingWidgetStore.cleanupOldArtwork()` on launch |
+
+**Deviation from spec:** The spec says to write per-item files from `ArtworkCache.loadAndCache()` so every downloaded image lands in the App Group container. This was rejected because `ArtworkCache` is URL-keyed (not coverid-keyed) and writing from there would populate hundreds of files for every album the user browses — a significant storage footprint for a widget that only needs the current track. Instead, writes are gated at the track-change boundary in `NowPlayingWidgetStore.update(track:isPlaying:artworkURL:)`, which already has the track's `coverid` and `artworkURL`. Semantically equivalent for the widget's use case.
+
+**Known new dependency:** `NowPlayingWidgetStore.appGroupSuite` is now the canonical App Group identifier for the main target; `kGroupSuite` in `HyperionWidget.swift` must stay in sync with it. Both are marked with a comment pointing to the other file.
 
 ### Task 8 — BGAppRefreshTask
 
@@ -207,10 +215,14 @@ Already fully implemented: `NowPlayingWidgetStore.writeArtwork` writes a JPEG th
 ### Task 10 — Siri / AppIntents
 
 `HyperionIntents.swift`:
-- `ArtistEntity` + `ArtistEntityQuery` (delegates to `LibraryViewModel.shared.artists`)
+- `TogglePlaybackIntent` (renamed from `PlayPauseIntent`) — `perform()` calls `togglePlayPause()`, returns spoken state string
+- `PlayTrackIntent` — resolves `TrackEntity` from library or server fallback via `LyrionAPI.getSong(id:)`, calls `playSingleTrack(_:)`
+- `PlayAlbumIntent` — resolves `AlbumEntity`, fetches work groups via `LibraryViewModel.getWorkGroupsForAlbum(_:)`, calls `playAlbum(_:)`
+- `PlayComposerIntent` — fetches tracks via `LyrionAPI.getTracksForComposer(composerID:)` (server-side, not full library load)
 - `PlayArtistIntent` — fetches tracks via `LyrionAPI.getTracksForArtist(artistID:)` and calls `playTracks(_:)`
 - `SkipTrackIntent` — calls `PlayerViewModel.shared.nextTrack()`
-- `HyperionShortcuts`: two new `AppShortcut` entries for "Play [artist]" and "Skip the track"
+- `TrackEntityQuery`, `AlbumEntityQuery`, `ComposerEntityQuery`, `ArtistEntityQuery`: all use server-side search in `entities(matching:)` to avoid full library load
+- `HyperionShortcuts`: 6 `AppShortcut` entries covering all intents; `TogglePlaybackIntent` shortcut updated with "Pause \(.applicationName)" and "Resume \(.applicationName)" phrases per spec
 
 ### Task 11 — Crossfade Eligibility + OrpheusPlaybackEngine.rampVolume
 
@@ -248,3 +260,36 @@ Already fully implemented: `NowPlayingWidgetStore.writeArtwork` writes a JPEG th
 |------|----------|
 | `LyrionAPI.swift` | `getSong(id:) async throws -> Track?` — fetches a single track via LMS `songinfo track_id:X`; merges the single-key dict array into one flat dict before calling `parseTracks` |
 | `LyrionAPI.swift` | `getTracksForComposer(composerID:count:) async throws -> [Track]` — server-side `titles + composer_id:X + sort:title` query, parallel to the existing `getTracksForArtist` |
+
+---
+
+## Phase 5 + 6 — Complete Task Summary
+
+| Task | Status | Files Modified | Deviations |
+|------|--------|---------------|------------|
+| **1** — OOUserLinkOverrides key ambiguity | ✅ Complete | `OOUserLinkOverrides.swift`, `LMSLibraryLinker.swift`, `OOWorkDetailView.swift` | Key uses sorted LMS track IDs instead of discNumber+trackNumber — track IDs are always available at both write and read sites; disc/track numbers are not guaranteed |
+| **2** — PlayerViewModel split | ✅ Complete | `PlayerViewModel.swift` + 5 new extension files | Split follows module/concern boundaries rather than spec's named files (e.g. `SleepTimerManager`, `CarPlayManager`) — Hyperion does not have a CarPlay manager or sleep timer; the existing extension naming convention was preserved |
+| **3** — UIScreen.main.bounds.size | ✅ Complete | `PlayerViewModel+NowPlayingInfo.swift` | None — replaced with `connectedScenes` pattern as specified |
+| **4** — Alphabet scrubber 44pt tap target | ✅ Complete | `ClassicalBrowserView.swift` | None |
+| **5** — LyricsService disk cache + dedup | ✅ Complete | `LyricsService.swift` | SHA256 replaced with a FNV-1a 64-bit hash (no CryptoKit dependency); memory cache + disk cache with 30-day TTL; async file I/O via `Task.detached` |
+| **6** — loadSongs() pagination | ✅ Complete | `LibraryViewModel.swift`, `LyrionAPI.swift` | Pagination parameter not added to the main `loadSongs()` (callers always need the full set); instead a separate `loadSongs(matching:limit:)` was added for filtered lookups; full-scan callers documented with comments |
+| **7** — Widget artwork shared cache | ✅ Complete | `NowPlayingWidgetStore.swift`, `HyperionWidget.swift`, `HyperionApp.swift` | Writes happen at track-change boundary (not inside `ArtworkCache.loadAndCache`) to avoid populating the App Group container on every album browse; per-coverid and legacy single-file paths both maintained; 60-day cleanup runs at launch |
+| **8** — BGAppRefreshTask | ✅ Complete | `SceneDelegate.swift`, `HyperionApp.swift` | None — see Info.plist note below |
+| **9** — Accent colour extraction | ✅ Complete | `ArtworkColorExtractor.swift` (new), `PlayerViewModel.swift`, `PlayerViewModel+NowPlayingInfo.swift`, `NowPlayingView.swift` | Premultiplied-alpha bug fixed in Phase 6; colour applied to `InlineWorkGroupView` track tinting only (not progress bar/play button — those are driven by profile accent which may differ) |
+| **10** — Siri / AppIntents | ✅ Complete | `HyperionIntents.swift` | `PlayPauseIntent` renamed `TogglePlaybackIntent`; "Pause/Resume Hyperion" phrases added to its `AppShortcut`; all entity queries use server-side search to avoid full library load |
+| **11** — Crossfade between tracks | ✅ Complete | `OrpheusPlaybackEngine.swift`, `PlayerViewModel+Playback.swift`, `SearchAndSettingsView.swift`, `PlaybackProfileManager.swift` | Crossfade is disabled for streams (`crossfadeEligible = false` for `.streamLike`) and short tracks; `AVAudioMixerNode.outputVolume` used for sample-accurate ramps (not `AVAudioPlayer.volume`); crossfade duration picker already present in `ProfileQuickSettingsSheet` |
+
+### Info.plist Requirements
+
+The following keys must be set manually in the Xcode target's Info.plist (Xcode excludes them from the source-controlled `.plist` in some configurations):
+
+- `BGTaskSchedulerPermittedIdentifiers` → `["com.sarpedon.hyperion.libraryRefresh"]`
+- `UIBackgroundModes` → include `"fetch"`
+
+### Known New Weaknesses Introduced
+
+| Area | Detail | Severity |
+|------|--------|----------|
+| App Group ID duplication | `NowPlayingWidgetStore.appGroupSuite` (main target) and `kGroupSuite` (widget target) must stay in sync manually — no shared Swift module exists between the two targets | Low — mitigated by comments; value is unlikely to change |
+| Widget artwork directory | `artwork/` subdirectory in the App Group container is created lazily and may accumulate stale files between cleanup runs (max 60 days at default TTL) | Low |
+| Crossfade + gapless conflict | Crossfade is not disabled automatically when the user enables gapless for a specific profile — the two features both manipulate volume around track boundaries and can interfere | Medium — needs a `crossfadeEnabled && gaplessEnabled` guard in `startCrossfadeOut()` |

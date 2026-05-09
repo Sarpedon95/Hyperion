@@ -2,21 +2,40 @@ import WidgetKit
 import SwiftUI
 
 // MARK: - Shared data key (must match NowPlayingWidgetStore in the app target)
+//
+// IMPORTANT: kGroupSuite must stay in sync with NowPlayingWidgetStore.appGroupSuite
+// in the main app target. Both targets must declare the App Group in their .entitlements.
 
 private let kGroupSuite       = "group.com.sarpedon.hyperion"
 private let kDataKey          = "hyperion.nowplaying.widget"
-private let kArtworkFileName  = "widget_artwork.jpg"
+private let kArtworkFileName  = "widget_artwork.jpg"   // legacy single-file fallback
 
+// ADDED: Task 7 — data model now includes coverid for per-item artwork lookup.
 private struct WidgetNowPlayingData: Codable {
     var trackTitle: String
     var artist: String
     var album: String
     var isPlaying: Bool
+    var coverid: String?   // nil in pre-Task-7 data — widget falls back to legacy file
 }
 
-private func artworkFileURL() -> URL? {
-    FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: kGroupSuite)?
-        .appendingPathComponent(kArtworkFileName)
+// ADDED: Task 7 — resolve artwork URL preferring the per-coverid file, then legacy.
+private func artworkImage(forData data: WidgetNowPlayingData) -> UIImage? {
+    guard let container = FileManager.default.containerURL(
+        forSecurityApplicationGroupIdentifier: kGroupSuite
+    ) else { return nil }
+
+    // 1. Per-coverid file (written by the main app since Task 7).
+    if let cid = data.coverid, !cid.isEmpty {
+        let safe = cid.replacingOccurrences(of: "/", with: "_")
+                      .replacingOccurrences(of: ":", with: "_")
+        let perItem = container.appendingPathComponent("artwork/\(safe).jpg")
+        if let img = UIImage(contentsOfFile: perItem.path) { return img }
+    }
+
+    // 2. Legacy single-file fallback (widget_artwork.jpg).
+    let legacy = container.appendingPathComponent(kArtworkFileName)
+    return UIImage(contentsOfFile: legacy.path)
 }
 
 // MARK: - Timeline entry
@@ -67,7 +86,8 @@ struct NowPlayingProvider: TimelineProvider {
               let data = try? JSONDecoder().decode(WidgetNowPlayingData.self, from: raw) else {
             return .empty
         }
-        let artwork = artworkFileURL().flatMap { UIImage(contentsOfFile: $0.path) }
+        // ADDED: Task 7 — prefer per-coverid file; fall back to legacy widget_artwork.jpg.
+        let artwork = artworkImage(forData: data)
         return NowPlayingEntry(
             date:         Date(),
             trackTitle:   data.trackTitle,

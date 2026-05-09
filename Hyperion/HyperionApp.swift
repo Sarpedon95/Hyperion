@@ -20,6 +20,8 @@ struct HyperionApp: App {
         _ = PlayerViewModel.shared
         _ = DownloadManager.shared
         _ = AudiomuseManager.shared
+        // ADDED: Task 7 — remove widget artwork files older than 60 days.
+        NowPlayingWidgetStore.cleanupOldArtwork()
     }
 
     var body: some Scene {
