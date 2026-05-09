@@ -253,6 +253,27 @@ extension PlayerViewModel {
 
     func cycleRepeat() { repeatMode = (repeatMode + 1) % 3 }
 
+    // MARK: - Radio mode
+
+    func startRadio(seed: Track) {
+        radioSeed = seed
+        isRadioEnabled = true
+        originalQueueBeforeShuffle = nil
+        isShuffle = false
+        currentWorkGroup = nil
+        queue = [seed]
+        currentIndex = 0
+        playCurrentTrack()
+        fetchRadioTracks()
+    }
+
+    func stopRadio() {
+        isRadioEnabled = false
+        radioSeed = nil
+        radioRefreshTask?.cancel()
+        radioRefreshTask = nil
+    }
+
     func filteredOriginalQueuePreservingCounts() -> [Track]? {
         guard let original = originalQueueBeforeShuffle else { return nil }
         var remainingCounts: [Int: Int] = [:]

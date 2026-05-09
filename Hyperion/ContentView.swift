@@ -476,9 +476,20 @@ struct MiniPlayerView: View {
 
             HStack(spacing: 12) {
                 HStack(spacing: 12) {
-                    ArtworkView(coverid: player.currentTrack?.coverid, size: 40)
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                        .padding(.leading, 12)
+                    ZStack(alignment: .topTrailing) {
+                        ArtworkView(coverid: player.currentTrack?.coverid, size: 40)
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                        if player.isRadioEnabled {
+                            Image(systemName: "antenna.radiowaves.left.and.right")
+                                .font(.system(size: 8, weight: .bold))
+                                .foregroundColor(.black)
+                                .padding(2)
+                                .background(Color.roonAccent)
+                                .clipShape(Circle())
+                                .offset(x: 4, y: -4)
+                        }
+                    }
+                    .padding(.leading, 12)
 
                     VStack(alignment: .leading, spacing: 2) {
                         Text(player.currentTrack?.title ?? "")

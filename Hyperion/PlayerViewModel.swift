@@ -109,6 +109,9 @@ final class PlayerViewModel: ObservableObject {
         didSet { UserDefaults.standard.set(isRadioEnabled, forKey: "hyperion.radio.enabled") }
     }
 
+    /// The track that seeded the current radio session, if any.
+    @Published var radioSeed: Track? = nil
+
     var radioRefreshTask: Task<Void, Never>? = nil
     var lastSkipTimestamp: TimeInterval = 0
 

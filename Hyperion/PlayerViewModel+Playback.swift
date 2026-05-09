@@ -1328,12 +1328,17 @@ extension PlayerViewModel {
         let pm = PlaybackProfileManager.shared
         let cfDur = pm.resolvedCrossfadeDuration
         guard pm.resolvedCrossfadeEnabled, cfDur > 0 else { return }
+        // Gapless pre-inserts the next AVPlayerItem and expects the player to
+        // advance seamlessly; crossfade simultaneously ramps volume to 0 which
+        // defeats that expectation and produces a silent gap instead of a blend.
+        guard !pm.resolvedGaplessEnabled else { return }
         if let engine = orpheusEngine, !engine.crossfadeEligible { return }
         isCrossfadingOut = true
         crossfadeTask?.cancel()
 
+        let shape = pm.resolvedCrossfadeShape
         if let engine = orpheusEngine {
-            crossfadeTask = engine.rampVolume(to: 0, over: cfDur)
+            crossfadeTask = engine.rampVolume(to: 0, over: cfDur, shape: shape)
             return
         }
 
@@ -1344,7 +1349,7 @@ extension PlayerViewModel {
             for i in 0..<steps {
                 guard !Task.isCancelled else { return }
                 let t   = Float(i + 1) / Float(steps)
-                let vol = startVol * cos(t * .pi / 2)
+                let vol = shape.gain(t: t, fadingOut: true) * startVol
                 self.crossfadeVolume = max(0, vol)
                 self.player.volume   = max(0, min(1, self.volume)) * self.crossfadeVolume
                 try? await Task.sleep(nanoseconds: 16_000_000)
@@ -1366,9 +1371,10 @@ extension PlayerViewModel {
             return
         }
 
+        let shape = pm.resolvedCrossfadeShape
         if let engine = orpheusEngine {
             engine.volume = 0
-            crossfadeTask = engine.rampVolume(to: 1, over: cfDur)
+            crossfadeTask = engine.rampVolume(to: 1, over: cfDur, shape: shape)
             return
         }
 
@@ -1380,7 +1386,7 @@ extension PlayerViewModel {
             for i in 0..<steps {
                 guard !Task.isCancelled else { return }
                 let t   = Float(i + 1) / Float(steps)
-                let vol = sin(t * .pi / 2)
+                let vol = shape.gain(t: t, fadingOut: false)
                 self.crossfadeVolume = min(1, vol)
                 self.player.volume   = max(0, min(1, self.volume)) * self.crossfadeVolume
                 try? await Task.sleep(nanoseconds: 16_000_000)

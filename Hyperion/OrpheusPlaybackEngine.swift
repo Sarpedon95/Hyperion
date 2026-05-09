@@ -119,23 +119,23 @@ final class OrpheusPlaybackEngine {
         return true
     }
 
-    // ADDED: Task 11 — volume ramp using a high-frequency task loop for smooth fade.
-    // Equal-power curve: cos for fade-out, sin for fade-in (complementary half-power).
+    // Volume ramp using a high-frequency task loop for smooth fade.
+    // Curve shape is controlled by `CrossfadeShape`; defaults to equal-power.
     @discardableResult
-    func rampVolume(to targetVolume: Float, over duration: TimeInterval) -> Task<Void, Never> {
+    func rampVolume(
+        to targetVolume: Float,
+        over duration: TimeInterval,
+        shape: CrossfadeShape = .equalPower
+    ) -> Task<Void, Never> {
         let startVolume = volume
+        let fadingOut   = targetVolume < startVolume
         let steps       = max(1, Int(duration / 0.016)) // ~60 fps
         return Task { @MainActor [weak self] in
             for i in 0..<steps {
                 guard let self, !Task.isCancelled else { return }
                 let t = Float(i + 1) / Float(steps)
-                // Equal-power: fade-out (cos) when going to 0, fade-in (sin) when going to 1.
-                let factor: Float = targetVolume < startVolume
-                    ? cos(t * .pi / 2)
-                    : sin(t * .pi / 2)
-                self.volume = startVolume + (targetVolume - startVolume) * (
-                    targetVolume < startVolume ? (1 - factor) : factor
-                )
+                self.volume = shape.gain(t: t, fadingOut: fadingOut)
+                    * (fadingOut ? startVolume : targetVolume)
                 try? await Task.sleep(nanoseconds: 16_000_000)
             }
             self?.volume = targetVolume

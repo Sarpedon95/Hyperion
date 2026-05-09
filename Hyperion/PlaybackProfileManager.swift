@@ -84,6 +84,10 @@ final class PlaybackProfileManager: ObservableObject {
         sessionCrossfadeDuration ?? resolvedSettings.crossfadeDuration
     }
 
+    var resolvedCrossfadeShape: CrossfadeShape {
+        resolvedSettings.crossfadeShape
+    }
+
     var resolvedCrossfeedEnabled: Bool {
         sessionCrossfeedEnabled ?? resolvedSettings.crossfeedEnabled
     }

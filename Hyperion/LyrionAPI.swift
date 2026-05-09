@@ -1000,7 +1000,10 @@ final class LyrionAPI {
                 year:             JSON.int(dict["year"]),
                 artwork_track_id: JSON.string(dict["artwork_track_id"] ?? dict["coverid"] ?? dict["coverart"]),
                 composer:         Self.normalizeString(JSON.string(dict["composer"])),
-                isClassical:      JSON.int(dict["isClassical"] ?? dict["classical"])
+                isClassical:      JSON.int(dict["isClassical"] ?? dict["classical"]),
+                conductor:        Self.normalizeString(JSON.string(dict["conductor"])),
+                band:             Self.normalizeString(JSON.string(dict["band"] ?? dict["orchestra"] ?? dict["ensemble"])),
+                dynamicRange:     JSON.int(dict["dynamic_range"] ?? dict["DR"])
             )
         }
     }

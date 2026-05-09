@@ -1,6 +1,19 @@
 import SwiftUI
 import UIKit
 
+// MARK: - Environment: scroll-to highlight (set by AlbumDetailView, read by MovementRowView)
+
+private struct HighlightedTrackIDKey: EnvironmentKey {
+    static let defaultValue: Int? = nil
+}
+
+extension EnvironmentValues {
+    var highlightedTrackID: Int? {
+        get { self[HighlightedTrackIDKey.self] }
+        set { self[HighlightedTrackIDKey.self] = newValue }
+    }
+}
+
 // MARK: - Library root
 
 struct LibraryView: View {
@@ -141,7 +154,7 @@ struct LibraryView: View {
                         Color.roonBorder.frame(height: 0.5).padding(.leading, 66)
 
                         NavigationLink(destination: OfflineLibraryView()) {
-                            LibraryMenuRow(icon: "arrow.down.circle.fill",    label: "Offline Library")
+                            LibraryMenuRow(icon: "wifi.slash",                label: "Offline Library")
                         }
                         .buttonStyle(.plain)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -150,7 +163,7 @@ struct LibraryView: View {
                         Color.roonBorder.frame(height: 0.5).padding(.leading, 66)
 
                         NavigationLink(destination: DownloadsView()) {
-                            LibraryMenuRow(icon: "arrow.down.circle.fill",   label: "Downloads")
+                            LibraryMenuRow(icon: "arrow.down.circle.fill",    label: "Downloads")
                         }
                         .buttonStyle(.plain)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -212,32 +225,73 @@ struct ComposerListView: View {
 
     @ObservedObject private var library = LibraryViewModel.shared
     @State private var searchText: String = ""
-    /// Pre-folded query so SwiftUI layout passes don't re-fold the same string
-    /// for every composer in the list. Updated only when searchText changes.
     @State private var searchNeedle: SearchTextNormalizer.Needle = .empty
+    @State private var epochFilter: OOEpoch = .all
+    @State private var epochByName: [String: OOEpoch] = [:]
+    @State private var isLoadingEpochs: Bool = false
 
     private var filtered: [Composer] {
-        guard !searchNeedle.isEmpty else { return library.composers }
-        return library.composers.filter { searchNeedle.matches($0.artist) }
+        let base = searchNeedle.isEmpty
+            ? library.composers
+            : library.composers.filter { searchNeedle.matches($0.artist) }
+        guard epochFilter != .all else { return base }
+        return base.filter { epochByName[SearchTextNormalizer.folded($0.artist)] == epochFilter }
+    }
+
+    /// Epochs that actually appear in the current composer list (only show useful chips).
+    private var availableEpochs: [OOEpoch] {
+        guard !epochByName.isEmpty else { return [] }
+        var seen = Set<OOEpoch>()
+        for c in library.composers {
+            if let e = epochByName[SearchTextNormalizer.folded(c.artist)] { seen.insert(e) }
+        }
+        return OOEpoch.allCases.filter { $0 != .all && seen.contains($0) }
     }
 
     var body: some View {
-        List {
-            ForEach(filtered) { composer in
-                NavigationLink {
-                    WorkListView(composerID: composer.id, composerName: composer.artist)
-                } label: {
-                    ComposerRowView(composer: composer)
+        VStack(spacing: 0) {
+            if !availableEpochs.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach([OOEpoch.all] + availableEpochs) { epoch in
+                            EraChip(
+                                label: epoch == .all ? "All" : epoch.rawValue,
+                                isSelected: epochFilter == epoch
+                            ) { epochFilter = epoch }
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-                .listRowBackground(Color.clear)
-                .listRowSeparatorTint(Color.roonBorder)
+                .background(Color.roonBase)
+                Divider().background(Color.roonBorder)
+            }
+
+            List {
+                ForEach(filtered) { composer in
+                    NavigationLink {
+                        WorkListView(composerID: composer.id, composerName: composer.artist)
+                    } label: {
+                        ComposerRowView(
+                            composer: composer,
+                            epoch: epochByName[SearchTextNormalizer.folded(composer.artist)]
+                        )
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .listRowBackground(Color.clear)
+                    .listRowSeparatorTint(Color.roonBorder)
+                }
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .bottomOverlayAwareScroll()
+            .overlay {
+                if library.isLoadingComposers {
+                    ProgressView().tint(.roonAccent)
+                }
             }
         }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
-        .bottomOverlayAwareScroll()
         .background(Color.roonBase)
         .searchable(text: $searchText, prompt: "Search composers")
         .onChange(of: searchText) { _, new in searchNeedle = .init(new) }
@@ -246,19 +300,40 @@ struct ComposerListView: View {
         .toolbarBackground(Color.roonBase, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
         .toolbarColorScheme(.dark, for: .navigationBar)
-        .overlay {
-            if library.isLoadingComposers {
-                ProgressView().tint(.roonAccent)
-            }
-        }
         .task {
             if library.composers.isEmpty { await library.loadComposers() }
         }
+        .task {
+            guard epochByName.isEmpty, !isLoadingEpochs else { return }
+            isLoadingEpochs = true
+            epochByName = await OOComposerCache.shared.epochByName()
+            isLoadingEpochs = false
+        }
+    }
+}
+
+private struct EraChip: View {
+    let label: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: { Haptics.light(); action() }) {
+            Text(label)
+                .font(.roonBody(13, weight: isSelected ? .semibold : .regular))
+                .foregroundColor(isSelected ? .black : .roonSecondary)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(isSelected ? Color.roonAccent : Color.roonElevated)
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
     }
 }
 
 struct ComposerRowView: View {
     let composer: Composer
+    var epoch: OOEpoch? = nil
 
     var body: some View {
         HStack(spacing: 14) {
@@ -270,9 +345,16 @@ struct ComposerRowView: View {
                     .font(.roonTitle(16))
                     .foregroundColor(.roonAccent)
             }
-            Text(composer.artist)
-                .font(.roonBody(16, weight: .medium))
-                .foregroundColor(.roonPrimary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(composer.artist)
+                    .font(.roonBody(16, weight: .medium))
+                    .foregroundColor(.roonPrimary)
+                if let epoch {
+                    Text(epoch.rawValue)
+                        .font(.roonBody(12))
+                        .foregroundColor(.roonSecondary)
+                }
+            }
             Spacer()
         }
         .padding(.vertical, 6)
@@ -538,6 +620,7 @@ struct CenteredArtworkHeader: View {
     let subtitle: String?
     var year: Int? = nil
     var subtitleAction: (() -> Void)? = nil
+    var performerLine: String? = nil  // conductor · orchestra or performer credit
 
     var body: some View {
         VStack(spacing: 0) {
@@ -558,7 +641,7 @@ struct CenteredArtworkHeader: View {
             .padding(.bottom, 20)
 
             Text(title)
-                .font(.system(size: 22, weight: .bold, design: .default))
+                .font(.roonTitle(22))
                 .foregroundColor(.roonPrimary)
                 .multilineTextAlignment(.center)
                 .lineLimit(4)
@@ -574,7 +657,7 @@ struct CenteredArtworkHeader: View {
                             .multilineTextAlignment(.center)
                             .lineLimit(2)
                             .padding(.horizontal, 24)
-                            .padding(.bottom, year != nil ? 2 : 8)
+                            .padding(.bottom, performerLine != nil ? 2 : (year != nil ? 2 : 8))
                     }
                     .buttonStyle(.plain)
                 } else {
@@ -584,8 +667,18 @@ struct CenteredArtworkHeader: View {
                         .multilineTextAlignment(.center)
                         .lineLimit(2)
                         .padding(.horizontal, 24)
-                        .padding(.bottom, year != nil ? 2 : 8)
+                        .padding(.bottom, performerLine != nil ? 2 : (year != nil ? 2 : 8))
                 }
+            }
+
+            if let performerLine, !performerLine.isEmpty {
+                Text(performerLine)
+                    .font(.roonBody(13))
+                    .foregroundColor(.roonSecondary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, year != nil ? 2 : 8)
             }
 
             if let year, year > 0 {
@@ -619,6 +712,7 @@ struct WorkTrackList: View {
                         player.playWork(wg, startingAt: index)
                     }
                 }
+                .id("track-\(track.id)")
                 if index < tracks.count - 1 {
                     Color.roonBorder.frame(height: 0.5)
                         .padding(.leading, 54)
@@ -639,6 +733,7 @@ struct MovementRowView: View {
     @State private var showingTrackActions = false
     @State private var navigateToAlbum: Album? = nil
     @State private var navigateToArtist: Artist? = nil
+    @Environment(\.highlightedTrackID) private var highlightedTrackID
 
     var body: some View {
         Button(action: onTap) {
@@ -694,6 +789,7 @@ struct MovementRowView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("More options for \(track.title)")
                 .padding(.trailing, 8)
             }
             .frame(minHeight: 56)
@@ -752,6 +848,8 @@ struct MovementRowView: View {
             NavigationStack { ArtistDetailView(artist: artist) }
                 .environment(\.hyperionBottomOverlayHeight, 0)
         }
+        .background(highlightedTrackID == track.id ? Color.roonAccent.opacity(0.13) : Color.clear)
+        .animation(.easeOut(duration: 0.3), value: highlightedTrackID)
     }
 }
 
@@ -1046,13 +1144,12 @@ struct AlbumGridCell: View {
                     await MainActor.run { PlayerViewModel.shared.addWorkGroupsToQueue(groups) }
                 }
             }
-            Button("Start Radio", systemImage: "dot.radiowaves.left.and.right") {
+            Button("Start Radio", systemImage: "antenna.radiowaves.left.and.right") {
                 Task {
                     let groups = (try? await LibraryViewModel.shared.getWorkGroupsForAlbum(album.id)) ?? []
-                    guard !groups.isEmpty else { return }
+                    guard let seed = groups.first?.tracks.first else { return }
                     await MainActor.run {
-                        PlayerViewModel.shared.playAlbum(groups)
-                        PlayerViewModel.shared.isRadioEnabled = true
+                        PlayerViewModel.shared.startRadio(seed: seed)
                     }
                 }
             }
@@ -1131,9 +1228,12 @@ struct ArtistAlbumGridCard: View {
 struct AlbumDetailView: View {
 
     let album: Album
+    var scrollToTrackID: Int? = nil
+    var autoPlay: Bool = false
 
-    @ObservedObject private var library = LibraryViewModel.shared
-    @ObservedObject private var player  = PlayerViewModel.shared
+    @ObservedObject private var library     = LibraryViewModel.shared
+    @ObservedObject private var player      = PlayerViewModel.shared
+    @ObservedObject private var annotations = RecordingAnnotationStore.shared
     @State private var workGroups: [WorkGroup] = []
     @State private var isLoading: Bool         = true
     @State private var loadError: String?      = nil
@@ -1141,11 +1241,24 @@ struct AlbumDetailView: View {
     @State private var showArtistDetail: Bool  = false
     @State private var albumMetadata: MetadataResult? = nil
     @State private var albumMetadataLoading: Bool = false
+    @State private var highlightedTrackID: Int? = nil
+    @State private var showAnnotationSheet: Bool = false
 
     private var albumArtist: Artist? {
         guard let name = album.artist ?? album.composer, !name.isEmpty else { return nil }
         return library.artists.first { $0.name == name }
             ?? Artist(id: 0, name: name)
+    }
+
+    private var albumPerformerLine: String? {
+        let c = album.conductor.flatMap { $0.isEmpty ? nil : $0 }
+        let b = album.band.flatMap      { $0.isEmpty ? nil : $0 }
+        switch (c, b) {
+        case let (c?, b?): return "\(c) · \(b)"
+        case let (c?, nil): return c
+        case let (nil, b?): return b
+        case (nil, nil): return nil
+        }
     }
 
     enum AlbumTab: String, CaseIterable {
@@ -1155,47 +1268,101 @@ struct AlbumDetailView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 0) {
-                // Header: artwork + title + artist + year
-                CenteredArtworkHeader(
-                    coverid:        album.artwork_track_id,
-                    title:          album.album,
-                    subtitle:       album.artist ?? album.composer,
-                    year:           album.year,
-                    subtitleAction: albumArtist != nil ? { showArtistDetail = true } : nil
-                )
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(spacing: 0) {
+                    // Header: artwork + title + artist + year + conductor/orchestra
+                    CenteredArtworkHeader(
+                        coverid:        album.artwork_track_id,
+                        title:          album.album,
+                        subtitle:       album.artist ?? album.composer,
+                        year:           album.year,
+                        subtitleAction: albumArtist != nil ? { showArtistDetail = true } : nil,
+                        performerLine:  albumPerformerLine
+                    )
 
-                // Play Now / Add buttons
-                albumPlaybackButtons
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 20)
+                    // Recording annotation (rating + note preview)
+                    if let ann = annotations.annotation(forAlbumID: album.id) {
+                        Button { showAnnotationSheet = true } label: {
+                            HStack(spacing: 10) {
+                                if let r = ann.rating { StarRatingView(rating: r) }
+                                if let note = ann.notes, !note.isEmpty {
+                                    Text(note)
+                                        .font(.roonBody(12))
+                                        .foregroundColor(.roonSecondary)
+                                        .lineLimit(1)
+                                }
+                                Spacer()
+                                Image(systemName: "pencil")
+                                    .font(.system(size: 12))
+                                    .foregroundColor(.roonTertiary)
+                            }
+                            .padding(.horizontal, 24)
+                            .padding(.vertical, 8)
+                        }
+                        .buttonStyle(.plain)
+                    }
 
-                // MARK: Tab bar (Tracks / Info / Credits)
-                AlbumTabBar(selected: $selectedTab)
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, 16)
+                    // Play Now / Add buttons
+                    albumPlaybackButtons
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 20)
 
-                Color.roonBorder.frame(height: 0.5)
+                    // MARK: Tab bar (Tracks / Info / Credits)
+                    AlbumTabBar(selected: $selectedTab)
+                        .padding(.horizontal, 20)
+                        .padding(.bottom, 16)
 
-                // MARK: Tab content
-                switch selectedTab {
-                case .tracks:
-                    tracksContent
-                case .info:
-                    AlbumInfoPanel(album: album, workGroups: workGroups, metadata: albumMetadata, metadataLoading: albumMetadataLoading)
-                case .credits:
-                    creditsContent
+                    Color.roonBorder.frame(height: 0.5)
+
+                    // MARK: Tab content
+                    switch selectedTab {
+                    case .tracks:
+                        tracksContent
+                    case .info:
+                        AlbumInfoPanel(album: album, workGroups: workGroups, metadata: albumMetadata, metadataLoading: albumMetadataLoading)
+                    case .credits:
+                        creditsContent
+                    }
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .bottomOverlayAwareScroll()
+            .onChange(of: workGroups) { _, groups in
+                guard let trackID = scrollToTrackID, !groups.isEmpty else { return }
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 350_000_000)
+                    withAnimation(.easeInOut(duration: 0.4)) {
+                        proxy.scrollTo("track-\(trackID)", anchor: .top)
+                    }
+                    highlightedTrackID = trackID
+                    try? await Task.sleep(nanoseconds: 1_800_000_000)
+                    withAnimation(.easeOut(duration: 0.4)) { highlightedTrackID = nil }
                 }
             }
         }
-        .scrollContentBackground(.hidden)
-        .bottomOverlayAwareScroll()
+        .environment(\.highlightedTrackID, highlightedTrackID)
         .background(Color.roonBase.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(Color.roonBase, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
         .toolbarColorScheme(.dark, for: .navigationBar)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button {
+                    showAnnotationSheet = true
+                } label: {
+                    Image(systemName: annotations.annotation(forAlbumID: album.id) != nil
+                          ? "pencil.circle.fill" : "pencil.circle")
+                        .font(.system(size: 17))
+                        .foregroundColor(.roonSecondary)
+                }
+                .accessibilityLabel("Add note or rating")
+            }
+        }
+        .sheet(isPresented: $showAnnotationSheet) {
+            RecordingAnnotationSheet(albumID: album.id, albumTitle: album.album)
+        }
         .navigationDestination(isPresented: $showArtistDetail) {
             if let artist = albumArtist { ArtistDetailView(artist: artist) }
         }
@@ -1205,12 +1372,16 @@ struct AlbumDetailView: View {
             workGroups = []
             albumMetadata = nil
             albumMetadataLoading = false
+            highlightedTrackID = nil
             defer { isLoading = false }
 
             do {
                 let groups = try await library.getWorkGroupsForAlbum(album.id)
                 guard !Task.isCancelled else { return }
                 workGroups = groups
+                if autoPlay, let firstGroup = groups.first, !firstGroup.tracks.isEmpty {
+                    player.playWork(firstGroup, startingAt: 0)
+                }
             } catch is CancellationError {
                 return
             } catch {
@@ -1331,7 +1502,7 @@ struct AlbumDetailView: View {
                 .foregroundColor(.white)
                 .frame(maxWidth: .infinity)
                 .frame(height: 46)
-                .background(Color(hex: "#5B4FCF"))
+                .background(Color.roonAccent)
                 .clipShape(Capsule())
             }
             .buttonStyle(.plain)
@@ -1478,6 +1649,9 @@ struct AlbumInfoPanel: View {
                 if shouldShowClassicalBadge {
                     InfoBadge(text: "CLASSICAL", color: .roonTertiary)
                 }
+                if let dr = album.dynamicRange, dr > 0 {
+                    InfoBadge(text: "DR\(dr)", color: .roonSecondary)
+                }
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 18)
@@ -1488,6 +1662,16 @@ struct AlbumInfoPanel: View {
             Group {
                 if let year = album.year, year > 0 {
                     AlbumInfoRow(label: "Year", value: "\(year)")
+                    Color.roonBorder.frame(height: 0.5).padding(.leading, 20)
+                }
+
+                if let conductor = album.conductor, !conductor.isEmpty {
+                    AlbumInfoRow(label: "Conductor", value: conductor)
+                    Color.roonBorder.frame(height: 0.5).padding(.leading, 20)
+                }
+
+                if let band = album.band, !band.isEmpty {
+                    AlbumInfoRow(label: "Orchestra", value: band)
                     Color.roonBorder.frame(height: 0.5).padding(.leading, 20)
                 }
 
@@ -1749,6 +1933,7 @@ struct WorkGroupSectionView: View {
                         player.playWork(group, startingAt: index)
                     }
                     .padding(.leading, 16)
+                    .id("track-\(track.id)")
                     if index < group.tracks.count - 1 {
                         Color.roonBorder.frame(height: 0.5).padding(.leading, 48)
                     }
@@ -2199,7 +2384,7 @@ struct ArtistDetailView: View {
     @ObservedObject private var likedTracks = LikedTracksStore.shared
 
     @State private var albums:              [Album] = []
-    @State private var localTracks:         [Track] = []
+    @State private var tracksByArtist:      [Track] = []
     @State private var compositions:        [Work]  = []
     @State private var isLoading:           Bool    = true
     @State private var compositionsLoading: Bool    = false
@@ -2215,22 +2400,6 @@ struct ArtistDetailView: View {
         case info         = "Info"
         case discography  = "Discography"
         case compositions = "Compositions"
-    }
-
-    private var tracksByArtist: [Track] {
-        let folded = SearchTextNormalizer.folded(artist.name)
-        return localTracks.filter {
-            SearchTextNormalizer.folded($0.trackartist ?? $0.albumartist ?? "") == folded ||
-            SearchTextNormalizer.folded($0.composer ?? "") == folded
-        }
-    }
-
-    private var likedByArtist: [Track] {
-        let folded = SearchTextNormalizer.folded(artist.name)
-        return likedTracks.likedTracks.filter {
-            SearchTextNormalizer.folded($0.trackartist ?? $0.albumartist ?? "") == folded ||
-            SearchTextNormalizer.folded($0.composer ?? "") == folded
-        }
     }
 
     private var isClassicalArtist: Bool {
@@ -2277,11 +2446,16 @@ struct ArtistDetailView: View {
             bioExpanded = false
             selectedTab = .overview
             compositions = []
+            tracksByArtist = []
             async let detailTask = library.loadArtistDetail(artistID: artist.id)
             async let metaTask   = MetadataService.shared.fetch(artist: artist.name, album: nil, track: nil)
             if let result = try? await detailTask {
-                albums      = result.albums
-                localTracks = result.songs
+                albums = result.albums
+                let folded = SearchTextNormalizer.folded(artist.name)
+                tracksByArtist = result.songs.filter {
+                    SearchTextNormalizer.folded($0.trackartist ?? $0.albumartist ?? "") == folded ||
+                    SearchTextNormalizer.folded($0.composer ?? "") == folded
+                }
             }
             isLoading = false
             metadata = await metaTask
@@ -2325,7 +2499,7 @@ struct ArtistDetailView: View {
 
             VStack(alignment: .leading, spacing: 12) {
                 Text(artist.name)
-                    .font(.system(size: 32, weight: .bold))
+                    .font(.roonTitle(32))
                     .foregroundColor(.white)
                     .shadow(color: .black.opacity(0.6), radius: 4, y: 2)
                     .lineLimit(2)

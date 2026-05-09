@@ -293,3 +293,203 @@ The following keys must be set manually in the Xcode target's Info.plist (Xcode 
 | App Group ID duplication | `NowPlayingWidgetStore.appGroupSuite` (main target) and `kGroupSuite` (widget target) must stay in sync manually — no shared Swift module exists between the two targets | Low — mitigated by comments; value is unlikely to change |
 | Widget artwork directory | `artwork/` subdirectory in the App Group container is created lazily and may accumulate stale files between cleanup runs (max 60 days at default TTL) | Low |
 | Crossfade + gapless conflict | Crossfade is not disabled automatically when the user enables gapless for a specific profile — the two features both manipulate volume around track boundaries and can interfere | Medium — needs a `crossfadeEnabled && gaplessEnabled` guard in `startCrossfadeOut()` |
+
+---
+
+## Phase 7 — UI Fixes, Work Navigation & Continued Polish (2026-05-09)
+
+### NowPlayingView — 5 UI Fixes
+
+| # | Location | Before | After |
+|---|----------|--------|-------|
+| 1 | `artworkSection` | `.frame(maxWidth: .infinity).aspectRatio(1, contentMode: .fit)` with `clipShape`/`shadow` after padding | Removed static frame modifiers; `clipShape`/`shadow` applied before `padding(.horizontal, 24)` for correct rounded-corner shadow |
+| 2 | Transport prev/next icons | `"backward.fill"` / `"forward.fill"` (seek step icons) | `"backward.end.fill"` / `"forward.end.fill"` (skip to previous/next track icons) |
+| 3 | Time labels | `.foregroundColor(.secondary)` (system colour, renders mid-grey on dark bg) | `.foregroundColor(.white.opacity(0.55))` — visible against the blurred dark background at all times |
+| 4 | `trackInfo` | Contained a redundant profile pill `Button` block (~16 lines) after the pill was moved to the header bar in a prior session | Block removed |
+| 5 | Queue button icon | `"line.3.horizontal"` (hamburger) | `"list.bullet"` — semantically correct for a queue/tracklist |
+
+### ComposerDetailView — Library Work Navigation
+
+Tapping a work in `ComposerDetailView` now navigates to the correct location in the local library.
+
+**Resolution logic** (in `ComposerDetailViewModel.resolveLibraryDestination(work:composer:)`):
+1. Query `LMSLibraryLinker.candidates(forWorkID:)` — returns confirmed/indexed `[WorkRecordingCandidate]`.
+2. If 1 candidate → navigate directly to `AlbumDetailView` for that album, scrolled to the first matching track; auto-play if it's the only track.
+3. If > 1 candidate → show `WorkRecordingPickerView` ("Choose a recording") with performer summaries and artwork.
+4. If 0 candidates → fuzzy-search `LyrionAPI.searchAlbums` as fallback using the same scoring algorithm as `OOWorkRow.fuzzyMatchAlbumID`, then re-evaluate.
+5. If still not found → brief "Not in library" indicator on the row for 2.5 s, then auto-clears.
+
+**Navigation stack** (back navigation correct at all depths):
+- Single match: `ComposerDetail → AlbumDetail`
+- Multiple matches: `ComposerDetail → RecordingPicker → AlbumDetail`
+
+**Scroll + highlight**: `AlbumDetailView` gains `scrollToTrackID: Int?` and `autoPlay: Bool`. After `workGroups` loads, a `ScrollViewReader` scrolls to `"track-\(id)"` with a 350 ms settle delay and 0.4 s eased animation; the row briefly shows a `Color.roonAccent.opacity(0.13)` background for 1.8 s then fades out. Uses a custom `EnvironmentKey` (`highlightedTrackID`) to thread the highlight state to `MovementRowView` without parameter drilling.
+
+**New types added to `ComposerDetailView.swift`:**
+
+| Type | Role |
+|------|------|
+| `WorkLibraryNav` | Enum: `.singleAlbum(Album, Int?, Bool)` / `.picker([WorkRecordingEntry])` / `.notFound` |
+| `WorkRecordingEntry` | `Identifiable, Hashable`; holds `album: Album`, `firstTrackID: Int?`, `performerSummary: String` |
+| `AlbumNavRequest` | `Identifiable, Hashable` wrapper for `navigationDestination(item:)` |
+| `PickerNavRequest` | `Identifiable, Hashable` wrapper for the picker sheet |
+| `WorkRecordingPickerView` | "Choose a recording" list — artwork, album title, performer summary, year |
+| `RecordingPickerRow` | Single row in the picker, tapping navigates to `AlbumDetailView` |
+
+### LibraryView — 4 Polish Fixes
+
+| # | Location | Before | After |
+|---|----------|--------|-------|
+| 1 | `CenteredArtworkHeader` title | `.system(size: 22, weight: .bold, design: .default)` | `.roonTitle(22)` (serif design token) |
+| 2 | `AlbumDetailView` Play Now button | `Color(hex: "#5B4FCF")` (hardcoded purple) | `Color.roonAccent` (coral red design token) |
+| 3 | `MovementRowView` ellipsis button | No accessibility label | `.accessibilityLabel("More options for \(track.title)")` |
+| 4 | Library menu — Offline Library icon | `"arrow.down.circle.fill"` (same as Downloads) | `"wifi.slash"` — semantically distinct from Downloads |
+
+### Phase 7 Performance Fix
+
+| File | Location | Issue | Fix |
+|------|----------|-------|-----|
+| `LibraryView.swift` | `ArtistDetailView.tracksByArtist` | Computed property called 6+ times per render pass, each running O(n) `SearchTextNormalizer.folded` comparisons over all loaded songs | Converted to `@State var tracksByArtist: [Track] = []`; populated once in `.task(id: artist.id)` after the artist detail loads; reset to `[]` on artist change. Removed unused `localTracks: [Track]` state and unused `likedByArtist` computed property |
+
+### Phase 7 Additional Polish
+
+| File | Location | Before | After |
+|------|----------|--------|-------|
+| `LibraryView.swift` | `ArtistDetailView` hero name | `.font(.system(size: 32, weight: .bold))` | `.font(.roonTitle(32))` (serif design token) |
+
+---
+
+## Missing Features vs. Roon / Apple Music
+
+| Feature | Gap vs. Roon | Gap vs. Apple Music | Notes |
+|---------|-------------|---------------------|-------|
+| ~~**Radio / similar-artist mix**~~ | **Added in Phase 8** — `startRadio(seed:)` + `stopRadio()`; genre-seeded queue replenishment; `RadioSessionView` sheet; radio pill badge in `NowPlayingView`; mini-player antenna badge; "Start Radio" in track and album context menus | ~~Apple Music AutoPlay~~ | Queue replenishment uses genre-based or random fallback; `radioSeed: Track?` tracks the originating track |
+| ~~**Lyrics with time-sync (LRC)**~~ | **Added in Phase 7** — inline synced LRC panel in `NowPlayingView`; auto-scroll + active-line highlight; falls back to plain text | ~~Apple Music shows scrolling lyrics synced to playback~~ | LRC parsing was already in `LyricsService` via LRCLIB; inline panel toggled from lyrics button |
+| **Composer biography** | Roon pulls from Rovi; structured discography | — | Hyperion uses OpenOpus bios; no Discogs / Rovi integration |
+| ~~**Dynamic range display**~~ | **Added in Phase 7** — `InfoBadge("DR\(n)")` in `AlbumInfoPanel`; parsed from LMS `dynamic_range`/`DR` tag into `Album.dynamicRange` | — | Badge shows only when DR > 0 |
+| ~~**Crossfade for pop/radio**~~ | **Added in Phase 8** — `CrossfadeShape` enum (`.linear`, `.equalPower`, `.sCurve`); `ProfileSettings.crossfadeShape` persists per-profile; `rampVolume(to:over:shape:)` in `OrpheusPlaybackEngine` + AVPlayer path; Settings shows segmented picker + inline Canvas curve preview | ~~Apple Music crossfade toggle~~ | Default shape is `.equalPower` (existing behaviour preserved) |
+| **iCloud Music Library sync** | — | Apple Music iCloud sync | Out of scope for a local LMS client |
+| ~~**Global search**~~ | **Added in Phase 7** — `SearchViewModel` now runs OpenOpus omnisearch in parallel; "CLASSICAL COMPOSERS" and "CLASSICAL WORKS" sections in `SearchResultsView`; composer rows → `ComposerDetailView`; work rows → `resolveLibraryDestination` | ~~Apple Music unified search~~ | LMS-only scopes preserved; OO search skipped in Library scope |
+| **Playlist collaboration** | — | Roon 2.0 private group playlists | Out of scope |
+
+## Classical-Music-Specific Suggestions
+
+| Suggestion | Detail |
+|-----------|--------|
+| ~~**Composition date filter**~~ | **Fully complete in Phase 8** — `OOComposerCache` (new actor) fetches all 26 OO letter endpoints in parallel, caches to `Caches/oo_composer_cache.json` (7-day TTL, silent background refresh); `ComposerListView` builds `[String: OOEpoch]` via `epochByName()` and shows era filter chips; chips appear only for epochs present in the current LMS composer list; `ComposerRowView` shows epoch subtitle under name |
+| ~~**Work catalogue number display**~~ | **Added in Phase 7** — `OOWorkRow.catalogueHint` shows subtitle (BWV, K., Op.) inline below work title, only when not already present in the title |
+| ~~**Multi-movement now-playing progress**~~ | **Added in Phase 7** — `WorkProgressBar` below main scrubber in `NowPlayingView`; shows total work progress (completed movements + currentTime) / totalDuration; hidden for non-multi-movement tracks and flat-fallback groups |
+| ~~**Recording vintage filter**~~ | **Added in Phase 7** — decade chip bar in `WorkRecordingPickerView`; shows only decades that have recordings; sourced from `Album.year`; "All" default |
+| ~~**Conductor / orchestra display**~~ | **Added in Phase 7** — `Album.conductor` + `Album.band` added to `Models.swift`; parsed from LMS `conductor`/`band`/`orchestra`/`ensemble` tags in `LyrionAPI.parseAlbums`; shown in `CenteredArtworkHeader` via `albumPerformerLine`; also in `AlbumInfoPanel` metadata rows and `AlbumDetailView` conductor row |
+| ~~**Period performance tagging**~~ | **Added in Phase 7** — `HIPEnsembleClassifier.swift` (new); substring match on conductor/band/performerSummary vs. ~50-entry built-in list; user-extensible via Settings → Classical → HIP Performers; "HIP" capsule badge in `RecordingPickerRow` and `AlbumDetailView` |
+| ~~**Work-level rating / notes**~~ | **Added in Phase 7** — `RecordingAnnotationStore` + `RecordingAnnotationSheet` + `StarRatingView`; keyed by LMS album ID; persisted to `Documents/recording_annotations.json`; shown in `RecordingPickerRow` and `AlbumDetailView` header |
+
+---
+
+## Phase 7 — Section-by-Section Summary (2026-05-09)
+
+### Section 1 — Bug Fixes
+
+| # | Task | File(s) | Status | Notes |
+|---|------|---------|--------|-------|
+| 1.1 | Crossfade + gapless conflict guard | `PlayerViewModel+Playback.swift` | ✅ Complete | `guard !pm.resolvedGaplessEnabled else { return }` added to `startCrossfadeOut()` |
+| 1.2 | OO omnisearch in parallel search | `SearchAndSettingsView.swift` | ✅ Complete | `ooSearchTask` runs in parallel; `OOWorkResult` struct; new CLASSICAL COMPOSERS + CLASSICAL WORKS sections in `SearchResultsView` |
+
+### Section 2 — UI Wiring
+
+| # | Task | File(s) | Status | Notes |
+|---|------|---------|--------|-------|
+| 2.1 | Conductor/band in AlbumDetailView header | `Models.swift`, `LyrionAPI.swift`, `LibraryView.swift` | ✅ Complete | `CenteredArtworkHeader` gains `performerLine` param; LMS tags may be unpopulated on most albums |
+| 2.2 | DR badge in AlbumInfoPanel | `Models.swift`, `LyrionAPI.swift`, `LibraryView.swift` | ✅ Complete | `Album.dynamicRange`; `InfoBadge("DR\(dr)")` shown when DR > 0 |
+| 2.3 | OOWork subtitle (catalogue number) | `ComposerDetailView.swift` | ✅ Complete | `OOWorkRow.catalogueHint` skips subtitle if already in title |
+| 2.4 | Era filter chips | `ClassicalBrowserView.swift` | ✅ Already present | `ClassicalBrowserView` already had full epoch filter; `ComposerListView` blocked by missing epoch field on LMS `Composer` type |
+
+### Section 3 — New Features
+
+| # | Task | File(s) | Status | Notes |
+|---|------|---------|--------|-------|
+| 3.1 | Synced LRC inline lyrics in NowPlayingView | `NowPlayingView.swift` | ✅ Complete | `InlineLyricsPanel` toggled from lyrics button; auto-scroll; active line white; plain text fallback; button hidden when unavailable |
+| 3.2 | Multi-movement work progress bar | `NowPlayingView.swift` | ✅ Complete | `WorkProgressBar` below scrubber; uses `PlayerViewModel.currentWorkGroup` |
+| 3.3 | Recording vintage filter (decade chips) | `ComposerDetailView.swift` | ✅ Complete | `WorkRecordingPickerView` gains `selectedDecade`; chips shown only when >1 decade has recordings |
+| 3.4 | HIP tagging + settings | `HIPEnsembleClassifier.swift` (new), `ComposerDetailView.swift`, `LibraryView.swift`, `SearchAndSettingsView.swift` | ✅ Complete | Built-in list of ~50 conductors/ensembles; user-extensible via Settings → CLASSICAL — HIP PERFORMERS; badge in picker row and album detail |
+| 3.5 | Work-level recording annotation | `RecordingAnnotationStore.swift` (new), `ComposerDetailView.swift`, `LibraryView.swift` | ✅ Complete | Star rating + free-text notes; edit via pencil icon sheet; shown in picker row and album header |
+
+### Known New Weaknesses Introduced in Phase 7
+
+| Area | Detail | Severity |
+|------|--------|----------|
+| LMS conductor/band population | `Album.conductor` and `Album.band` will be `nil` on most LMS installs unless the LMS server is configured to expose `conductor` and `band` as custom tags | Low — UI degrades gracefully (fields not shown when nil) |
+| OO omnisearch cold start | First OO search after app launch hits LRCLIB.net with no cache; adds ~500ms latency to search results | Low — runs in parallel; LMS results show first |
+| ~~`HIPEnsembleClassifier` substring false positives~~ | **Fixed in Phase 8** — replaced with full-phrase contiguous matching using `SearchTextNormalizer.folded()`; built-in entries now require the entire phrase to appear contiguously in the candidate; DEBUG self-test added | — |
+| `InlineLyricsPanel` height | Fixed 140pt height may be too small for long lyric lines on smaller screens | Low — truncated by gradient mask; user can expand to full-screen |
+
+---
+
+## Phase 8 — HIP Fix, OO Cache, Crossfade Shape, Radio Mode, Composer Era Filter (2026-05-09)
+
+### Section 1 — HIPEnsembleClassifier False Positive Fix
+
+**File:** `HIPEnsembleClassifier.swift`
+
+- Replaced substring-on-short-token matching with full-phrase contiguous matching: both the built-in entry and the candidate string are folded with `SearchTextNormalizer.folded()`, then `foldedCandidate.contains(foldedEntry)` is checked
+- Removed hazardous short tokens (`"the"`, `"simon"`, `"baroque"`) from the default list; replaced with full-name entries (e.g. `"john eliot gardiner"` instead of bare `"gardiner"` for disambiguation)
+- Added `#if DEBUG` self-test invoked from `init()` via `runSelfTest(using: self)` — avoids `shared` deadlock by passing the already-constructed instance
+- Self-test covers 9 true positives (full names, diacritics, comma-separated summary strings, multi-word ensemble phrases) and 7 true negatives (Simon Rattle, The Beatles, "baroque" as substring, Boston Symphony Orchestra vs. Boston Baroque, partial name "John Gardiner", etc.)
+
+### Section 2 — OpenOpus Composer List Disk Cache
+
+**File:** `OOComposerCache.swift` (new)
+
+- New `actor OOComposerCache` with `static let shared` singleton
+- `composers() async -> [OOComposer]` — returns from in-memory if warm; reads `Caches/oo_composer_cache.json` if present; triggers silent background refresh when age > 7 days; blocks on first cold fetch
+- `fetchAll()` — fires 26 concurrent tasks (A–Z) via `withTaskGroup`, deduplicates by ID, returns sorted list (~1500–2000 composers)
+- `epochByName() async -> [String: OOEpoch]` — returns folded-name → epoch dict for use by ComposerListView; both `.name` and `.complete_name` are indexed; first writer wins for duplicate keys
+- Cache payload is `Payload: Codable { composers, fetchedAt }` encoded with `.iso8601` date strategy
+- Background refresh is guarded by `refreshTask != nil` check to prevent double-firing
+
+### Section 3 — Crossfade Shape Setting
+
+**Files:** `PlaybackProfile.swift`, `PlaybackProfileManager.swift`, `OrpheusPlaybackEngine.swift`, `PlayerViewModel+Playback.swift`, `SearchAndSettingsView.swift`
+
+- `CrossfadeShape: String, Codable, CaseIterable` added to `PlaybackProfile.swift` with `.linear`, `.equalPower`, `.sCurve`; `gain(t:fadingOut:)` encapsulates the curve math:
+  - Linear: `fadingOut ? 1-t : t`
+  - Equal-power: `fadingOut ? cos(t·π/2) : sin(t·π/2)` — preserves existing default behaviour
+  - S-Curve: `(1±cos(πt))/2` — slow-start, fast-middle, slow-end
+- `ProfileSettings.crossfadeShape: CrossfadeShape` (default `.equalPower`) added; backwards-compatible via `defaults(for:)`
+- `resolvedCrossfadeShape: CrossfadeShape` added to `PlaybackProfileManager`
+- `OrpheusPlaybackEngine.rampVolume(to:over:shape:)` signature updated; shape defaults to `.equalPower` to preserve all existing call sites
+- AVPlayer path (`startCrossfadeOut/In`) reads `pm.resolvedCrossfadeShape` and calls `shape.gain(t:fadingOut:)`
+- Settings: segmented `Picker` for shape below duration slider (only visible when crossfade enabled); `CrossfadeShapePreview` Canvas draws outgoing (white) and incoming (accent) curves side-by-side
+
+### Section 4 — Radio Mode UI
+
+**Files:** `PlayerViewModel.swift`, `PlayerViewModel+PlaybackAPI.swift`, `RadioSessionView.swift` (new), `NowPlayingView.swift`, `ContentView.swift`, `LibraryView.swift`, `QueueView.swift`
+
+- `PlayerViewModel.radioSeed: Track?` — `@Published` seed track for the current radio session
+- `startRadio(seed:)` — sets seed, enables `isRadioEnabled`, clears queue to seed, plays it, then calls `fetchRadioTracks()`
+- `stopRadio()` — clears `isRadioEnabled`, `radioSeed`, cancels `radioRefreshTask`
+- `RadioSessionView` — `presentationDetents([.medium, .large])` sheet showing: seed artwork + "Radio seed" label, upcoming queue list (`RadioQueueRow` with waveform symbolEffect for current track), Stop Radio destructive button
+- `NowPlayingView`: radio pill badge in header (accent capsule, "Radio" + antenna icon), antenna button in bottom toolbar (`.roonAccent` when active); both open `RadioSessionView` sheet; tapping antenna when inactive calls `startRadio(seed: currentTrack)`
+- `MiniPlayerView`: `ZStack + .topTrailing` overlay showing 8pt antenna badge on artwork when `isRadioEnabled`
+- Context menus: existing album "Start Radio" in `LibraryView` updated to call `startRadio(seed:)` with first track of album; "Start Radio" added to queue-item long-press menu in `QueueView`
+- Auto-replenishment: existing `fetchRadioTracks()` / `radioEarlyFetchTriggered` logic unchanged — fires when ≤30 s remaining in queue
+
+### Section 5 — ComposerListView Era Filter
+
+**Files:** `OOComposerCache.swift`, `LibraryView.swift`
+
+- `ComposerListView` gains `@State epochFilter: OOEpoch = .all` and `@State epochByName: [String: OOEpoch] = [:]`
+- Background task: `OOComposerCache.shared.epochByName()` loaded once after composers load; uses folded key matching for diacritic-insensitive cross-referencing of LMS composer names against OO data
+- `availableEpochs` computed var: only epochs present in the current LMS composer list (avoids showing empty chips for epochs with no matches)
+- Horizontal `ScrollView` of `EraChip` buttons (shown only when `availableEpochs` is non-empty); "All" chip always first
+- `ComposerRowView` gains optional `epoch: OOEpoch?` parameter; shows epoch name as secondary line when non-nil
+- Filtering is purely client-side against the already-loaded LMS composer array (no additional network calls at filter time)
+
+### Known New Weaknesses Introduced in Phase 8
+
+| Area | Detail | Severity |
+|------|--------|----------|
+| OO composer cache cold start | First app session with no cache fetches 26 endpoints in parallel; takes 2–4 s on slow connections; era chips invisible until complete | Low — chips appear progressively; list is still browsable |
+| Radio replenishment is genre-only | `radioTracks(seedTrack:)` uses first genre tag; multi-genre or untagged tracks fall back to random library sample | Low — random fallback is functionally useful |
+| ComposerListView epoch lookup false negatives | LMS composer names may differ from OO names (different romanisation, different name order); unmatched composers show no epoch label and are excluded from epoch-filtered views | Medium — only affects composers whose name doesn't match any OO entry exactly |
+| CrossfadeShapePreview layout | Canvas occupies 52pt height; may feel cramped on compact widths but is purely decorative | Low |

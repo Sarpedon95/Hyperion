@@ -63,6 +63,9 @@ struct NowPlayingView: View {
     @State private var dragProgress:      Double = 0
     @State private var isPillPulsing:     Bool = false
     @State private var showProfileSheet:  Bool = false
+    @State private var showInlineLyrics:  Bool = false
+    @State private var inlineLyrics:      InlineLyricsState = .loading
+    @State private var showRadioSession:  Bool = false
 
     // MARK: - Derived
 
@@ -109,9 +112,18 @@ struct NowPlayingView: View {
                     artworkSection
                         .padding(.top, 20)
 
+                    if showInlineLyrics {
+                        InlineLyricsPanel(state: inlineLyrics, player: player) {
+                            showLyrics = true
+                        }
+                        .padding(.horizontal, 24)
+                        .padding(.top, 16)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                    }
+
                     trackInfo
                         .padding(.horizontal, 24)
-                        .padding(.top, 20)
+                        .padding(.top, showInlineLyrics ? 12 : 20)
 
                     progressSection
                         .padding(.horizontal, 24)
@@ -154,12 +166,33 @@ struct NowPlayingView: View {
         .sheet(isPresented: $showProfileSheet) {
             ProfileQuickSettingsSheet(profileManager: profileManager, player: player)
         }
+        .sheet(isPresented: $showRadioSession) {
+            RadioSessionView()
+        }
         .preferredColorScheme(.dark)
         .animation(.spring(response: 0.36, dampingFraction: 0.80), value: showQueuePanel)
         .onAppear { isPillPulsing = true }
         .onChange(of: player.currentTrack?.id) { _, _ in
             isDraggingProgress = false
             dragProgress       = 0
+            inlineLyrics       = .loading
+        }
+        .task(id: player.currentTrack?.id) {
+            guard let track = player.currentTrack else { inlineLyrics = .unavailable; return }
+            if let cached = LyricsService.shared.cachedResult(trackID: track.id) {
+                inlineLyrics = InlineLyricsState(from: cached)
+                return
+            }
+            let artist = track.composer ?? track.albumartist ?? track.trackartist ?? track.title
+            let title  = (track.work?.isEmpty == false ? track.work : nil) ?? track.title
+            let result = await LyricsService.shared.lyrics(
+                artistName: artist,
+                trackName:  title,
+                albumName:  track.album.flatMap { $0.isEmpty ? nil : $0 },
+                duration:   (track.duration ?? 0) > 0 ? track.duration : nil,
+                trackID:    track.id
+            )
+            inlineLyrics = InlineLyricsState(from: result)
         }
     }
 
@@ -181,19 +214,58 @@ struct NowPlayingView: View {
 
             Spacer(minLength: 0)
 
-            Button {
-                Haptics.light()
-                showSignalPath = true
-            } label: {
-                QualityPillView(
-                    label:         qualityPillInfo.label,
-                    dotColor:      qualityPillInfo.dotColor,
-                    isAnimating:   qualityPillInfo.shouldPulse,
-                    isPillPulsing: isPillPulsing
-                )
+            // Centre column: quality pill + profile label stacked vertically.
+            // FIXED: profile pill moved here from trackInfo so it sits in the
+            // nav area, not between the artist name and the scrubber.
+            VStack(spacing: 4) {
+                Button {
+                    Haptics.light()
+                    showSignalPath = true
+                } label: {
+                    QualityPillView(
+                        label:         qualityPillInfo.label,
+                        dotColor:      qualityPillInfo.dotColor,
+                        isAnimating:   qualityPillInfo.shouldPulse,
+                        isPillPulsing: isPillPulsing
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Audio quality: \(qualityPillInfo.label). Tap for signal path.")
+
+                if player.currentTrack != nil {
+                    Button {
+                        Haptics.light()
+                        showProfileSheet = true
+                    } label: {
+                        Text(profileManager.pillLabel(
+                            profile: profileManager.activeProfile,
+                            source:  profileManager.detectionSource
+                        ))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.white.opacity(0.55))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Playback profile: \(profileManager.activeProfile.displayName). Tap to adjust.")
+                }
+
+                if player.isRadioEnabled {
+                    Button {
+                        Haptics.light()
+                        showRadioSession = true
+                    } label: {
+                        Label("Radio", systemImage: "antenna.radiowaves.left.and.right")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(.roonAccent)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Color.roonAccent.opacity(0.15))
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Radio active. Tap to manage.")
+                    .transition(.scale.combined(with: .opacity))
+                }
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Audio quality: \(qualityPillInfo.label). Tap for signal path.")
 
             Spacer(minLength: 0)
 
@@ -219,13 +291,11 @@ struct NowPlayingView: View {
         return ArtworkView(
             coverid:     player.currentTrack?.coverid,
             size:        side,
-            contentMode: .fit          // .fit never zooms or crops
+            contentMode: .fit
         )
-        .frame(maxWidth: .infinity)
-        .aspectRatio(1, contentMode: .fit)
-        .padding(.horizontal, 24)
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .shadow(color: .black.opacity(0.35), radius: 16, x: 0, y: 8)
+        .padding(.horizontal, 24)
         .id(player.currentTrack?.id ?? -1)
     }
 
@@ -254,23 +324,6 @@ struct NowPlayingView: View {
                     .frame(maxWidth: .infinity, alignment: .center)
             }
 
-            if player.currentTrack != nil {
-                Button {
-                    Haptics.light()
-                    showProfileSheet = true
-                } label: {
-                    Text(profileManager.pillLabel(profile: profileManager.activeProfile,
-                                                  source: profileManager.detectionSource))
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(.white.opacity(0.7))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(Color.white.opacity(0.12))
-                        .clipShape(Capsule())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Playback profile: \(profileManager.activeProfile.displayName). Tap to adjust.")
-            }
         }
         .frame(maxWidth: .infinity)
     }
@@ -322,13 +375,34 @@ struct NowPlayingView: View {
                     : player.currentTime
                 Text(formatTime(displayTime))
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(.white.opacity(0.55))
                 Spacer()
                 Text(formatTime(effectiveDuration))
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(.white.opacity(0.55))
+            }
+
+            if let info = workProgressInfo {
+                WorkProgressBar(progress: info.progress,
+                                title: info.title,
+                                elapsed: info.elapsed,
+                                total: info.total)
+                    .padding(.top, 8)
             }
         }
+    }
+
+    private var workProgressInfo: (progress: Double, title: String, elapsed: Double, total: Double)? {
+        guard let group = player.currentWorkGroup,
+              group.tracks.count > 1,
+              !group.isFlatFallbackGroup,
+              let currentTrack = player.currentTrack else { return nil }
+        let trackIdx = group.tracks.firstIndex(where: { $0.id == currentTrack.id }) ?? 0
+        let completedDuration = group.tracks.prefix(trackIdx).compactMap(\.duration).reduce(0, +)
+        let elapsed = completedDuration + player.currentTime
+        let total = group.totalDuration
+        guard total > 0 else { return nil }
+        return (progress: min(1, elapsed / total), title: group.workTitle, elapsed: elapsed, total: total)
     }
 
     // MARK: - Transport controls
@@ -353,7 +427,7 @@ struct NowPlayingView: View {
                 Haptics.light()
                 player.previousTrack()
             } label: {
-                Image(systemName: "backward.fill")
+                Image(systemName: "backward.end.fill")
                     .font(.system(size: 28))
                     .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
@@ -383,7 +457,7 @@ struct NowPlayingView: View {
                 Haptics.light()
                 player.nextTrack()
             } label: {
-                Image(systemName: "forward.fill")
+                Image(systemName: "forward.end.fill")
                     .font(.system(size: 28))
                     .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
@@ -413,7 +487,7 @@ struct NowPlayingView: View {
 
     private var bottomToolbar: some View {
         HStack(spacing: 0) {
-            BottomToolbarButton(systemName: "line.3.horizontal", accessibilityLabel: "Queue") {
+            BottomToolbarButton(systemName: "list.bullet", accessibilityLabel: "Queue") {
                 Haptics.light()
                 withAnimation { showQueuePanel = true }
             }
@@ -450,13 +524,33 @@ struct NowPlayingView: View {
             }
             .disabled(player.currentTrack == nil)
             Spacer(minLength: 0)
+            if inlineLyrics.hasContent {
+                BottomToolbarButton(
+                    systemName: showInlineLyrics ? "quote.bubble.fill" : "quote.bubble",
+                    tint: showInlineLyrics ? .white : .white.opacity(0.36),
+                    accessibilityLabel: showInlineLyrics ? "Hide lyrics" : "Show lyrics"
+                ) {
+                    Haptics.light()
+                    withAnimation(.spring(response: 0.32, dampingFraction: 0.78)) {
+                        showInlineLyrics.toggle()
+                    }
+                }
+                Spacer(minLength: 0)
+            }
             BottomToolbarButton(
-                systemName: "quote.bubble",
-                tint: .white.opacity(0.36),
-                accessibilityLabel: "Lyrics"
+                systemName: player.isRadioEnabled
+                    ? "antenna.radiowaves.left.and.right.circle.fill"
+                    : "antenna.radiowaves.left.and.right.circle",
+                tint: player.isRadioEnabled ? .roonAccent : .white.opacity(0.36),
+                accessibilityLabel: player.isRadioEnabled ? "Radio on – tap to manage" : "Start radio"
             ) {
                 Haptics.light()
-                showLyrics = true
+                if player.isRadioEnabled {
+                    showRadioSession = true
+                } else if let track = player.currentTrack {
+                    player.startRadio(seed: track)
+                    showRadioSession = true
+                }
             }
         }
     }
@@ -555,6 +649,195 @@ struct NowPlayingView: View {
 
     private func formatTime(_ seconds: Double) -> String {
         TimeFormatting.formatDuration(seconds, placeholder: "0:00")
+    }
+}
+
+// MARK: - Work progress bar
+
+private struct WorkProgressBar: View {
+    let progress: Double
+    let title: String
+    let elapsed: Double
+    let total: Double
+
+    var body: some View {
+        VStack(spacing: 4) {
+            GeometryReader { geo in
+                let width = max(geo.size.width, 1)
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(Color.white.opacity(0.18))
+                        .frame(height: 3)
+                    Capsule()
+                        .fill(Color.white.opacity(0.65))
+                        .frame(width: width * CGFloat(max(0, min(1, progress))), height: 3)
+                }
+            }
+            .frame(height: 3)
+
+            HStack {
+                Text(title)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.white.opacity(0.45))
+                    .lineLimit(1)
+                Spacer()
+                Text("\(TimeFormatting.formatDuration(elapsed)) / \(TimeFormatting.formatDuration(total))")
+                    .font(.system(size: 10).monospacedDigit())
+                    .foregroundColor(.white.opacity(0.35))
+            }
+        }
+    }
+}
+
+// MARK: - Inline lyrics state
+
+enum InlineLyricsState {
+    case loading
+    case synced([LyricsLine])
+    case plain(String)
+    case unavailable
+
+    init(from result: LyricsResult) {
+        switch result {
+        case .synced(let lines): self = .synced(lines)
+        case .plain(let text):   self = .plain(text)
+        case .instrumental, .unavailable: self = .unavailable
+        }
+    }
+
+    var hasContent: Bool {
+        switch self {
+        case .synced, .plain: return true
+        default:              return false
+        }
+    }
+}
+
+// MARK: - Inline lyrics panel
+
+private struct InlineLyricsPanel: View {
+    let state: InlineLyricsState
+    @ObservedObject var player: PlayerViewModel
+    var onExpandTap: () -> Void
+
+    @State private var activeIndex: Int = 0
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Group {
+                switch state {
+                case .loading:
+                    ProgressView().tint(.white.opacity(0.4))
+                        .frame(maxWidth: .infinity, minHeight: 120)
+
+                case .synced(let lines):
+                    syncedPanel(lines: lines)
+
+                case .plain(let text):
+                    plainPanel(text: text)
+
+                case .unavailable:
+                    EmptyView()
+                }
+            }
+
+            Button(action: onExpandTap) {
+                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.white.opacity(0.45))
+                    .padding(8)
+            }
+            .buttonStyle(.plain)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 140)
+        .background(Color.black.opacity(0.18))
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+    }
+
+    private func syncedPanel(lines: [LyricsLine]) -> some View {
+        ScrollViewReader { proxy in
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 0) {
+                    Color.clear.frame(height: 50)
+                    ForEach(Array(lines.enumerated()), id: \.element.id) { idx, line in
+                        Text(line.text.isEmpty ? "•" : line.text)
+                            .font(.system(size: 14,
+                                          weight: idx == activeIndex ? .semibold : .regular))
+                            .foregroundColor(.white.opacity(idx == activeIndex ? 1.0 : 0.4))
+                            .multilineTextAlignment(.center)
+                            .lineLimit(2)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 6)
+                            .frame(maxWidth: .infinity)
+                            .id(line.id)
+                            .animation(.easeOut(duration: 0.18), value: activeIndex)
+                    }
+                    Color.clear.frame(height: 50)
+                }
+            }
+            .allowsHitTesting(false)
+            .onChange(of: activeIndex) { _, idx in
+                guard idx < lines.count else { return }
+                withAnimation(.easeInOut(duration: 0.22)) {
+                    proxy.scrollTo(lines[idx].id, anchor: .center)
+                }
+            }
+            .onChange(of: player.currentTime) { _, time in
+                let newIdx = lineIndex(for: time, in: lines)
+                if newIdx != activeIndex { activeIndex = newIdx }
+            }
+            .onAppear {
+                let idx = lineIndex(for: player.currentTime, in: lines)
+                activeIndex = idx
+                if idx < lines.count {
+                    proxy.scrollTo(lines[idx].id, anchor: .center)
+                }
+            }
+        }
+        .mask(
+            LinearGradient(
+                stops: [
+                    .init(color: .clear, location: 0),
+                    .init(color: .black, location: 0.18),
+                    .init(color: .black, location: 0.82),
+                    .init(color: .clear, location: 1)
+                ],
+                startPoint: .top, endPoint: .bottom
+            )
+        )
+    }
+
+    private func plainPanel(text: String) -> some View {
+        ScrollView(showsIndicators: false) {
+            Text(text)
+                .font(.system(size: 13))
+                .foregroundColor(.white.opacity(0.55))
+                .multilineTextAlignment(.center)
+                .lineSpacing(5)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+        }
+        .mask(
+            LinearGradient(
+                stops: [
+                    .init(color: .clear, location: 0),
+                    .init(color: .black, location: 0.12),
+                    .init(color: .black, location: 0.88),
+                    .init(color: .clear, location: 1)
+                ],
+                startPoint: .top, endPoint: .bottom
+            )
+        )
+    }
+
+    private func lineIndex(for time: TimeInterval, in lines: [LyricsLine]) -> Int {
+        let adjusted = time + 0.3
+        var result = 0
+        for (i, line) in lines.enumerated() {
+            if line.time <= adjusted { result = i } else { break }
+        }
+        return result
     }
 }
 

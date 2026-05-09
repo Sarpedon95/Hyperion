@@ -146,6 +146,18 @@ struct Album: Identifiable, Hashable, Codable {
     let artwork_track_id: String?
     let composer: String?
     let isClassical: Int?
+    let conductor: String?
+    let band: String?
+    let dynamicRange: Int?
+
+    init(id: Int, album: String, artist: String?, year: Int?,
+         artwork_track_id: String?, composer: String?, isClassical: Int?,
+         conductor: String? = nil, band: String? = nil, dynamicRange: Int? = nil) {
+        self.id = id; self.album = album; self.artist = artist; self.year = year
+        self.artwork_track_id = artwork_track_id; self.composer = composer
+        self.isClassical = isClassical; self.conductor = conductor
+        self.band = band; self.dynamicRange = dynamicRange
+    }
 }
 
 struct Composer: Identifiable, Hashable, Codable {

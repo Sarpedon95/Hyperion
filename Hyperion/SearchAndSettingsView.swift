@@ -44,14 +44,23 @@ enum SearchScope: String, CaseIterable {
     case all     = "All"
 }
 
+struct OOWorkResult: Identifiable {
+    let work: OOWork
+    let composer: OOComposer
+    var id: String { work.id }
+}
+
 @MainActor
 final class SearchViewModel: ObservableObject {
     @Published var searchText: String = ""
     @Published var results: (composers: [Composer], works: [Work], albums: [Album], artists: [Artist], tracks: [Track], genres: [Genre], playlists: [LocalPlaylist]) = ([], [], [], [], [], [], [])
     @Published var isSearching: Bool = false
     @Published var scope: SearchScope = .all
+    @Published var ooComposers: [OOComposer] = []
+    @Published var ooWorks: [OOWorkResult] = []
 
     private var searchTask: Task<Void, Never>? = nil
+    private var ooSearchTask: Task<Void, Never>? = nil
     private var searchSequence: Int = 0
 
     private var cache: [String: LibraryViewModel.SearchResults] = [:]
@@ -60,58 +69,85 @@ final class SearchViewModel: ObservableObject {
         !results.composers.isEmpty || !results.works.isEmpty || !results.albums.isEmpty
             || !results.artists.isEmpty || !results.tracks.isEmpty
             || !results.genres.isEmpty || !results.playlists.isEmpty
+            || !ooComposers.isEmpty || !ooWorks.isEmpty
     }
 
     func performSearch(query: String, library: LibraryViewModel) {
         searchTask?.cancel()
+        ooSearchTask?.cancel()
         searchSequence += 1
         let sequence = searchSequence
         let key = query.lowercased().trimmingCharacters(in: .whitespaces)
         guard !key.isEmpty else {
             results = ([], [], [], [], [], [], [])
+            ooComposers = []
+            ooWorks = []
             isSearching = false
             return
         }
+
+        ooComposers = []
+        ooWorks = []
 
         // 1. Return cached results immediately if available.
         if let cached = cache[key] {
             results = cached
             isSearching = false
-            return
+        } else {
+            isSearching = true
+
+            // 2. Show in-memory results immediately while waiting for the server.
+            let local = library.searchLocal(query: key)
+            let hasLocal = !local.composers.isEmpty || !local.works.isEmpty || !local.albums.isEmpty
+                || !local.artists.isEmpty || !local.tracks.isEmpty
+            if hasLocal {
+                results = local
+                isSearching = false  // server results will replace these silently
+            }
+
+            // 3. 150 ms debounce, then fetch from server (skipped in Library scope).
+            searchTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 150_000_000)
+                guard !Task.isCancelled, let self, self.searchSequence == sequence else { return }
+                guard self.scope == .all else {
+                    if !hasLocal { self.isSearching = false }
+                    return
+                }
+                if !hasLocal { self.isSearching = true }
+                let r = await library.search(query: key)
+                guard !Task.isCancelled, self.searchSequence == sequence else { return }
+                RecentSearchStore.shared.add(key)
+                self.results = r
+                self.isSearching = false
+                self.cache[key] = r
+            }
         }
 
-        isSearching = true
-
-        // 2. Show in-memory results immediately while waiting for the server.
-        let local = library.searchLocal(query: key)
-        let hasLocal = !local.composers.isEmpty || !local.works.isEmpty || !local.albums.isEmpty
-            || !local.artists.isEmpty || !local.tracks.isEmpty
-        if hasLocal {
-            results = local
-            isSearching = false  // server results will replace these silently
-        }
-
-        // 3. 150 ms debounce, then fetch from server (skipped in Library scope).
-        searchTask = Task { [weak self] in
+        // 4. OpenOpus omnisearch in parallel (All scope only, same debounce).
+        ooSearchTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 150_000_000)
             guard !Task.isCancelled, let self, self.searchSequence == sequence else { return }
-            guard self.scope == .all else {
-                if !hasLocal { self.isSearching = false }
-                return
-            }
-            if !hasLocal { self.isSearching = true }
-            let r = await library.search(query: key)
+            guard self.scope == .all else { return }
+            let raw = (try? await OpenOpusService.shared.omnisearch(key)) ?? []
             guard !Task.isCancelled, self.searchSequence == sequence else { return }
-            RecentSearchStore.shared.add(key)
-            self.results = r
-            self.isSearching = false
-            self.cache[key] = r
+            self.ooComposers = raw.filter { $0.type == "composer" }.map { res in
+                OOComposer(id: res.id, name: res.name, complete_name: res.name,
+                           epoch: res.epoch, portrait: res.portrait, birth: nil, death: nil)
+            }
+            self.ooWorks = raw.filter { $0.type == "work" }.compactMap { res -> OOWorkResult? in
+                guard let comp = res.composer else { return nil }
+                let work = OOWork(id: res.id, title: res.name, subtitle: nil,
+                                  searchterms: nil, popular: nil, recommended: nil, genre: nil)
+                return OOWorkResult(work: work, composer: comp)
+            }
         }
     }
 
     func cancelSearch() {
         searchTask?.cancel()
         searchTask = nil
+        ooSearchTask?.cancel()
+        ooSearchTask = nil
         isSearching = false
     }
 }
@@ -162,7 +198,9 @@ struct SearchView: View {
                     } else if !vm.hasResults {
                         NoResultsView(query: vm.searchText)
                     } else {
-                        SearchResultsView(results: vm.results)
+                        SearchResultsView(results: vm.results,
+                                         ooComposers: vm.ooComposers,
+                                         ooWorks: vm.ooWorks)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -542,6 +580,8 @@ struct ComposerSmallRow: View {
 
 struct SearchResultsView: View {
     let results: (composers: [Composer], works: [Work], albums: [Album], artists: [Artist], tracks: [Track], genres: [Genre], playlists: [LocalPlaylist])
+    var ooComposers: [OOComposer] = []
+    var ooWorks: [OOWorkResult] = []
     @ObservedObject private var library = LibraryViewModel.shared
     @ObservedObject private var player  = PlayerViewModel.shared
 
@@ -736,6 +776,46 @@ struct SearchResultsView: View {
                     }
                 }
 
+                if !ooComposers.isEmpty {
+                    searchSection("CLASSICAL COMPOSERS") {
+                        LazyVStack(spacing: 0) {
+                            ForEach(ooComposers) { composer in
+                                NavigationLink {
+                                    ComposerDetailView(composer: composer)
+                                } label: {
+                                    OOComposerSearchRow(composer: composer)
+                                }
+                                .buttonStyle(.plain)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
+                                if composer.id != ooComposers.last?.id {
+                                    Color.roonBorder.frame(height: 0.5).padding(.leading, 64)
+                                }
+                            }
+                        }
+                        .background(Color.roonSurface)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .padding(.horizontal, 16)
+                    }
+                }
+
+                if !ooWorks.isEmpty {
+                    searchSection("CLASSICAL WORKS") {
+                        LazyVStack(spacing: 0) {
+                            ForEach(ooWorks) { entry in
+                                OOWorkSearchRow(work: entry.work, composer: entry.composer)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                if entry.id != ooWorks.last?.id {
+                                    Color.roonBorder.frame(height: 0.5).padding(.leading, 64)
+                                }
+                            }
+                        }
+                        .background(Color.roonSurface)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .padding(.horizontal, 16)
+                    }
+                }
+
                 Spacer(minLength: 80)
             }
             .padding(.top, 4)
@@ -910,6 +990,124 @@ struct NoResultsView: View {
     }
 }
 
+// MARK: - OO search result rows
+
+private struct OOComposerSearchRow: View {
+    let composer: OOComposer
+    var body: some View {
+        HStack(spacing: 14) {
+            ZStack {
+                Circle().fill(Color.roonElevated).frame(width: 38, height: 38)
+                Text(NameFormatting.initials(composer.complete_name))
+                    .font(.roonTitle(12))
+                    .foregroundColor(.roonAccent)
+            }
+            .padding(.leading, 4)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(composer.complete_name)
+                    .font(.roonBody(15, weight: .medium))
+                    .foregroundColor(.roonPrimary)
+                    .lineLimit(1)
+                if let epoch = composer.epoch, !epoch.isEmpty {
+                    Text(epoch)
+                        .font(.roonBody(12))
+                        .foregroundColor(.roonTertiary)
+                }
+            }
+            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.roonTertiary)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .contentShape(Rectangle())
+    }
+}
+
+private struct OOWorkSearchRow: View {
+    let work: OOWork
+    let composer: OOComposer
+
+    @State private var isResolving = false
+    @State private var albumNav: AlbumNavRequest? = nil
+    @State private var pickerNav: PickerNavRequest? = nil
+    @State private var showNotFound = false
+
+    var body: some View {
+        Button { resolveAndNavigate() } label: {
+            HStack(spacing: 14) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.roonElevated)
+                        .frame(width: 38, height: 38)
+                    Image(systemName: "music.note")
+                        .font(.system(size: 14))
+                        .foregroundColor(.roonAccent)
+                }
+                .padding(.leading, 4)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(work.title)
+                        .font(.roonBody(14, weight: .medium))
+                        .foregroundColor(.roonPrimary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                    Text(composer.complete_name)
+                        .font(.roonBody(12))
+                        .foregroundColor(.roonSecondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+                if isResolving {
+                    ProgressView().scaleEffect(0.75).tint(.roonAccent)
+                        .frame(width: 32)
+                } else if showNotFound {
+                    Text("Not found")
+                        .font(.roonBody(11))
+                        .foregroundColor(.roonTertiary)
+                } else {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.roonTertiary)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .navigationDestination(item: $albumNav) { req in
+            AlbumDetailView(album: req.album, scrollToTrackID: req.firstTrackID, autoPlay: req.autoPlay)
+        }
+        .navigationDestination(item: $pickerNav) { req in
+            WorkRecordingPickerView(workTitle: req.workTitle, composerName: req.composerName, entries: req.entries)
+        }
+    }
+
+    private func resolveAndNavigate() {
+        guard !isResolving else { return }
+        isResolving = true
+        Task {
+            let vm = ComposerDetailViewModel(composer: composer)
+            let nav = await vm.resolveLibraryDestination(work: work, composer: composer)
+            switch nav {
+            case .singleAlbum(let album, let firstTrackID, let autoPlay):
+                albumNav = AlbumNavRequest(album: album, firstTrackID: firstTrackID, autoPlay: autoPlay)
+            case .picker(let entries):
+                pickerNav = PickerNavRequest(workID: work.id, workTitle: work.title,
+                                            composerName: composer.complete_name, entries: entries)
+            case .notFound:
+                showNotFound = true
+                Task {
+                    try? await Task.sleep(nanoseconds: 2_500_000_000)
+                    showNotFound = false
+                }
+            }
+            isResolving = false
+        }
+    }
+}
+
 // MARK: - Settings
 
 struct SettingsView: View {
@@ -1077,6 +1275,9 @@ struct SettingsView: View {
                 .listRowBackground(Color.roonSurface)
 
                 AudiomuseSectionView(audiomuse: audiomuse)
+                    .listRowBackground(Color.roonSurface)
+
+                HIPSettingsSection()
                     .listRowBackground(Color.roonSurface)
 
                 // MARK: - Accounts
@@ -1457,6 +1658,23 @@ private struct ProfileSettingsDetail: View {
                 .tint(.roonAccent)
             }
             .padding(.vertical, 2)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Curve Shape").font(.roonBody(13)).foregroundColor(.roonSecondary)
+                Picker("Curve Shape", selection: Binding(
+                    get: { settings.crossfadeShape },
+                    set: { v in profileManager.updateSettings(for: profile) { $0.crossfadeShape = v } }
+                )) {
+                    ForEach(CrossfadeShape.allCases) { shape in
+                        Text(shape.rawValue).tag(shape)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                CrossfadeShapePreview(shape: settings.crossfadeShape)
+                    .frame(height: 52)
+            }
+            .padding(.vertical, 2)
         }
 
         Toggle(isOn: Binding(
@@ -1703,5 +1921,94 @@ private struct DiscogsLoginSheet: View {
             }
             .preferredColorScheme(.dark)
         }
+    }
+}
+
+// MARK: - HIP Settings Section
+
+private struct HIPSettingsSection: View {
+    @State private var customNames: [String] = HIPEnsembleClassifier.shared.userNames
+    @State private var newEntry: String = ""
+
+    var body: some View {
+        Section {
+            ForEach(Array(customNames.enumerated()), id: \.element) { _, name in
+                Text(name)
+                    .font(.roonBody(14))
+                    .foregroundColor(.roonPrimary)
+            }
+            .onDelete { indices in
+                customNames.remove(atOffsets: indices)
+                HIPEnsembleClassifier.shared.userNames = customNames
+            }
+
+            HStack {
+                TextField("Add conductor or ensemble…", text: $newEntry)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .foregroundColor(.roonPrimary)
+                    .font(.roonBody(14))
+                Button {
+                    let trimmed = newEntry.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !trimmed.isEmpty, !customNames.contains(trimmed.lowercased()) else { return }
+                    customNames.append(trimmed.lowercased())
+                    HIPEnsembleClassifier.shared.userNames = customNames
+                    newEntry = ""
+                } label: {
+                    Image(systemName: "plus.circle.fill")
+                        .foregroundColor(.roonAccent)
+                }
+                .buttonStyle(.plain)
+                .disabled(newEntry.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        } header: { Text("CLASSICAL — HIP PERFORMERS") } footer: {
+            Text("Hyperion tags recordings as Historically Informed Performance (HIP) when a conductor or ensemble name matches this list. Swipe to remove; tap + to add.")
+                .font(.roonBody(12)).foregroundColor(.roonTertiary)
+        }
+    }
+}
+
+// MARK: - Crossfade Shape Preview
+
+private struct CrossfadeShapePreview: View {
+    let shape: CrossfadeShape
+
+    var body: some View {
+        Canvas { ctx, size in
+            let w = size.width
+            let h = size.height
+            let steps = 120
+            let midX  = w / 2
+
+            // Fade-out curve (white) — outgoing track volume
+            var outPath = Path()
+            for i in 0...steps {
+                let t = Float(i) / Float(steps)
+                let x = CGFloat(t) * midX
+                let y = h - CGFloat(shape.gain(t: t, fadingOut: true)) * h
+                if i == 0 { outPath.move(to: CGPoint(x: x, y: y)) }
+                else       { outPath.addLine(to: CGPoint(x: x, y: y)) }
+            }
+            ctx.stroke(outPath, with: .color(.white.opacity(0.75)), lineWidth: 1.5)
+
+            // Fade-in curve (accent) — incoming track volume
+            var inPath = Path()
+            for i in 0...steps {
+                let t = Float(i) / Float(steps)
+                let x = midX + CGFloat(t) * midX
+                let y = h - CGFloat(shape.gain(t: t, fadingOut: false)) * h
+                if i == 0 { inPath.move(to: CGPoint(x: x, y: y)) }
+                else       { inPath.addLine(to: CGPoint(x: x, y: y)) }
+            }
+            ctx.stroke(inPath, with: .color(.roonAccent.opacity(0.85)), lineWidth: 1.5)
+
+            // Centre divider
+            var div = Path()
+            div.move(to: CGPoint(x: midX, y: 0))
+            div.addLine(to: CGPoint(x: midX, y: h))
+            ctx.stroke(div, with: .color(.white.opacity(0.12)), lineWidth: 0.5)
+        }
+        .background(Color.roonElevated.opacity(0.5))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 }

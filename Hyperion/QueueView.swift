@@ -318,6 +318,12 @@ struct QueueTrackRow: View {
             } label: {
                 Label("Add to Playlist", systemImage: "music.note.list")
             }
+            Button {
+                Haptics.light()
+                PlayerViewModel.shared.startRadio(seed: track)
+            } label: {
+                Label("Start Radio", systemImage: "antenna.radiowaves.left.and.right")
+            }
         }
         .sheet(isPresented: $showingAddToPlaylist) {
             AddToPlaylistSheet(tracks: [track])

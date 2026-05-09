@@ -1,5 +1,29 @@
 import Foundation
 
+// MARK: - Crossfade shape
+
+enum CrossfadeShape: String, Codable, CaseIterable, Identifiable {
+    case linear     = "Linear"
+    case equalPower = "Equal Power"
+    case sCurve     = "S-Curve"
+
+    var id: String { rawValue }
+
+    /// Returns the gain (0–1) for a given normalised position `t` (0–1).
+    /// `fadingOut` = true for the outgoing stream, false for the incoming stream.
+    func gain(t: Float, fadingOut: Bool) -> Float {
+        switch self {
+        case .linear:
+            return fadingOut ? max(0, 1 - t) : min(1, t)
+        case .equalPower:
+            return fadingOut ? cos(t * .pi / 2) : sin(t * .pi / 2)
+        case .sCurve:
+            return fadingOut ? Float((1 + cos(Double(t) * .pi)) / 2)
+                             : Float((1 - cos(Double(t) * .pi)) / 2)
+        }
+    }
+}
+
 // MARK: - Crossfeed (BS2B) presets
 
 /// Standard Bauer stereophonic-to-binaural coefficient sets.
@@ -167,6 +191,7 @@ struct ProfileSettings: Codable {
     var gaplessEnabled:    Bool
     var crossfadeEnabled:  Bool
     var crossfadeDuration: Double
+    var crossfadeShape:    CrossfadeShape
     var crossfeedEnabled:  Bool
     var crossfeedPreset:   CrossfeedPreset
     var interTrackGap:     InterTrackGap
@@ -176,6 +201,7 @@ struct ProfileSettings: Codable {
             gaplessEnabled:    profile.defaultGaplessEnabled,
             crossfadeEnabled:  profile.defaultCrossfadeEnabled,
             crossfadeDuration: profile.defaultCrossfadeDuration,
+            crossfadeShape:    .equalPower,
             crossfeedEnabled:  profile.defaultCrossfeedEnabled,
             crossfeedPreset:   profile.defaultCrossfeedPreset,
             interTrackGap:     profile.defaultInterTrackGap
