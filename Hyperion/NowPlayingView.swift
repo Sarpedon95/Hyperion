@@ -66,6 +66,8 @@ struct NowPlayingView: View {
     @State private var showInlineLyrics:  Bool = false
     @State private var inlineLyrics:      InlineLyricsState = .loading
     @State private var showRadioSession:  Bool = false
+    @State private var showEQ:            Bool = false
+    @State private var showMore:          Bool = false
 
     // MARK: - Derived
 
@@ -101,68 +103,219 @@ struct NowPlayingView: View {
 
     var body: some View {
         ZStack {
-            backgroundLayer.ignoresSafeArea()
+            // 1. BACKGROUND
+            FlatTintBackground(coverid: player.currentTrack?.coverid ?? "")
+                .ignoresSafeArea()
 
+            // 2. CONTENT
             VStack(spacing: 0) {
-                headerBar
-                    .padding(.horizontal, 20)
-                    .padding(.top, 8)
 
-                artworkSection
-                    .padding(.top, 20)
-
-                if showInlineLyrics {
-                    InlineLyricsPanel(state: inlineLyrics, player: player) {
-                        showLyrics = true
-                    }
-                    .padding(.horizontal, 24)
-                    .padding(.top, 16)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-                }
-
-                trackInfo
-                    .padding(.horizontal, 24)
-                    .padding(.top, showInlineLyrics ? 12 : 20)
-
-                progressSection
-                    .padding(.horizontal, 24)
-                    .padding(.top, 16)
-
+                // Header bar
                 HStack {
-                    Text(formatTime(player.currentTime))
-                        .font(.caption2)
-                        .monospacedDigit()
-                        .foregroundColor(.white.opacity(0.55))
+                    Button { dismiss() } label: {
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundColor(.white)
+                            .frame(width: 44, height: 44)
+                    }
                     Spacer()
-                    Text(formatTime(player.duration))
+                    VStack(spacing: 2) {
+                        // Quality pill
+                        Button { showSignalPath = true } label: {
+                            HStack(spacing: 6) {
+                                Circle()
+                                    .fill(qualityPillInfo.dotColor)
+                                    .frame(width: 8, height: 8)
+                                Text(qualityPillInfo.label)
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundColor(.white)
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.white.opacity(0.6))
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(Capsule().fill(Color.white.opacity(0.15)))
+                        }
+                        .buttonStyle(.plain)
+                        // Profile label
+                        Text(profileManager.pillLabel(
+                            profile: profileManager.activeProfile,
+                            source:  profileManager.detectionSource
+                        ))
                         .font(.caption2)
-                        .monospacedDigit()
-                        .foregroundColor(.white.opacity(0.55))
+                        .foregroundColor(.white.opacity(0.5))
+                    }
+                    Spacer()
+                    Button { withAnimation { showQueuePanel = true } } label: {
+                        Image(systemName: "list.bullet")
+                            .font(.system(size: 18))
+                            .foregroundColor(.white)
+                            .frame(width: 44, height: 44)
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.top, 8)
+
+                // Artwork
+                let screenWidth = UIApplication.shared.connectedScenes
+                    .compactMap { $0 as? UIWindowScene }
+                    .first?.screen.bounds.width ?? 390
+                let side = screenWidth - 48
+                ArtworkView(
+                    coverid:     player.currentTrack?.coverid,
+                    size:        side,
+                    contentMode: .fit
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .shadow(color: .black.opacity(0.4), radius: 20, x: 0, y: 10)
+                .padding(.horizontal, 24)
+                .padding(.top, 24)
+                .id(player.currentTrack?.id ?? -1)
+
+                // Track info
+                VStack(spacing: 4) {
+                    Text(player.currentTrack?.title ?? "")
+                        .font(.system(size: 20, weight: .bold))
+                        .foregroundColor(.white)
+                        .lineLimit(1)
+                    let artistLine = player.currentTrack?.composer
+                        ?? player.currentTrack?.albumartist
+                        ?? player.currentTrack?.trackartist
+                        ?? ""
+                    if !artistLine.isEmpty {
+                        Text(artistLine)
+                            .font(.system(size: 16))
+                            .foregroundColor(.white.opacity(0.65))
+                            .lineLimit(1)
+                    }
                 }
                 .padding(.horizontal, 24)
+                .padding(.top, 20)
 
-                if let info = workProgressInfo {
-                    WorkProgressBar(progress: info.progress,
-                                    title: info.title,
-                                    elapsed: info.elapsed,
-                                    total: info.total)
-                        .padding(.horizontal, 24)
-                        .padding(.top, 4)
+                // Scrubber
+                VStack(spacing: 4) {
+                    GeometryReader { geo in
+                        let progress: CGFloat = isDraggingProgress
+                            ? CGFloat(dragProgress)
+                            : (player.duration > 0 ? CGFloat(player.currentTime / player.duration) : 0)
+                        ZStack(alignment: .leading) {
+                            Capsule()
+                                .fill(Color.white.opacity(0.25))
+                                .frame(height: 4)
+                            Capsule()
+                                .fill(Color.white)
+                                .frame(width: geo.size.width * progress, height: 4)
+                            Circle()
+                                .fill(Color.white)
+                                .frame(width: 16, height: 16)
+                                .offset(x: (geo.size.width - 16) * progress)
+                        }
+                        .frame(width: geo.size.width, height: 44)
+                        .contentShape(Rectangle())
+                        .gesture(DragGesture(minimumDistance: 0)
+                            .onChanged { v in
+                                let pct = Double(v.location.x / geo.size.width)
+                                dragProgress = min(max(pct, 0), 1)
+                                isDraggingProgress = true
+                            }
+                            .onEnded { _ in
+                                isDraggingProgress = false
+                                player.seek(to: dragProgress * effectiveDuration)
+                            }
+                        )
+                    }
+                    .frame(height: 44)
+
+                    HStack {
+                        Text(formatTime(isDraggingProgress ? dragProgress * effectiveDuration : player.currentTime))
+                        Spacer()
+                        Text(formatTime(effectiveDuration))
+                    }
+                    .font(.caption2)
+                    .monospacedDigit()
+                    .foregroundColor(.white.opacity(0.55))
                 }
+                .padding(.horizontal, 24)
+                .padding(.top, 16)
 
-                transportControls
-                    .padding(.horizontal, 20)
-                    .padding(.top, 12)
+                // Transport
+                HStack(spacing: 0) {
+                    Spacer()
+                    Button { player.cycleRepeat() } label: {
+                        Image(systemName: player.repeatMode == 1 ? "repeat.1" : "repeat")
+                            .opacity(player.repeatMode == 0 ? 0.35 : 1)
+                    }
+                    Spacer()
+                    Button { player.previousTrack() } label: {
+                        Image(systemName: "backward.end.fill")
+                            .font(.system(size: 26))
+                    }
+                    Spacer()
+                    Button { player.togglePlayPause() } label: {
+                        ZStack {
+                            if player.isLoading {
+                                ProgressView().tint(.white).scaleEffect(1.4)
+                            } else {
+                                Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                                    .font(.system(size: 48))
+                            }
+                        }
+                        .frame(width: 76, height: 76)
+                        .contentShape(Rectangle())
+                    }
+                    Spacer()
+                    Button { player.nextTrack() } label: {
+                        Image(systemName: "forward.end.fill")
+                            .font(.system(size: 26))
+                    }
+                    Spacer()
+                    Button { player.toggleShuffle() } label: {
+                        Image(systemName: "shuffle")
+                            .opacity(player.isShuffle ? 1 : 0.35)
+                    }
+                    Spacer()
+                }
+                .foregroundColor(.white)
+                .font(.system(size: 22))
+                .frame(height: 80)
+                .padding(.horizontal, 8)
+                .padding(.top, 8)
 
-                bottomToolbar
-                    .padding(.horizontal, 20)
-                    .padding(.top, 8)
+                // Action row
+                HStack(spacing: 0) {
+                    Spacer()
+                    Button { showLyrics.toggle() } label: {
+                        Image(systemName: showLyrics ? "text.bubble.fill" : "text.bubble")
+                    }
+                    Spacer()
+                    Button {
+                        if let track = player.currentTrack {
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.58)) {
+                                likedTracks.toggle(track)
+                            }
+                        }
+                    } label: {
+                        Image(systemName: likedTracks.isLiked(player.currentTrack) ? "heart.fill" : "heart")
+                            .foregroundColor(likedTracks.isLiked(player.currentTrack) ? .red : .white)
+                    }
+                    Spacer()
+                    Button { showEQ.toggle() } label: {
+                        Image(systemName: "slider.horizontal.3")
+                    }
+                    Spacer()
+                    Button { showMore.toggle() } label: {
+                        Image(systemName: "ellipsis")
+                    }
+                    Spacer()
+                }
+                .foregroundColor(.white)
+                .font(.system(size: 20))
+                .frame(height: 56)
+                .padding(.horizontal, 8)
+
+                Spacer(minLength: 0)
             }
-            .padding(.bottom, 16)
-            .simultaneousGesture(
-                DragGesture()
-                    .onEnded { if $0.translation.height > 80 { dismiss() } }
-            )
 
             if showQueuePanel {
                 queuePanelOverlay
@@ -177,17 +330,14 @@ struct NowPlayingView: View {
                 LyricsView(track: track)
             }
         }
-        .sheet(isPresented: $showAddToPlaylist) {
+        .sheet(isPresented: $showEQ) {
+            ProfileQuickSettingsSheet(profileManager: profileManager, player: player)
+        }
+        .sheet(isPresented: $showMore) {
             if let track = player.currentTrack {
                 AddToPlaylistSheet(tracks: [track])
                     .environment(\.hyperionBottomOverlayHeight, 0)
             }
-        }
-        .sheet(isPresented: $showProfileSheet) {
-            ProfileQuickSettingsSheet(profileManager: profileManager, player: player)
-        }
-        .sheet(isPresented: $showRadioSession) {
-            RadioSessionView()
         }
         .preferredColorScheme(.dark)
         .animation(.spring(response: 0.36, dampingFraction: 0.80), value: showQueuePanel)
