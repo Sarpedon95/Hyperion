@@ -128,6 +128,19 @@ struct NowPlayingView: View {
                     .padding(.horizontal, 24)
                     .padding(.top, 16)
 
+                HStack {
+                    Text(formatTime(player.currentTime))
+                        .font(.caption2)
+                        .monospacedDigit()
+                        .foregroundColor(.white.opacity(0.55))
+                    Spacer()
+                    Text(formatTime(player.duration))
+                        .font(.caption2)
+                        .monospacedDigit()
+                        .foregroundColor(.white.opacity(0.55))
+                }
+                .padding(.horizontal, 24)
+
                 if let info = workProgressInfo {
                     WorkProgressBar(progress: info.progress,
                                     title: info.title,
@@ -300,9 +313,9 @@ struct NowPlayingView: View {
             size:        side,
             contentMode: .fit
         )
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .shadow(color: .black.opacity(0.35), radius: 16, x: 0, y: 8)
         .padding(.horizontal, 24)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .shadow(color: .black.opacity(0.4), radius: 16, x: 0, y: 8)
         .id(player.currentTrack?.id ?? -1)
     }
 
@@ -338,52 +351,35 @@ struct NowPlayingView: View {
     // MARK: - Progress
 
     private var progressSection: some View {
-        VStack(spacing: 4) {
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    // Track background
-                    Capsule()
-                        .fill(Color.white.opacity(0.25))
-                        .frame(height: 4)
-                    // Track fill
-                    Capsule()
-                        .fill(Color.white)
-                        .frame(width: max(0, geo.size.width * CGFloat(isDraggingProgress ? dragProgress : player.progress)), height: 4)
-                    // Thumb
-                    Circle()
-                        .fill(Color.white)
-                        .frame(width: 14, height: 14)
-                        .offset(x: max(0, geo.size.width * CGFloat(isDraggingProgress ? dragProgress : player.progress) - 7))
-                }
-                .frame(height: 44)
-                .contentShape(Rectangle())
-                .gesture(
-                    DragGesture(minimumDistance: 0)
-                        .onChanged { value in
-                            let pct = value.location.x / geo.size.width
-                            dragProgress = Double(min(max(pct, 0), 1))
-                            isDraggingProgress = true
-                        }
-                        .onEnded { _ in
-                            isDraggingProgress = false
-                            player.seek(to: dragProgress * effectiveDuration)
-                        }
-                )
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.white.opacity(0.25))
+                    .frame(height: 4)
+                Capsule()
+                    .fill(Color.white)
+                    .frame(width: max(0, geo.size.width * CGFloat(isDraggingProgress ? dragProgress : player.progress)), height: 4)
+                Circle()
+                    .fill(Color.white)
+                    .frame(width: 14, height: 14)
+                    .offset(x: max(0, geo.size.width * CGFloat(isDraggingProgress ? dragProgress : player.progress) - 7))
             }
             .frame(height: 44)
-
-            HStack {
-                Text(formatTime((isDraggingProgress ? dragProgress : player.progress) * effectiveDuration))
-                    .font(.caption2)
-                    .monospacedDigit()
-                    .foregroundColor(.white.opacity(0.55))
-                Spacer()
-                Text(formatTime(effectiveDuration))
-                    .font(.caption2)
-                    .monospacedDigit()
-                    .foregroundColor(.white.opacity(0.55))
-            }
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        let pct = value.location.x / geo.size.width
+                        dragProgress = Double(min(max(pct, 0), 1))
+                        isDraggingProgress = true
+                    }
+                    .onEnded { _ in
+                        isDraggingProgress = false
+                        player.seek(to: dragProgress * effectiveDuration)
+                    }
+            )
         }
+        .frame(height: 44)
     }
 
     private var workProgressInfo: (progress: Double, title: String, elapsed: Double, total: Double)? {
@@ -404,35 +400,17 @@ struct NowPlayingView: View {
     private var transportControls: some View {
         HStack(spacing: 0) {
             Spacer()
-            Button {
-                Haptics.light()
-                player.cycleRepeat()
-            } label: {
+            Button { player.cycleRepeat() } label: {
                 Image(systemName: player.repeatMode == 1 ? "repeat.1" : "repeat")
-                    .font(.system(size: 20))
-                    .opacity(player.repeatMode > 0 ? 1.0 : 0.45)
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
+                    .opacity(player.repeatMode == 0 ? 0.4 : 1.0)
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel(player.repeatMode == 0 ? "Repeat off" : player.repeatMode == 1 ? "Repeat one" : "Repeat all")
             Spacer()
-            Button {
-                Haptics.light()
-                player.previousTrack()
-            } label: {
+            Button { player.previousTrack() } label: {
                 Image(systemName: "backward.end.fill")
                     .font(.system(size: 28))
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Previous track")
             Spacer()
-            Button {
-                Haptics.medium()
-                player.togglePlayPause()
-            } label: {
+            Button { player.togglePlayPause() } label: {
                 ZStack {
                     if player.isLoading {
                         ProgressView().tint(.white).scaleEffect(1.4)
@@ -444,109 +422,58 @@ struct NowPlayingView: View {
                 .frame(width: 76, height: 76)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel(player.isLoading ? "Loading" : (player.isPlaying ? "Pause" : "Play"))
             Spacer()
-            Button {
-                Haptics.light()
-                player.nextTrack()
-            } label: {
+            Button { player.nextTrack() } label: {
                 Image(systemName: "forward.end.fill")
                     .font(.system(size: 28))
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Next track")
             Spacer()
-            Button {
-                Haptics.light()
-                player.toggleShuffle()
-            } label: {
+            Button { player.toggleShuffle() } label: {
                 Image(systemName: "shuffle")
-                    .font(.system(size: 20))
-                    .opacity(player.isShuffle ? 1.0 : 0.45)
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
+                    .opacity(player.isShuffle ? 1.0 : 0.4)
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel(player.isShuffle ? "Shuffle on" : "Shuffle off")
             Spacer()
         }
         .foregroundColor(.white)
-        .frame(height: 80)
+        .frame(height: 72)
     }
 
     // MARK: - Bottom toolbar
 
     private var bottomToolbar: some View {
         HStack(spacing: 0) {
-            BottomToolbarButton(systemName: "list.bullet", accessibilityLabel: "Queue") {
-                Haptics.light()
-                withAnimation { showQueuePanel = true }
+            Spacer()
+            Button { withAnimation { showQueuePanel = true } } label: {
+                Image(systemName: "list.bullet")
             }
-            Spacer(minLength: 0)
-            BottomToolbarButton(
-                systemName: likedTracks.isLiked(player.currentTrack) ? "heart.fill" : "heart",
-                tint:       likedTracks.isLiked(player.currentTrack) ? .red : .white.opacity(0.36),
-                accessibilityLabel: likedTracks.isLiked(player.currentTrack) ? "Unlike" : "Like"
-            ) {
-                Haptics.light()
+            Spacer()
+            Button { showLyrics = true } label: {
+                Image(systemName: showLyrics ? "text.bubble.fill" : "text.bubble")
+            }
+            Spacer()
+            Button {
                 if let track = player.currentTrack {
                     withAnimation(.spring(response: 0.28, dampingFraction: 0.58)) {
                         likedTracks.toggle(track)
                     }
                 }
+            } label: {
+                Image(systemName: likedTracks.isLiked(player.currentTrack) ? "heart.fill" : "heart")
             }
-            Spacer(minLength: 0)
-            BottomToolbarButton(
-                systemName: "slider.horizontal.3",
-                tint: .white.opacity(0.36),
-                accessibilityLabel: "Playback profile"
-            ) {
-                Haptics.light()
-                showProfileSheet = true
+            Spacer()
+            Button { showProfileSheet = true } label: {
+                Image(systemName: "slider.horizontal.3")
             }
-            Spacer(minLength: 0)
-            BottomToolbarButton(
-                systemName: "plus.circle",
-                tint: .white.opacity(0.36),
-                accessibilityLabel: "Add to playlist"
-            ) {
-                Haptics.light()
-                showAddToPlaylist = true
+            Spacer()
+            Button { showAddToPlaylist = true } label: {
+                Image(systemName: "ellipsis")
             }
-            .disabled(player.currentTrack == nil)
-            Spacer(minLength: 0)
-            if inlineLyrics.hasContent {
-                BottomToolbarButton(
-                    systemName: showInlineLyrics ? "quote.bubble.fill" : "quote.bubble",
-                    tint: showInlineLyrics ? .white : .white.opacity(0.36),
-                    accessibilityLabel: showInlineLyrics ? "Hide lyrics" : "Show lyrics"
-                ) {
-                    Haptics.light()
-                    withAnimation(.spring(response: 0.32, dampingFraction: 0.78)) {
-                        showInlineLyrics.toggle()
-                    }
-                }
-                Spacer(minLength: 0)
-            }
-            BottomToolbarButton(
-                systemName: player.isRadioEnabled
-                    ? "antenna.radiowaves.left.and.right.circle.fill"
-                    : "antenna.radiowaves.left.and.right.circle",
-                tint: player.isRadioEnabled ? .roonAccent : .white.opacity(0.36),
-                accessibilityLabel: player.isRadioEnabled ? "Radio on – tap to manage" : "Start radio"
-            ) {
-                Haptics.light()
-                if player.isRadioEnabled {
-                    showRadioSession = true
-                } else if let track = player.currentTrack {
-                    player.startRadio(seed: track)
-                    showRadioSession = true
-                }
-            }
+            Spacer()
         }
+        .foregroundColor(.white)
+        .font(.system(size: 20))
+        .frame(height: 44)
+        .padding(.horizontal, 8)
     }
 
     // MARK: - Queue panel overlay
