@@ -11,7 +11,7 @@ import Foundation
 
 struct HIPEnsembleClassifier {
 
-    static let shared = HIPEnsembleClassifier()
+    static var shared = HIPEnsembleClassifier()
     private init() {
         #if DEBUG
         HIPEnsembleClassifier.runSelfTest(using: self)
