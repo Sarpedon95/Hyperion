@@ -262,7 +262,10 @@ final class PlayerViewModel: ObservableObject {
         currentTime  = snap.currentTime
         duration     = currentTrack?.duration ?? 0
         progress     = duration > 0 ? min(1, currentTime / duration) : 0
-        pendingSeekTime = snap.currentTime > 1 ? snap.currentTime : nil
+        let snapDuration = currentTrack?.duration ?? 0
+        let nearStart = snap.currentTime <= 3
+        let nearEnd = snapDuration > 0 && snap.currentTime > snapDuration - 10
+        pendingSeekTime = (!nearStart && !nearEnd) ? snap.currentTime : nil
 
         syncCurrentWorkGroup()
         updateNowPlayingInfo(track: currentTrack)

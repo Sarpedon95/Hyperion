@@ -103,42 +103,49 @@ struct NowPlayingView: View {
         ZStack {
             backgroundLayer.ignoresSafeArea()
 
-            ScrollView(showsIndicators: false) {
-                VStack(spacing: 0) {
-                    headerBar
-                        .padding(.horizontal, 20)
-                        .padding(.top, 8)
+            VStack(spacing: 0) {
+                headerBar
+                    .padding(.horizontal, 20)
+                    .padding(.top, 8)
 
-                    artworkSection
-                        .padding(.top, 20)
+                artworkSection
+                    .padding(.top, 20)
 
-                    if showInlineLyrics {
-                        InlineLyricsPanel(state: inlineLyrics, player: player) {
-                            showLyrics = true
-                        }
-                        .padding(.horizontal, 24)
-                        .padding(.top, 16)
-                        .transition(.opacity.combined(with: .move(edge: .top)))
+                if showInlineLyrics {
+                    InlineLyricsPanel(state: inlineLyrics, player: player) {
+                        showLyrics = true
                     }
-
-                    trackInfo
-                        .padding(.horizontal, 24)
-                        .padding(.top, showInlineLyrics ? 12 : 20)
-
-                    progressSection
-                        .padding(.horizontal, 24)
-                        .padding(.top, 16)
-
-                    transportControls
-                        .padding(.horizontal, 20)
-                        .padding(.top, 12)
-
-                    bottomToolbar
-                        .padding(.horizontal, 20)
-                        .padding(.top, 8)
-                        .padding(.bottom, 40)
+                    .padding(.horizontal, 24)
+                    .padding(.top, 16)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
                 }
+
+                trackInfo
+                    .padding(.horizontal, 24)
+                    .padding(.top, showInlineLyrics ? 12 : 20)
+
+                progressSection
+                    .padding(.horizontal, 24)
+                    .padding(.top, 16)
+
+                if let info = workProgressInfo {
+                    WorkProgressBar(progress: info.progress,
+                                    title: info.title,
+                                    elapsed: info.elapsed,
+                                    total: info.total)
+                        .padding(.horizontal, 24)
+                        .padding(.top, 4)
+                }
+
+                transportControls
+                    .padding(.horizontal, 20)
+                    .padding(.top, 12)
+
+                bottomToolbar
+                    .padding(.horizontal, 20)
+                    .padding(.top, 8)
             }
+            .padding(.bottom, 16)
             .simultaneousGesture(
                 DragGesture()
                     .onEnded { if $0.translation.height > 80 { dismiss() } }
@@ -331,73 +338,50 @@ struct NowPlayingView: View {
     // MARK: - Progress
 
     private var progressSection: some View {
-        VStack(spacing: 6) {
-            // 44-pt hit area so the drag gesture registers reliably.
-            // Thumb travels from x=0 (0%) to x=w-thumbDiam (100%) — never negative.
+        VStack(spacing: 4) {
             GeometryReader { geo in
-                let w          = geo.size.width
-                let clamped    = max(0, min(1, isDraggingProgress ? dragProgress : player.progress))
-                let thumbDiam: CGFloat = 22
-                let thumbX     = (w - thumbDiam) * CGFloat(clamped)   // 0 … w-22
-
                 ZStack(alignment: .leading) {
-                    // Track background — explicit width so it always fills the container.
-                    RoundedRectangle(cornerRadius: 2)
+                    // Track background
+                    Capsule()
                         .fill(Color.white.opacity(0.25))
-                        .frame(width: w, height: 4)
-
-                    // Filled portion — drawn up to the thumb centre.
-                    RoundedRectangle(cornerRadius: 2)
+                        .frame(height: 4)
+                    // Track fill
+                    Capsule()
                         .fill(Color.white)
-                        .frame(width: max(0, thumbX + thumbDiam / 2), height: 4)
-
-                    // Thumb — offset stays within [0, w-thumbDiam] so it never clips.
+                        .frame(width: max(0, geo.size.width * CGFloat(isDraggingProgress ? dragProgress : player.progress)), height: 4)
+                    // Thumb
                     Circle()
                         .fill(Color.white)
-                        .frame(width: thumbDiam, height: thumbDiam)
-                        .shadow(color: .black.opacity(0.35), radius: 4, x: 0, y: 2)
-                        .offset(x: thumbX)
-                        .scaleEffect(isDraggingProgress ? 1.28 : 1.0)
-                        .animation(.spring(response: 0.18, dampingFraction: 0.7), value: isDraggingProgress)
+                        .frame(width: 14, height: 14)
+                        .offset(x: max(0, geo.size.width * CGFloat(isDraggingProgress ? dragProgress : player.progress) - 7))
                 }
-                // Explicit frame ensures the ZStack fills the full GeometryReader.
-                .frame(width: w, height: 44)
+                .frame(height: 44)
                 .contentShape(Rectangle())
                 .gesture(
                     DragGesture(minimumDistance: 0)
                         .onChanged { value in
-                            if !isDraggingProgress { Haptics.light() }
+                            let pct = value.location.x / geo.size.width
+                            dragProgress = Double(min(max(pct, 0), 1))
                             isDraggingProgress = true
-                            dragProgress = max(0, min(1, Double(value.location.x / max(w, 1))))
                         }
                         .onEnded { _ in
-                            player.seek(to: dragProgress * max(effectiveDuration, 1))
                             isDraggingProgress = false
-                        },
-                    including: .all
+                            player.seek(to: dragProgress * effectiveDuration)
+                        }
                 )
             }
             .frame(height: 44)
 
             HStack {
-                let displayTime = isDraggingProgress
-                    ? dragProgress * effectiveDuration
-                    : player.currentTime
-                Text(formatTime(displayTime))
-                    .font(.system(size: 12, weight: .regular).monospacedDigit())
-                    .foregroundColor(Color.white.opacity(0.55))
+                Text(formatTime((isDraggingProgress ? dragProgress : player.progress) * effectiveDuration))
+                    .font(.caption2)
+                    .monospacedDigit()
+                    .foregroundColor(.white.opacity(0.55))
                 Spacer()
                 Text(formatTime(effectiveDuration))
-                    .font(.system(size: 12, weight: .regular).monospacedDigit())
-                    .foregroundColor(Color.white.opacity(0.55))
-            }
-
-            if let info = workProgressInfo {
-                WorkProgressBar(progress: info.progress,
-                                title: info.title,
-                                elapsed: info.elapsed,
-                                total: info.total)
-                    .padding(.top, 4)
+                    .font(.caption2)
+                    .monospacedDigit()
+                    .foregroundColor(.white.opacity(0.55))
             }
         }
     }

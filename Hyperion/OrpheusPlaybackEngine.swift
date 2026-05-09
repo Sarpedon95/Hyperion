@@ -275,6 +275,7 @@ final class OrpheusPlaybackEngine {
 
         // 3 — Format detection
         let outputChannels: Int
+        var detectedSrcHz: Double = 0
         do {
             let descs = try await audioTrack.load(.formatDescriptions)
             if let desc = descs.first,
@@ -284,6 +285,7 @@ final class OrpheusPlaybackEngine {
                 let srcCh  = asbd.pointee.mChannelsPerFrame
                 outputChannels = Int(srcCh) == 1 ? 2 : min(2, Int(srcCh))
                 decodedFormat  = "\(codec) @ \(Int(srcHz)) Hz, \(srcCh)ch"
+                detectedSrcHz  = srcHz
                 onDecodedFormatKnown?(decodedFormat)
                 ServerLogStore.shared.info(
                     "Orpheus source: \(decodedFormat) → Float32 @ \(Int(sampleRate)) Hz, \(outputChannels)ch  mode=\(playbackMode)"
@@ -297,6 +299,12 @@ final class OrpheusPlaybackEngine {
             outputChannels = 2
             decodedFormat  = "unknown (load error)"
             ServerLogStore.shared.warn("Orpheus: format description load error: \(error.localizedDescription)")
+        }
+
+        // When SRC is disabled, play at native sample rate; otherwise use session rate.
+        let srcEnabled = PlaybackProfileManager.shared.resolvedSampleRateConversionEnabled
+        if !srcEnabled && detectedSrcHz > 0 {
+            sampleRate = detectedSrcHz
         }
 
         // 4 — PCM output settings

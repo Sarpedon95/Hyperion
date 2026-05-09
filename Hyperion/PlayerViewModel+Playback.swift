@@ -251,6 +251,8 @@ extension PlayerViewModel {
                     self.isPlaying = true
                     self.isPaused  = false
                     self.endBackgroundPlaybackTask()
+                    // Prefetch immediately so lock screen track changes have an asset ready.
+                    self.prefetchNextTrackAsset()
                 } else {
                     self.isLoading = false
                     self.isPlaying = false
@@ -433,10 +435,18 @@ extension PlayerViewModel {
                             to: CMTime(seconds: t, preferredTimescale: 600),
                             toleranceBefore: .zero,
                             toleranceAfter:  .zero
-                        )
-                    }
-
-                    if autoPlay {
+                        ) { [weak self] _ in
+                            guard let self else { return }
+                            if autoPlay {
+                                self.activateAudioSession()
+                                let isInBackground = UIApplication.shared.applicationState != .active
+                                self.startPlayer(preferImmediateStart: isInBackground)
+                                self.isPlaying = true
+                                self.isPaused  = false
+                                ServerLogStore.shared.debug("Playback: Started autoPlay (after seek)")
+                            }
+                        }
+                    } else if autoPlay {
                         self.activateAudioSession()
                         let isInBackground = UIApplication.shared.applicationState != .active
                         self.startPlayer(preferImmediateStart: isInBackground)
@@ -955,7 +965,7 @@ extension PlayerViewModel {
         ])
         // Warm the HTTP connection without downloading audio data.
         prefetchTask?.cancel()
-        prefetchTask = Task.detached(priority: .background) {
+        prefetchTask = Task.detached(priority: .userInitiated) {
             _ = try? await asset.load(.duration)
         }
         prefetchedNextAsset = (trackID: nextTrack.id, asset: asset)

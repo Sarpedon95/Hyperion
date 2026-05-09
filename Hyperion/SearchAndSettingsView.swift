@@ -1710,6 +1710,19 @@ private struct ProfileSettingsDetail: View {
             .pickerStyle(.menu)
             .foregroundColor(.roonSecondary)
         }
+
+        Toggle(isOn: Binding(
+            get: { settings.sampleRateConversionEnabled },
+            set: { v in profileManager.updateSettings(for: profile) { $0.sampleRateConversionEnabled = v } }
+        )) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Sample Rate Conversion").foregroundColor(.roonPrimary)
+                Text("Resample to a fixed output rate. Disable to play at native sample rate.")
+                    .font(.roonBody(12)).foregroundColor(.roonSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .tint(.roonAccent)
     }
 }
 

@@ -188,23 +188,25 @@ enum ProfileDetectionSource: Equatable {
 // MARK: - Per-profile stored settings
 
 struct ProfileSettings: Codable {
-    var gaplessEnabled:    Bool
-    var crossfadeEnabled:  Bool
-    var crossfadeDuration: Double
-    var crossfadeShape:    CrossfadeShape
-    var crossfeedEnabled:  Bool
-    var crossfeedPreset:   CrossfeedPreset
-    var interTrackGap:     InterTrackGap
+    var gaplessEnabled:              Bool
+    var crossfadeEnabled:            Bool
+    var crossfadeDuration:           Double
+    var crossfadeShape:              CrossfadeShape
+    var crossfeedEnabled:            Bool
+    var crossfeedPreset:             CrossfeedPreset
+    var interTrackGap:               InterTrackGap
+    var sampleRateConversionEnabled: Bool = true
 
     static func defaults(for profile: PlaybackProfile) -> ProfileSettings {
         ProfileSettings(
-            gaplessEnabled:    profile.defaultGaplessEnabled,
-            crossfadeEnabled:  profile.defaultCrossfadeEnabled,
-            crossfadeDuration: profile.defaultCrossfadeDuration,
-            crossfadeShape:    .equalPower,
-            crossfeedEnabled:  profile.defaultCrossfeedEnabled,
-            crossfeedPreset:   profile.defaultCrossfeedPreset,
-            interTrackGap:     profile.defaultInterTrackGap
+            gaplessEnabled:              profile.defaultGaplessEnabled,
+            crossfadeEnabled:            profile.defaultCrossfadeEnabled,
+            crossfadeDuration:           profile.defaultCrossfadeDuration,
+            crossfadeShape:              .equalPower,
+            crossfeedEnabled:            profile.defaultCrossfeedEnabled,
+            crossfeedPreset:             profile.defaultCrossfeedPreset,
+            interTrackGap:               profile.defaultInterTrackGap,
+            sampleRateConversionEnabled: true
         )
     }
 }

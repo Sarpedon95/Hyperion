@@ -102,6 +102,10 @@ final class PlaybackProfileManager: ObservableObject {
         return sessionInterTrackGap ?? resolvedSettings.interTrackGap
     }
 
+    var resolvedSampleRateConversionEnabled: Bool {
+        resolvedSettings.sampleRateConversionEnabled
+    }
+
     // MARK: - Profile resolution
 
     /// Update the active profile from the current track's genre metadata.
