@@ -91,7 +91,6 @@ final class LyrionAPI {
             candidates.append("\(baseURL)/music/\(id)/download.\(ext)")
         }
         candidates.append("\(baseURL)/music/\(id)/download")
-        candidates.append("\(baseURL)/music/\(id)/download?player=0")
         candidates.append("\(baseURL)/music/\(id)/download.mp3")
 
         var seen = Set<String>()

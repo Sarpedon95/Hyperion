@@ -331,34 +331,44 @@ struct NowPlayingView: View {
     // MARK: - Progress
 
     private var progressSection: some View {
-        VStack(spacing: 4) {
+        VStack(spacing: 6) {
+            // 44-pt hit area so the drag gesture registers reliably.
+            // Thumb travels from x=0 (0%) to x=w-thumbDiam (100%) — never negative.
             GeometryReader { geo in
-                let width = max(geo.size.width, 1)
-                let displayProgress = isDraggingProgress ? dragProgress : player.progress
-                let clamped = max(0, min(1, displayProgress))
+                let w          = geo.size.width
+                let clamped    = max(0, min(1, isDraggingProgress ? dragProgress : player.progress))
+                let thumbDiam: CGFloat = 22
+                let thumbX     = (w - thumbDiam) * CGFloat(clamped)   // 0 … w-22
 
                 ZStack(alignment: .leading) {
-                    Capsule()
-                        .fill(Color.white.opacity(0.3))
-                        .frame(height: 4)
-                    Capsule()
+                    // Track background — explicit width so it always fills the container.
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Color.white.opacity(0.25))
+                        .frame(width: w, height: 4)
+
+                    // Filled portion — drawn up to the thumb centre.
+                    RoundedRectangle(cornerRadius: 2)
                         .fill(Color.white)
-                        .frame(width: width * CGFloat(clamped), height: 4)
+                        .frame(width: max(0, thumbX + thumbDiam / 2), height: 4)
+
+                    // Thumb — offset stays within [0, w-thumbDiam] so it never clips.
                     Circle()
                         .fill(Color.white)
-                        .frame(width: 16, height: 16)
-                        .shadow(color: .black.opacity(0.3), radius: 3)
-                        .offset(x: width * CGFloat(clamped) - 8)
-                        .scaleEffect(isDraggingProgress ? 1.25 : 1.0)
-                        .animation(.spring(response: 0.2), value: isDraggingProgress)
+                        .frame(width: thumbDiam, height: thumbDiam)
+                        .shadow(color: .black.opacity(0.35), radius: 4, x: 0, y: 2)
+                        .offset(x: thumbX)
+                        .scaleEffect(isDraggingProgress ? 1.28 : 1.0)
+                        .animation(.spring(response: 0.18, dampingFraction: 0.7), value: isDraggingProgress)
                 }
+                // Explicit frame ensures the ZStack fills the full GeometryReader.
+                .frame(width: w, height: 44)
                 .contentShape(Rectangle())
                 .gesture(
                     DragGesture(minimumDistance: 0)
                         .onChanged { value in
                             if !isDraggingProgress { Haptics.light() }
                             isDraggingProgress = true
-                            dragProgress = max(0, min(1, Double(value.location.x / width)))
+                            dragProgress = max(0, min(1, Double(value.location.x / max(w, 1))))
                         }
                         .onEnded { _ in
                             player.seek(to: dragProgress * max(effectiveDuration, 1))
@@ -367,19 +377,19 @@ struct NowPlayingView: View {
                     including: .all
                 )
             }
-            .frame(height: 20)
+            .frame(height: 44)
 
             HStack {
                 let displayTime = isDraggingProgress
                     ? dragProgress * effectiveDuration
                     : player.currentTime
                 Text(formatTime(displayTime))
-                    .font(.caption)
-                    .foregroundColor(.white.opacity(0.55))
+                    .font(.system(size: 12, weight: .regular).monospacedDigit())
+                    .foregroundColor(Color.white.opacity(0.55))
                 Spacer()
                 Text(formatTime(effectiveDuration))
-                    .font(.caption)
-                    .foregroundColor(.white.opacity(0.55))
+                    .font(.system(size: 12, weight: .regular).monospacedDigit())
+                    .foregroundColor(Color.white.opacity(0.55))
             }
 
             if let info = workProgressInfo {
@@ -387,7 +397,7 @@ struct NowPlayingView: View {
                                 title: info.title,
                                 elapsed: info.elapsed,
                                 total: info.total)
-                    .padding(.top, 8)
+                    .padding(.top, 4)
             }
         }
     }

@@ -684,6 +684,9 @@ extension PlayerViewModel {
 
                 let statusCanFill = statusMatchedCurrentTrack == true
                 let type = Self.firstString([songInfo["type"], statusCanFill ? statusTrack["type"] : nil, track.audioType])?.lowercased() ?? ""
+                #if DEBUG
+                print("[AudioQuality] type='\(type)' samplerate=\(Self.firstInt([songInfo["samplerate"], statusCanFill ? statusTrack["samplerate"] : nil, track.sampleRate]) ?? 0) statusMatched=\(String(describing: statusMatchedCurrentTrack))")
+                #endif
                 let sampleRate = Self.firstInt([songInfo["samplerate"], statusCanFill ? statusTrack["samplerate"] : nil, track.sampleRate]) ?? 0
                 let sampleSize = Self.firstInt([songInfo["samplesize"], statusCanFill ? statusTrack["samplesize"] : nil, track.sampleSize]) ?? 0
                 let bitrate = Self.firstString([songInfo["bitrate"], statusCanFill ? statusTrack["bitrate"] : nil, track.bitrate])

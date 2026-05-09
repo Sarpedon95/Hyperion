@@ -233,12 +233,41 @@ enum AudioFormats {
     /// Used for bit-perfect detection, quality-pill colour, and signal-path display.
     static let lossless: Set<String> = ["FLAC", "WAV", "ALAC", "AIFF", "AIF", "APE", "WV"]
 
-    /// Same as `lossless` but lowercased, for matching against LMS `type` fields
-    /// (which LMS returns in lowercase, e.g. "flac", "alac", "wav").
-    static let losslessLowercase: Set<String> = ["flac", "wav", "alac", "aiff", "aif", "ape", "wv"]
+    /// Same as `lossless` but lowercased, for matching against LMS `type` fields.
+    /// IMPORTANT: LMS uses abbreviated internal codec codes that differ from file
+    /// extensions — "flc" for FLAC, "alc" for ALAC. Both must be listed here so
+    /// that isLosslessCodec() correctly classifies LMS-reported types.
+    static let losslessLowercase: Set<String> = [
+        "flac", "flc",       // FLAC: canonical ext + LMS internal code
+        "alac", "alc",       // ALAC: canonical ext + LMS internal code
+        "wav", "wave",
+        "aiff", "aif",
+        "ape", "wv",
+    ]
 
     /// Lowercase codecs/containers where the source is known to be perceptually coded.
     static let lossyLowercase: Set<String> = ["mp3", "aac", "m4a", "m4b", "ogg", "opus", "wma", "wmap", "mp4"]
+
+    /// Maps LMS-internal codec codes to their canonical file extensions.
+    ///
+    /// LMS returns abbreviated type codes in the `type` field (e.g. "flc", "aif")
+    /// that do NOT match the file extension in stream URLs ("flac", "aiff"). Without
+    /// this mapping, comparing sourceExt == streamExt produces a false "Transcoded?"
+    /// result for every lossless file.
+    private static let lmsCodecExtensionMap: [String: String] = [
+        "flc":  "flac",   // FLAC
+        "alc":  "alac",   // ALAC (some LMS builds)
+        "aif":  "aiff",   // AIFF (LMS drops the trailing 'f')
+        "pcm":  "wav",    // Raw PCM is served/stored as WAV
+    ]
+
+    /// Returns the canonical file extension for an LMS `type` codec code,
+    /// falling back to the value unchanged when no mapping exists.
+    /// Apply to BOTH sides of any codec ↔ extension comparison.
+    static func canonicalExtension(forLMSCodec codec: String) -> String {
+        let lower = codec.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return lmsCodecExtensionMap[lower] ?? lower
+    }
 
     static func isLossless(_ ext: String) -> Bool {
         lossless.contains(ext.uppercased())
@@ -586,7 +615,9 @@ struct AudioSignalPath: Identifiable, Hashable {
         let streamDescription = selectedStreamURL.map { streamSummary($0) } ?? "Selected stream URL not recorded"
         let streamExt = selectedStreamURL?.pathExtension.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
         let sourceExt = codecKnown ? normalizedCodec : ""
-        let appearsTranscoded = codecKnown && !streamExt.isEmpty && sourceExt != streamExt && streamExt != "download"
+        let sourceExtNorm = AudioFormats.canonicalExtension(forLMSCodec: sourceExt)
+        let streamExtNorm = AudioFormats.canonicalExtension(forLMSCodec: streamExt)
+        let appearsTranscoded = codecKnown && !streamExtNorm.isEmpty && sourceExtNorm != streamExtNorm && streamExtNorm != "download"
         let decodedFormatKnown = !decodedFormat.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !decodedFormat.hasPrefix("unknown")
         steps.append(AudioPathStep(
@@ -618,8 +649,12 @@ struct AudioSignalPath: Identifiable, Hashable {
         let streamFmtStr = streamFmtParts.isEmpty ? nil : streamFmtParts.joined(separator: " / ")
 
         let isDirect: Bool? = {
-            guard let sr = streamSR, let srcRate = sampleRate, srcRate > 0 else { return nil }
-            return sr == srcRate && (streamBD == nil || streamBD == sampleSize)
+            if let sr = streamSR, let srcRate = sampleRate, srcRate > 0 {
+                return sr == srcRate && (streamBD == nil || streamBD == sampleSize)
+            }
+            // No LMS player-session data — infer direct when codec matches stream and source is lossless
+            if !appearsTranscoded, sourceIsLossless == true { return true }
+            return nil
         }()
 
         let lmsSubtitle: String
@@ -815,6 +850,7 @@ struct AudioSignalPath: Identifiable, Hashable {
 
         let badge = badge(forSourceLossless: sourceIsLossless,
                           appearsTranscoded: appearsTranscoded,
+                          isDirect: isDirect,
                           hasLocalAttenuation: hasLocalAttenuation,
                           orpheusProcessingAffectsPath: orpheusSteps.processingAffectsPath,
                           isOrpheusActive: isOrpheusActive,
@@ -971,6 +1007,7 @@ struct AudioSignalPath: Identifiable, Hashable {
     private static func badge(
         forSourceLossless sourceIsLossless: Bool?,
         appearsTranscoded: Bool,
+        isDirect: Bool?,
         hasLocalAttenuation: Bool,
         orpheusProcessingAffectsPath: Bool,
         isOrpheusActive: Bool,
@@ -986,7 +1023,8 @@ struct AudioSignalPath: Identifiable, Hashable {
             return ("Orpheus", .unknown)
         }
         if hasLocalAttenuation || orpheusProcessingAffectsPath { return ("Processed", .enhanced) }
-        if sourceIsLossless == true { return ("Direct?", .unknown) }
+        if isDirect == true { return ("Direct", .lossless) }
+        if sourceIsLossless == true { return ("Direct?", .lossless) }
         return ("Unknown", .unknown)
     }
 
