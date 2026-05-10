@@ -478,6 +478,7 @@ struct WorkDetailView: View {
     @State private var workGroup: WorkGroup? = nil
     @State private var isLoading: Bool       = true
     @State private var loadError: String?    = nil
+    @State private var retryToken: Int       = 0
 
     var body: some View {
         ScrollView {
@@ -505,10 +506,20 @@ struct WorkDetailView: View {
                 }
 
                 if let error = loadError {
-                    Text(error)
-                        .font(.roonBody(14))
-                        .foregroundColor(.roonSecondary)
-                        .padding(20)
+                    VStack(spacing: 12) {
+                        Text(error)
+                            .font(.roonBody(14))
+                            .foregroundColor(.roonSecondary)
+                            .multilineTextAlignment(.center)
+                        Button("Retry") {
+                            Haptics.light()
+                            retryToken += 1
+                        }
+                        .font(.roonBody(14, weight: .semibold))
+                        .foregroundColor(.roonAccent)
+                    }
+                    .padding(20)
+                    .frame(maxWidth: .infinity)
                 }
             }
         }
@@ -524,7 +535,7 @@ struct WorkDetailView: View {
         // same task id and the task only fires once for all of them. Use the stable
         // String id (which includes work title + composer for fabricated works) so
         // the task re-fires correctly on every distinct work.
-        .task(id: work.id) {
+        .task(id: "\(work.id)-\(retryToken)") {
             isLoading = true
             loadError = nil
             // BUG FIX: defer ensures isLoading is always cleared, even when the task
@@ -1237,6 +1248,7 @@ struct AlbumDetailView: View {
     @State private var workGroups: [WorkGroup] = []
     @State private var isLoading: Bool         = true
     @State private var loadError: String?      = nil
+    @State private var retryToken: Int         = 0
     @State private var selectedTab: AlbumTab   = .tracks
     @State private var showArtistDetail: Bool  = false
     @State private var albumMetadata: MetadataResult? = nil
@@ -1366,7 +1378,7 @@ struct AlbumDetailView: View {
         .navigationDestination(isPresented: $showArtistDetail) {
             if let artist = albumArtist { ArtistDetailView(artist: artist) }
         }
-        .task(id: album.id) {
+        .task(id: "\(album.id)-\(retryToken)") {
             isLoading = true
             loadError = nil
             workGroups = []
@@ -1406,7 +1418,20 @@ struct AlbumDetailView: View {
         if isLoading {
             ProgressView().tint(.roonAccent).padding(40)
         } else if let error = loadError {
-            Text(error).font(.roonBody(14)).foregroundColor(.roonSecondary).padding(20)
+            VStack(spacing: 12) {
+                Text(error)
+                    .font(.roonBody(14))
+                    .foregroundColor(.roonSecondary)
+                    .multilineTextAlignment(.center)
+                Button("Retry") {
+                    Haptics.light()
+                    retryToken += 1
+                }
+                .font(.roonBody(14, weight: .semibold))
+                .foregroundColor(.roonAccent)
+            }
+            .padding(20)
+            .frame(maxWidth: .infinity)
         } else if workGroups.isEmpty {
             Text("No playable tracks were found for this album.")
                 .font(.roonBody(14))

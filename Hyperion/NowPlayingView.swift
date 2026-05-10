@@ -69,6 +69,8 @@ struct NowPlayingView: View {
     @State private var showEQ:            Bool = false
     @State private var showMore:          Bool = false
     @State private var showFullLyrics:    Bool = false
+    @State private var albumNavTarget:    Album? = nil
+    @State private var artistNavTarget:   Artist? = nil
 
     // MARK: - Derived
 
@@ -177,7 +179,17 @@ struct NowPlayingView: View {
                     .environment(\.hyperionBottomOverlayHeight, 0)
             }
         }
+        .sheet(item: $albumNavTarget) { album in
+            NavigationStack { AlbumDetailView(album: album) }
+                .environment(\.hyperionBottomOverlayHeight, 0)
+        }
+        .sheet(item: $artistNavTarget) { artist in
+            NavigationStack { ArtistDetailView(artist: artist) }
+                .environment(\.hyperionBottomOverlayHeight, 0)
+        }
         .preferredColorScheme(.dark)
+        .sensoryFeedback(.selection, trigger: player.currentTrack?.id)
+        .sensoryFeedback(.impact(weight: .light, intensity: 0.6), trigger: player.isPlaying)
         .animation(.spring(response: 0.36, dampingFraction: 0.80), value: showQueuePanel)
         .onAppear { isPillPulsing = true }
         .onChange(of: player.currentTrack?.id) { _, _ in
@@ -249,7 +261,7 @@ struct NowPlayingView: View {
                             profile: profileManager.activeProfile,
                             source:  profileManager.detectionSource
                         ))
-                        .font(.system(size: 11, weight: .medium))
+                        .font(.roonBody(11, weight: .medium))
                         .foregroundColor(.white.opacity(0.55))
                     }
                     .buttonStyle(.plain)
@@ -305,33 +317,76 @@ struct NowPlayingView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .shadow(color: .black.opacity(0.4), radius: 16, x: 0, y: 8)
         .id(player.currentTrack?.id ?? -1)
+        // fullScreenCover has no built-in swipe-to-dismiss; handle it on the
+        // artwork only so it never conflicts with the scrubber's horizontal drag.
+        .gesture(
+            DragGesture(minimumDistance: 10)
+                .onEnded { v in
+                    let isDownward = v.translation.height > abs(v.translation.width)
+                    if isDownward && v.translation.height > 80 {
+                        Haptics.light()
+                        dismiss()
+                    }
+                }
+        )
     }
 
     // MARK: - Track info
 
     private var trackInfo: some View {
-        VStack(alignment: .center, spacing: 6) {
-            Text(player.currentTrack?.title ?? "")
-                .font(.system(size: 22, weight: .bold))
-                .foregroundColor(.roonPrimary)
-                .multilineTextAlignment(.center)
-                .lineLimit(2)
-                .minimumScaleFactor(0.7)
+        let artistLine = player.currentTrack?.composer
+            ?? player.currentTrack?.albumartist
+            ?? player.currentTrack?.trackartist
+            ?? ""
+
+        return VStack(alignment: .center, spacing: 6) {
+
+            // Title — taps to album detail
+            Button {
+                guard let id = player.currentTrack?.albumID,
+                      let album = LibraryViewModel.shared.albums.first(where: { $0.id == id })
+                else { return }
+                albumNavTarget = album
+            } label: {
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
+                    Text(player.currentTrack?.title ?? "")
+                        .font(.roonTitle(22))
+                        .foregroundColor(.roonPrimary)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.7)
+                    if player.currentTrack?.albumID != nil {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.roonPrimary.opacity(0.35))
+                    }
+                }
                 .frame(maxWidth: .infinity, alignment: .center)
-
-            let artistLine = player.currentTrack?.composer
-                ?? player.currentTrack?.albumartist
-                ?? player.currentTrack?.trackartist
-                ?? ""
-            if !artistLine.isEmpty {
-                Text(artistLine)
-                    .font(.system(size: 16))
-                    .foregroundColor(.roonSecondary)
-                    .multilineTextAlignment(.center)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .center)
             }
+            .buttonStyle(.plain)
 
+            // Artist/composer — taps to artist detail
+            if !artistLine.isEmpty {
+                Button {
+                    guard let artist = LibraryViewModel.shared.artists.first(where: {
+                        $0.name.caseInsensitiveCompare(artistLine) == .orderedSame
+                    }) else { return }
+                    artistNavTarget = artist
+                } label: {
+                    HStack(alignment: .firstTextBaseline, spacing: 4) {
+                        Text(artistLine)
+                            .font(.roonBody(16))
+                            .foregroundColor(.roonSecondary)
+                            .multilineTextAlignment(.center)
+                            .lineLimit(1)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(.roonSecondary.opacity(0.45))
+                    }
+                    .frame(maxWidth: .infinity, alignment: .center)
+                }
+                .buttonStyle(.plain)
+            }
         }
         .frame(maxWidth: .infinity)
     }
@@ -353,15 +408,19 @@ struct NowPlayingView: View {
                 // Background track
                 Capsule()
                     .fill(Color.white.opacity(0.3))
-                    .frame(width: screenW, height: 4)
+                    .frame(width: screenW, height: isDraggingProgress ? 6 : 4)
+                    .animation(.spring(response: 0.2, dampingFraction: 0.6), value: isDraggingProgress)
                 // Filled track
                 Capsule()
                     .fill(Color.white)
-                    .frame(width: max(8, fillW), height: 4)
+                    .frame(width: max(8, fillW), height: isDraggingProgress ? 6 : 4)
+                    .animation(.spring(response: 0.2, dampingFraction: 0.6), value: isDraggingProgress)
                 // Thumb
                 Circle()
                     .fill(Color.white)
                     .frame(width: 16, height: 16)
+                    .scaleEffect(isDraggingProgress ? 1.5 : 1.0)
+                    .animation(.spring(response: 0.2, dampingFraction: 0.6), value: isDraggingProgress)
                     .offset(x: max(0, fillW - 8))
             }
             .frame(width: screenW, height: 44)
@@ -385,8 +444,7 @@ struct NowPlayingView: View {
                 Text(formatTime(effectiveDuration))
             }
             .frame(width: screenW)
-            .font(.system(size: 12))
-            .monospacedDigit()
+            .font(.roonMono(12))
             .foregroundColor(.white.opacity(0.6))
         }
     }
@@ -443,17 +501,20 @@ struct NowPlayingView: View {
     private var transportControls: some View {
         HStack(spacing: 0) {
             Spacer()
-            Button { player.cycleRepeat() } label: {
+            Button { Haptics.light(); player.cycleRepeat() } label: {
                 Image(systemName: player.repeatMode == 1 ? "repeat.1" : "repeat")
                     .opacity(player.repeatMode == 0 ? 0.4 : 1.0)
             }
             Spacer()
-            Button { player.previousTrack() } label: {
+            Button { Haptics.medium(); player.previousTrack() } label: {
                 Image(systemName: "backward.end.fill")
                     .font(.system(size: 28))
             }
             Spacer()
-            Button { player.togglePlayPause() } label: {
+            Button {
+                if !player.isLoading { Haptics.medium() }
+                player.togglePlayPause()
+            } label: {
                 ZStack {
                     if player.isLoading {
                         ProgressView().tint(.white).scaleEffect(1.4)
@@ -466,12 +527,12 @@ struct NowPlayingView: View {
                 .contentShape(Rectangle())
             }
             Spacer()
-            Button { player.nextTrack() } label: {
+            Button { Haptics.medium(); player.nextTrack() } label: {
                 Image(systemName: "forward.end.fill")
                     .font(.system(size: 28))
             }
             Spacer()
-            Button { player.toggleShuffle() } label: {
+            Button { Haptics.light(); player.toggleShuffle() } label: {
                 Image(systemName: "shuffle")
                     .opacity(player.isShuffle ? 1.0 : 0.4)
             }
@@ -487,36 +548,58 @@ struct NowPlayingView: View {
     private var bottomToolbar: some View {
         HStack(spacing: 0) {
             Spacer()
-            Button { withAnimation { showQueuePanel = true } } label: {
+            Button {
+                Haptics.light()
+                withAnimation { showQueuePanel = true }
+            } label: {
                 Image(systemName: "list.bullet")
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
             Spacer()
-            Button { withAnimation { showLyrics.toggle() } } label: {
+            Button {
+                Haptics.light()
+                withAnimation { showLyrics.toggle() }
+            } label: {
                 Image(systemName: showLyrics ? "text.bubble.fill" : "text.bubble")
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
             Spacer()
             Button {
                 if let track = player.currentTrack {
+                    Haptics.medium()
                     withAnimation(.spring(response: 0.28, dampingFraction: 0.58)) {
                         likedTracks.toggle(track)
                     }
                 }
             } label: {
                 Image(systemName: likedTracks.isLiked(player.currentTrack) ? "heart.fill" : "heart")
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
             Spacer()
-            Button { showProfileSheet = true } label: {
+            Button {
+                Haptics.light()
+                showProfileSheet = true
+            } label: {
                 Image(systemName: "slider.horizontal.3")
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
             Spacer()
-            Button { showAddToPlaylist = true } label: {
+            Button {
+                Haptics.light()
+                showAddToPlaylist = true
+            } label: {
                 Image(systemName: "ellipsis")
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
             Spacer()
         }
         .foregroundColor(.white)
         .font(.system(size: 20))
-        .frame(height: 44)
         .padding(.horizontal, 8)
     }
 
@@ -642,12 +725,12 @@ private struct WorkProgressBar: View {
 
             HStack {
                 Text(title)
-                    .font(.system(size: 10, weight: .medium))
+                    .font(.roonBody(10, weight: .medium))
                     .foregroundColor(.white.opacity(0.45))
                     .lineLimit(1)
                 Spacer()
                 Text("\(TimeFormatting.formatDuration(elapsed)) / \(TimeFormatting.formatDuration(total))")
-                    .font(.system(size: 10).monospacedDigit())
+                    .font(.roonMono(10))
                     .foregroundColor(.white.opacity(0.35))
             }
         }
@@ -727,8 +810,7 @@ private struct InlineLyricsPanel: View {
                     Color.clear.frame(height: 50)
                     ForEach(Array(lines.enumerated()), id: \.element.id) { idx, line in
                         Text(line.text.isEmpty ? "•" : line.text)
-                            .font(.system(size: 14,
-                                          weight: idx == activeIndex ? .semibold : .regular))
+                            .font(.roonBody(14, weight: idx == activeIndex ? .semibold : .regular))
                             .foregroundColor(.white.opacity(idx == activeIndex ? 1.0 : 0.4))
                             .multilineTextAlignment(.center)
                             .lineLimit(2)
@@ -776,7 +858,7 @@ private struct InlineLyricsPanel: View {
     private func plainPanel(text: String) -> some View {
         ScrollView(showsIndicators: false) {
             Text(text)
-                .font(.system(size: 13))
+                .font(.roonBody(13))
                 .foregroundColor(.white.opacity(0.55))
                 .multilineTextAlignment(.center)
                 .lineSpacing(5)
@@ -1118,7 +1200,7 @@ private struct ProfileQuickSettingsSheet: View {
                                 Text("Duration").font(.roonBody(13)).foregroundColor(.roonSecondary)
                                 Spacer()
                                 Text(String(format: "%.1f s", profileManager.resolvedCrossfadeDuration))
-                                    .font(.roonBody(13)).foregroundColor(.roonTertiary).monospacedDigit()
+                                    .font(.roonMono(13)).foregroundColor(.roonTertiary)
                             }
                             Slider(value: cfDurationBinding, in: 0.5...12, step: 0.5)
                                 .tint(.roonAccent)

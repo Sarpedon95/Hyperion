@@ -191,10 +191,21 @@ struct ComposerDetailView: View {
         if vm.isLoading && vm.displayedWorks.isEmpty {
             ProgressView().tint(.roonAccent).padding(40)
         } else if vm.displayedWorks.isEmpty {
-            Text("No works found")
-                .font(.roonBody(14))
-                .foregroundColor(.roonTertiary)
-                .padding(40)
+            VStack(spacing: 10) {
+                Image(systemName: "music.note.list")
+                    .font(.system(size: 36))
+                    .foregroundColor(.roonTertiary)
+                Text("No works found")
+                    .font(.roonBody(16, weight: .semibold))
+                    .foregroundColor(.roonSecondary)
+                if vm.selectedGenre != nil {
+                    Text("Try removing the genre filter")
+                        .font(.roonBody(13))
+                        .foregroundColor(.roonTertiary)
+                }
+            }
+            .padding(40)
+            .frame(maxWidth: .infinity)
         } else {
             VStack(spacing: 0) {
                 ForEach(vm.displayedWorks) { work in

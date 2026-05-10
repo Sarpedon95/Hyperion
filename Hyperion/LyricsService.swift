@@ -74,6 +74,8 @@ final class LyricsService {
     // Mirrors the on-disk pin store so reads never block the main thread.
     private var pinStoreCache: PinStore?
 
+    private var prefetchTask: Task<Void, Never>? = nil
+
     // MARK: - Public
 
     /// Synchronous memory-cache probe — returns instantly if lyrics were already fetched.
@@ -82,15 +84,16 @@ final class LyricsService {
     }
 
     /// Kick off a background fetch so lyrics are ready before the user opens the view.
-    /// Safe to call on every track change; skips work if the result is already in memory.
+    /// Cancels any in-flight prefetch for a previous track before starting.
     func prefetch(for track: Track) {
         let tid = track.id
         guard memoryCache[tid] == nil else { return }
+        prefetchTask?.cancel()
         let artist = track.composer ?? track.albumartist ?? track.trackartist ?? ""
         let artistResolved = artist.isEmpty ? track.title : artist
         let title  = (track.work?.isEmpty == false ? track.work : nil) ?? track.title
         let album  = track.album ?? ""
-        Task {
+        prefetchTask = Task {
             _ = await self.lyrics(
                 artistName: artistResolved,
                 trackName:  title,

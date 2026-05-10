@@ -1649,7 +1649,7 @@ private struct ProfileSettingsDetail: View {
                     Text("Duration").font(.roonBody(13)).foregroundColor(.roonSecondary)
                     Spacer()
                     Text(String(format: "%.1f s", settings.crossfadeDuration))
-                        .font(.roonBody(13)).foregroundColor(.roonTertiary).monospacedDigit()
+                        .font(.roonMono(13)).foregroundColor(.roonTertiary)
                 }
                 Slider(value: Binding(
                     get: { settings.crossfadeDuration },

@@ -529,6 +529,18 @@ struct MiniPlayerView: View {
                 }
                 .buttonStyle(.borderless)
                 .accessibilityLabel(player.isLoading ? "Loading" : (player.isPlaying ? "Pause" : "Play"))
+
+                Button {
+                    Haptics.medium()
+                    player.nextTrack()
+                } label: {
+                    Image(systemName: "forward.end.fill")
+                        .font(.system(size: 20))
+                        .foregroundColor(.roonPrimary)
+                        .frame(width: 44, height: 44)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Next track")
                 .padding(.trailing, 12)
             }
             .frame(height: 62)
