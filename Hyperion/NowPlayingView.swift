@@ -339,47 +339,48 @@ struct NowPlayingView: View {
     // MARK: - Scrubber (native Slider + timestamps)
 
     private var scrubberSection: some View {
-        let progress = effectiveDuration > 0
-            ? (isDraggingProgress ? dragProgress : player.currentTime / effectiveDuration)
-            : 0
-        return VStack(spacing: 6) {
-            // Custom scrubber — avoids app accent color conflicts with native Slider
-            GeometryReader { geo in
-                let w = geo.size.width
-                let thumbD: CGFloat = 14
-                let fillW = CGFloat(max(0, min(progress, 1))) * (w - thumbD)
-                ZStack(alignment: .leading) {
-                    // Track background
-                    Capsule()
-                        .fill(Color.white.opacity(0.3))
-                        .frame(width: w, height: 4)
-                    // Track fill
-                    Capsule()
-                        .fill(Color.white)
-                        .frame(width: fillW + thumbD / 2, height: 4)
-                    // Thumb
-                    Circle()
-                        .fill(Color.white)
-                        .frame(width: thumbD, height: thumbD)
-                        .offset(x: fillW)
+        VStack(spacing: 4) {
+            // Fixed-height container prevents GeometryReader from expanding infinitely
+            ZStack {
+                GeometryReader { geo in
+                    let w = geo.size.width
+                    let thumbD: CGFloat = 16
+                    let progress = effectiveDuration > 0
+                        ? (isDraggingProgress ? dragProgress : player.currentTime / effectiveDuration)
+                        : 0
+                    let clampedP = max(0, min(progress, 1))
+                    let fillW = clampedP * (w - thumbD)
+                    ZStack(alignment: .leading) {
+                        Capsule()
+                            .fill(Color.white.opacity(0.3))
+                            .frame(width: w, height: 4)
+                            .offset(y: 20)
+                        Capsule()
+                            .fill(Color.white)
+                            .frame(width: max(thumbD / 2, fillW + thumbD / 2), height: 4)
+                            .offset(y: 20)
+                        Circle()
+                            .fill(Color.white)
+                            .frame(width: thumbD, height: thumbD)
+                            .offset(x: fillW, y: 12)
+                    }
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { v in
+                                isDraggingProgress = true
+                                dragProgress = max(0, min(Double(v.location.x / w), 1))
+                            }
+                            .onEnded { _ in
+                                player.seek(to: dragProgress * effectiveDuration)
+                                isDraggingProgress = false
+                            }
+                    )
                 }
-                .frame(width: w, height: 44)
-                .contentShape(Rectangle())
-                .gesture(
-                    DragGesture(minimumDistance: 0)
-                        .onChanged { v in
-                            isDraggingProgress = true
-                            dragProgress = max(0, min(Double(v.location.x / w), 1))
-                        }
-                        .onEnded { _ in
-                            player.seek(to: dragProgress * effectiveDuration)
-                            isDraggingProgress = false
-                        }
-                )
             }
             .frame(height: 44)
 
-            // Timestamps
+            // Timestamps — outside GeometryReader so they always render
             HStack {
                 Text(formatTime(isDraggingProgress
                     ? dragProgress * effectiveDuration
@@ -387,9 +388,9 @@ struct NowPlayingView: View {
                 Spacer()
                 Text(formatTime(effectiveDuration))
             }
-            .font(.system(size: 12, weight: .regular))
+            .font(.system(size: 12))
             .monospacedDigit()
-            .foregroundStyle(Color.white.opacity(0.6))
+            .foregroundColor(Color.white.opacity(0.6))
         }
     }
 
