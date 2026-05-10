@@ -339,30 +339,47 @@ struct NowPlayingView: View {
     // MARK: - Scrubber (native Slider + timestamps)
 
     private var scrubberSection: some View {
-        VStack(spacing: 4) {
-            Slider(
-                value: Binding(
-                    get: {
-                        isDraggingProgress
-                            ? dragProgress
-                            : (effectiveDuration > 0 ? player.currentTime / effectiveDuration : 0)
-                    },
-                    set: { newVal in
-                        isDraggingProgress = true
-                        dragProgress = newVal
-                    }
-                ),
-                in: 0...1,
-                onEditingChanged: { editing in
-                    if !editing {
-                        player.seek(to: dragProgress * effectiveDuration)
-                        isDraggingProgress = false
-                    }
+        let progress = effectiveDuration > 0
+            ? (isDraggingProgress ? dragProgress : player.currentTime / effectiveDuration)
+            : 0
+        return VStack(spacing: 6) {
+            // Custom scrubber — avoids app accent color conflicts with native Slider
+            GeometryReader { geo in
+                let w = geo.size.width
+                let thumbD: CGFloat = 14
+                let fillW = CGFloat(max(0, min(progress, 1))) * (w - thumbD)
+                ZStack(alignment: .leading) {
+                    // Track background
+                    Capsule()
+                        .fill(Color.white.opacity(0.3))
+                        .frame(width: w, height: 4)
+                    // Track fill
+                    Capsule()
+                        .fill(Color.white)
+                        .frame(width: fillW + thumbD / 2, height: 4)
+                    // Thumb
+                    Circle()
+                        .fill(Color.white)
+                        .frame(width: thumbD, height: thumbD)
+                        .offset(x: fillW)
                 }
-            )
-            .accentColor(.white)
-            .frame(height: 32)
+                .frame(width: w, height: 44)
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { v in
+                            isDraggingProgress = true
+                            dragProgress = max(0, min(Double(v.location.x / w), 1))
+                        }
+                        .onEnded { _ in
+                            player.seek(to: dragProgress * effectiveDuration)
+                            isDraggingProgress = false
+                        }
+                )
+            }
+            .frame(height: 44)
 
+            // Timestamps
             HStack {
                 Text(formatTime(isDraggingProgress
                     ? dragProgress * effectiveDuration
@@ -370,9 +387,9 @@ struct NowPlayingView: View {
                 Spacer()
                 Text(formatTime(effectiveDuration))
             }
-            .font(.system(size: 11))
+            .font(.system(size: 12, weight: .regular))
             .monospacedDigit()
-            .foregroundColor(.white.opacity(0.55))
+            .foregroundStyle(Color.white.opacity(0.6))
         }
     }
 
@@ -463,6 +480,7 @@ struct NowPlayingView: View {
             Spacer()
         }
         .foregroundColor(.white)
+        .font(.system(size: 22))
         .frame(height: 72)
     }
 
