@@ -336,61 +336,58 @@ struct NowPlayingView: View {
         .frame(maxWidth: .infinity)
     }
 
-    // MARK: - Scrubber (native Slider + timestamps)
+    // MARK: - Scrubber
 
     private var scrubberSection: some View {
-        VStack(spacing: 4) {
-            // Fixed-height container prevents GeometryReader from expanding infinitely
-            ZStack {
-                GeometryReader { geo in
-                    let w = geo.size.width
-                    let thumbD: CGFloat = 16
-                    let progress = effectiveDuration > 0
-                        ? (isDraggingProgress ? dragProgress : player.currentTime / effectiveDuration)
-                        : 0
-                    let clampedP = max(0, min(progress, 1))
-                    let fillW = clampedP * (w - thumbD)
-                    ZStack(alignment: .leading) {
-                        Capsule()
-                            .fill(Color.white.opacity(0.3))
-                            .frame(width: w, height: 4)
-                            .offset(y: 20)
-                        Capsule()
-                            .fill(Color.white)
-                            .frame(width: max(thumbD / 2, fillW + thumbD / 2), height: 4)
-                            .offset(y: 20)
-                        Circle()
-                            .fill(Color.white)
-                            .frame(width: thumbD, height: thumbD)
-                            .offset(x: fillW, y: 12)
-                    }
-                    .contentShape(Rectangle())
-                    .gesture(
-                        DragGesture(minimumDistance: 0)
-                            .onChanged { v in
-                                isDraggingProgress = true
-                                dragProgress = max(0, min(Double(v.location.x / w), 1))
-                            }
-                            .onEnded { _ in
-                                player.seek(to: dragProgress * effectiveDuration)
-                                isDraggingProgress = false
-                            }
-                    )
-                }
-            }
-            .frame(height: 44)
+        // Use screen width directly — avoids GeometryReader expansion bug entirely
+        let screenW = (UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first?.screen.bounds.width ?? 390) - 48 // subtract horizontal padding
+        let progress = effectiveDuration > 0
+            ? min(isDraggingProgress ? dragProgress : player.currentTime / effectiveDuration, 1)
+            : 0
+        let fillW = CGFloat(progress) * screenW
 
-            // Timestamps — outside GeometryReader so they always render
+        return VStack(spacing: 6) {
+            ZStack(alignment: .leading) {
+                // Background track
+                Capsule()
+                    .fill(Color.white.opacity(0.3))
+                    .frame(width: screenW, height: 4)
+                // Filled track
+                Capsule()
+                    .fill(Color.white)
+                    .frame(width: max(8, fillW), height: 4)
+                // Thumb
+                Circle()
+                    .fill(Color.white)
+                    .frame(width: 16, height: 16)
+                    .offset(x: max(0, fillW - 8))
+            }
+            .frame(width: screenW, height: 44)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { v in
+                        isDraggingProgress = true
+                        dragProgress = max(0, min(Double(v.location.x / screenW), 1))
+                    }
+                    .onEnded { _ in
+                        player.seek(to: dragProgress * effectiveDuration)
+                        isDraggingProgress = false
+                    }
+            )
+
+            // Timestamps
             HStack {
-                Text(formatTime(isDraggingProgress
-                    ? dragProgress * effectiveDuration
-                    : player.currentTime))
+                Text(formatTime(isDraggingProgress ? dragProgress * effectiveDuration : player.currentTime))
                 Spacer()
                 Text(formatTime(effectiveDuration))
             }
+            .frame(width: screenW)
             .font(.system(size: 12))
             .monospacedDigit()
-            .foregroundColor(Color.white.opacity(0.6))
+            .foregroundColor(.white.opacity(0.6))
         }
     }
 
