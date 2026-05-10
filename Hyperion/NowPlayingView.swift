@@ -68,6 +68,7 @@ struct NowPlayingView: View {
     @State private var showRadioSession:  Bool = false
     @State private var showEQ:            Bool = false
     @State private var showMore:          Bool = false
+    @State private var showFullLyrics:    Bool = false
 
     // MARK: - Derived
 
@@ -226,6 +227,7 @@ struct NowPlayingView: View {
                         )
                     }
                     .frame(height: 44)
+                    .padding(.horizontal, 24)
 
                     HStack {
                         Text(formatTime(isDraggingProgress ? dragProgress * effectiveDuration : player.currentTime))
@@ -235,9 +237,19 @@ struct NowPlayingView: View {
                     .font(.caption2)
                     .monospacedDigit()
                     .foregroundColor(.white.opacity(0.55))
+                    .padding(.horizontal, 24)
                 }
-                .padding(.horizontal, 24)
                 .padding(.top, 16)
+
+                // Inline lyrics panel
+                if showLyrics {
+                    InlineLyricsPanel(state: inlineLyrics, player: player) {
+                        showFullLyrics = true
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.top, 12)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                }
 
                 // Transport
                 HStack(spacing: 0) {
@@ -325,7 +337,7 @@ struct NowPlayingView: View {
         .sheet(isPresented: $showSignalPath) {
             AudioSignalPathView(path: signalPath)
         }
-        .fullScreenCover(isPresented: $showLyrics) {
+        .fullScreenCover(isPresented: $showFullLyrics) {
             if let track = player.currentTrack {
                 LyricsView(track: track)
             }
@@ -1033,7 +1045,7 @@ struct FlatTintBackground: View {
                     .saturation(0.7)
                     .drawingGroup()
             } else {
-                Color.roonBase
+                Color.black
             }
         }
         .overlay(Color.black.opacity(0.60))
