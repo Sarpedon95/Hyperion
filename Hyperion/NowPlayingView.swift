@@ -105,133 +105,26 @@ struct NowPlayingView: View {
     var body: some View {
         ZStack {
             // 1. BACKGROUND
-            FlatTintBackground(coverid: player.currentTrack?.coverid ?? "")
+            backgroundLayer
                 .ignoresSafeArea()
 
-            // 2. CONTENT
+            // 2. CONTENT — uses the computed properties defined below in MARK sections
             VStack(spacing: 0) {
+                headerBar
+                    .padding(.horizontal, 8)
+                    .padding(.top, 8)
 
-                // Header bar
-                HStack {
-                    Button { dismiss() } label: {
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundColor(.white)
-                            .frame(width: 44, height: 44)
-                    }
-                    Spacer()
-                    VStack(spacing: 2) {
-                        // Quality pill
-                        Button { showSignalPath = true } label: {
-                            HStack(spacing: 6) {
-                                Circle()
-                                    .fill(qualityPillInfo.dotColor)
-                                    .frame(width: 8, height: 8)
-                                Text(qualityPillInfo.label)
-                                    .font(.system(size: 13, weight: .medium))
-                                    .foregroundColor(.white)
-                                Image(systemName: "chevron.right")
-                                    .font(.system(size: 11))
-                                    .foregroundColor(.white.opacity(0.6))
-                            }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .background(Capsule().fill(Color.white.opacity(0.15)))
-                        }
-                        .buttonStyle(.plain)
-                        // Profile label
-                        Text(profileManager.pillLabel(
-                            profile: profileManager.activeProfile,
-                            source:  profileManager.detectionSource
-                        ))
-                        .font(.caption2)
-                        .foregroundColor(.white.opacity(0.5))
-                    }
-                    Spacer()
-                    Button { withAnimation { showQueuePanel = true } } label: {
-                        Image(systemName: "list.bullet")
-                            .font(.system(size: 18))
-                            .foregroundColor(.white)
-                            .frame(width: 44, height: 44)
-                    }
-                }
-                .padding(.horizontal, 8)
-                .padding(.top, 8)
+                artworkSection
+                    .padding(.top, 20)
 
-                // Artwork
-                let screenWidth = UIApplication.shared.connectedScenes
-                    .compactMap { $0 as? UIWindowScene }
-                    .first?.screen.bounds.width ?? 390
-                let side = screenWidth - 48
-                ArtworkView(
-                    coverid:     player.currentTrack?.coverid,
-                    size:        side,
-                    contentMode: .fit
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                .shadow(color: .black.opacity(0.4), radius: 20, x: 0, y: 10)
-                .padding(.horizontal, 24)
-                .padding(.top, 24)
-                .id(player.currentTrack?.id ?? -1)
-
-                // Track info
-                VStack(spacing: 4) {
-                    Text(player.currentTrack?.title ?? "")
-                        .font(.system(size: 20, weight: .bold))
-                        .foregroundColor(.white)
-                        .lineLimit(1)
-                    let artistLine = player.currentTrack?.composer
-                        ?? player.currentTrack?.albumartist
-                        ?? player.currentTrack?.trackartist
-                        ?? ""
-                    if !artistLine.isEmpty {
-                        Text(artistLine)
-                            .font(.system(size: 16))
-                            .foregroundColor(.white.opacity(0.65))
-                            .lineLimit(1)
-                    }
-                }
-                .padding(.horizontal, 24)
-                .padding(.top, 20)
-
-                // Scrubber
-                VStack(spacing: 6) {
-                    Slider(
-                        value: Binding(
-                            get: {
-                                isDraggingProgress
-                                    ? dragProgress
-                                    : (effectiveDuration > 0 ? player.currentTime / effectiveDuration : 0)
-                            },
-                            set: { newVal in
-                                isDraggingProgress = true
-                                dragProgress = newVal
-                            }
-                        ),
-                        in: 0...1,
-                        onEditingChanged: { editing in
-                            if !editing {
-                                player.seek(to: dragProgress * effectiveDuration)
-                                isDraggingProgress = false
-                            }
-                        }
-                    )
-                    .tint(.white)
+                trackInfo
                     .padding(.horizontal, 24)
+                    .padding(.top, 16)
 
-                    HStack {
-                        Text(formatTime(isDraggingProgress ? dragProgress * effectiveDuration : player.currentTime))
-                        Spacer()
-                        Text(formatTime(effectiveDuration))
-                    }
-                    .font(.caption2)
-                    .monospacedDigit()
-                    .foregroundColor(.white.opacity(0.55))
+                scrubberSection
                     .padding(.horizontal, 24)
-                }
-                .padding(.top, 16)
+                    .padding(.top, 16)
 
-                // Inline lyrics panel
                 if showLyrics {
                     InlineLyricsPanel(state: inlineLyrics, player: player) {
                         showFullLyrics = true
@@ -241,82 +134,24 @@ struct NowPlayingView: View {
                     .transition(.opacity.combined(with: .move(edge: .top)))
                 }
 
-                // Transport
-                HStack(spacing: 0) {
-                    Spacer()
-                    Button { player.cycleRepeat() } label: {
-                        Image(systemName: player.repeatMode == 1 ? "repeat.1" : "repeat")
-                            .opacity(player.repeatMode == 0 ? 0.35 : 1)
-                    }
-                    Spacer()
-                    Button { player.previousTrack() } label: {
-                        Image(systemName: "backward.end.fill")
-                            .font(.system(size: 26))
-                    }
-                    Spacer()
-                    Button { player.togglePlayPause() } label: {
-                        ZStack {
-                            if player.isLoading {
-                                ProgressView().tint(.white).scaleEffect(1.4)
-                            } else {
-                                Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                                    .font(.system(size: 48))
-                            }
-                        }
-                        .frame(width: 76, height: 76)
-                        .contentShape(Rectangle())
-                    }
-                    Spacer()
-                    Button { player.nextTrack() } label: {
-                        Image(systemName: "forward.end.fill")
-                            .font(.system(size: 26))
-                    }
-                    Spacer()
-                    Button { player.toggleShuffle() } label: {
-                        Image(systemName: "shuffle")
-                            .opacity(player.isShuffle ? 1 : 0.35)
-                    }
-                    Spacer()
+                if let wpi = workProgressInfo {
+                    WorkProgressBar(
+                        progress: wpi.progress,
+                        title:    wpi.title,
+                        elapsed:  wpi.elapsed,
+                        total:    wpi.total
+                    )
+                    .padding(.horizontal, 24)
+                    .padding(.top, 8)
                 }
-                .foregroundColor(.white)
-                .font(.system(size: 22))
-                .frame(height: 80)
-                .padding(.horizontal, 8)
-                .padding(.top, 8)
 
-                // Action row
-                HStack(spacing: 0) {
-                    Spacer()
-                    Button { showLyrics.toggle() } label: {
-                        Image(systemName: showLyrics ? "text.bubble.fill" : "text.bubble")
-                    }
-                    Spacer()
-                    Button {
-                        if let track = player.currentTrack {
-                            withAnimation(.spring(response: 0.28, dampingFraction: 0.58)) {
-                                likedTracks.toggle(track)
-                            }
-                        }
-                    } label: {
-                        Image(systemName: likedTracks.isLiked(player.currentTrack) ? "heart.fill" : "heart")
-                            .foregroundColor(likedTracks.isLiked(player.currentTrack) ? .red : .white)
-                    }
-                    Spacer()
-                    Button { showEQ.toggle() } label: {
-                        Image(systemName: "slider.horizontal.3")
-                    }
-                    Spacer()
-                    Button { showMore.toggle() } label: {
-                        Image(systemName: "ellipsis")
-                    }
-                    Spacer()
-                }
-                .foregroundColor(.white)
-                .font(.system(size: 20))
-                .frame(height: 56)
-                .padding(.horizontal, 8)
+                Spacer(minLength: 8)
 
-                Spacer(minLength: 0)
+                transportControls
+                    .padding(.horizontal, 8)
+
+                bottomToolbar
+                    .padding(.bottom, 8)
             }
 
             if showQueuePanel {
@@ -465,9 +300,9 @@ struct NowPlayingView: View {
             size:        side,
             contentMode: .fit
         )
-        .padding(.horizontal, 24)
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .shadow(color: .black.opacity(0.4), radius: 16, x: 0, y: 8)
+        .padding(.horizontal, 24)
         .id(player.currentTrack?.id ?? -1)
     }
 
@@ -500,7 +335,46 @@ struct NowPlayingView: View {
         .frame(maxWidth: .infinity)
     }
 
-    // MARK: - Progress
+    // MARK: - Scrubber (native Slider + timestamps)
+
+    private var scrubberSection: some View {
+        VStack(spacing: 6) {
+            Slider(
+                value: Binding(
+                    get: {
+                        isDraggingProgress
+                            ? dragProgress
+                            : (effectiveDuration > 0 ? player.currentTime / effectiveDuration : 0)
+                    },
+                    set: { newVal in
+                        isDraggingProgress = true
+                        dragProgress = newVal
+                    }
+                ),
+                in: 0...1,
+                onEditingChanged: { editing in
+                    if !editing {
+                        player.seek(to: dragProgress * effectiveDuration)
+                        isDraggingProgress = false
+                    }
+                }
+            )
+            .tint(.white)
+
+            HStack {
+                Text(formatTime(isDraggingProgress
+                    ? dragProgress * effectiveDuration
+                    : player.currentTime))
+                Spacer()
+                Text(formatTime(effectiveDuration))
+            }
+            .font(.caption2)
+            .monospacedDigit()
+            .foregroundColor(.white.opacity(0.55))
+        }
+    }
+
+    // MARK: - Progress (work-level, kept for WorkProgressBar)
 
     private var progressSection: some View {
         GeometryReader { geo in
@@ -599,7 +473,7 @@ struct NowPlayingView: View {
                 Image(systemName: "list.bullet")
             }
             Spacer()
-            Button { showLyrics = true } label: {
+            Button { withAnimation { showLyrics.toggle() } } label: {
                 Image(systemName: showLyrics ? "text.bubble.fill" : "text.bubble")
             }
             Spacer()
