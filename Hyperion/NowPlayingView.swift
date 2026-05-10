@@ -145,13 +145,14 @@ struct NowPlayingView: View {
                     .padding(.top, 8)
                 }
 
-                Spacer(minLength: 8)
+                Spacer(minLength: 0)
 
                 transportControls
                     .padding(.horizontal, 8)
+                    .padding(.bottom, 4)
 
                 bottomToolbar
-                    .padding(.bottom, 8)
+                    .padding(.bottom, 12)
             }
 
             if showQueuePanel {
@@ -300,9 +301,9 @@ struct NowPlayingView: View {
             size:        side,
             contentMode: .fit
         )
+        .frame(width: side, height: side)
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .shadow(color: .black.opacity(0.4), radius: 16, x: 0, y: 8)
-        .padding(.horizontal, 24)
         .id(player.currentTrack?.id ?? -1)
     }
 
@@ -338,7 +339,7 @@ struct NowPlayingView: View {
     // MARK: - Scrubber (native Slider + timestamps)
 
     private var scrubberSection: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 4) {
             Slider(
                 value: Binding(
                     get: {
@@ -359,7 +360,8 @@ struct NowPlayingView: View {
                     }
                 }
             )
-            .tint(.white)
+            .accentColor(.white)
+            .frame(height: 32)
 
             HStack {
                 Text(formatTime(isDraggingProgress
@@ -368,7 +370,7 @@ struct NowPlayingView: View {
                 Spacer()
                 Text(formatTime(effectiveDuration))
             }
-            .font(.caption2)
+            .font(.system(size: 11))
             .monospacedDigit()
             .foregroundColor(.white.opacity(0.55))
         }
