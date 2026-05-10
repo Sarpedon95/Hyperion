@@ -195,38 +195,28 @@ struct NowPlayingView: View {
                 .padding(.top, 20)
 
                 // Scrubber
-                VStack(spacing: 4) {
-                    GeometryReader { geo in
-                        let progress: CGFloat = isDraggingProgress
-                            ? CGFloat(dragProgress)
-                            : (player.duration > 0 ? CGFloat(player.currentTime / player.duration) : 0)
-                        ZStack(alignment: .leading) {
-                            Capsule()
-                                .fill(Color.white.opacity(0.25))
-                                .frame(height: 4)
-                            Capsule()
-                                .fill(Color.white)
-                                .frame(width: geo.size.width * progress, height: 4)
-                            Circle()
-                                .fill(Color.white)
-                                .frame(width: 16, height: 16)
-                                .offset(x: (geo.size.width - 16) * progress)
-                        }
-                        .frame(width: geo.size.width, height: 44)
-                        .contentShape(Rectangle())
-                        .gesture(DragGesture(minimumDistance: 0)
-                            .onChanged { v in
-                                let pct = Double(v.location.x / geo.size.width)
-                                dragProgress = min(max(pct, 0), 1)
+                VStack(spacing: 6) {
+                    Slider(
+                        value: Binding(
+                            get: {
+                                isDraggingProgress
+                                    ? dragProgress
+                                    : (effectiveDuration > 0 ? player.currentTime / effectiveDuration : 0)
+                            },
+                            set: { newVal in
                                 isDraggingProgress = true
+                                dragProgress = newVal
                             }
-                            .onEnded { _ in
-                                isDraggingProgress = false
+                        ),
+                        in: 0...1,
+                        onEditingChanged: { editing in
+                            if !editing {
                                 player.seek(to: dragProgress * effectiveDuration)
+                                isDraggingProgress = false
                             }
-                        )
-                    }
-                    .frame(height: 44)
+                        }
+                    )
+                    .tint(.white)
                     .padding(.horizontal, 24)
 
                     HStack {
