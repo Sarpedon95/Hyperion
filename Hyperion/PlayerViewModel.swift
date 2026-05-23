@@ -22,10 +22,57 @@ final class PlayerViewModel: ObservableObject {
         didSet {
             guard let track = currentTrack, track.id != oldValue?.id else { return }
             updateNowPlayingInfo(track: track)
+            // Radio uses a dedicated path with currentTrack kept nil, so this
+            // only runs for real library tracks. Guard defensively anyway.
+            guard currentRadioStation == nil else { return }
             LyricsService.shared.prefetch(for: track)
             handleTrackChangeForScrobbling(track)
+            // Resolve classical metadata for the now-playing track and prefetch
+            // the next few. Non-blocking — playback never waits for this.
+            resolveClassicalMetadataForCurrentTrack()
         }
     }
+
+    // MARK: - Internet radio (Radio tab)
+    //
+    // Distinct from `isRadioEnabled` (the auto-DJ that replenishes the track
+    // queue). When a radio station is streaming, `currentTrack` stays nil and
+    // playback runs through a dedicated path so the track/queue/persistence
+    // machinery is never touched.
+    @Published var currentRadioStation: RadioStation? = nil
+    var isPlayingRadio: Bool { currentRadioStation != nil }
+
+    // MARK: - Streaming (Qobuz / Deezer)
+    //
+    // Like radio, streaming runs on a dedicated path where `currentTrack`
+    // stays nil. `currentStreamTrack` drives the mini-player / Now Playing
+    // chrome; `streamQueue` carries upcoming stream tracks queued via
+    // addStreamTrackToQueue(). Priority for mini-player / badges:
+    //   radio > streaming > local track > empty.
+    @Published var currentStreamTrack: StreamTrack? = nil
+    var streamQueue: [StreamTrack] = []
+    var streamQueueIndex: Int = 0
+    var isPlayingStream: Bool { currentStreamTrack != nil }
+
+    /// True when a library track, radio station, or streaming track is active.
+    /// Drives mini-player / chrome visibility.
+    var hasActivePlayback: Bool {
+        currentTrack != nil || currentRadioStation != nil || currentStreamTrack != nil
+    }
+
+    // Saved track session, restored when radio is stopped via the Stop button.
+    var savedQueueBeforeRadio: [Track]? = nil
+    var savedIndexBeforeRadio: Int = 0
+
+    // MARK: - Playback profile activation (Stage 6)
+    //
+    // The Classical tab forces the classical profile while open and restores
+    // the prior profile on leaving. activeProfileID mirrors the resolved enum.
+    var previousProfileID: String? = nil
+    var activeProfileID: String { profileManager.activeProfile.rawValue }
+    /// Brief, non-intrusive message shown when the profile switches.
+    @Published var profileToast: String? = nil
+    var profileToastTask: Task<Void, Never>? = nil
     @Published var currentWorkGroup: WorkGroup? = nil
     @Published var progress: Double = 0
     @Published var currentTime: Double = 0
@@ -194,6 +241,7 @@ final class PlayerViewModel: ObservableObject {
 
         let lfm = LastFmAuthManager.shared
         guard lfm.isSignedIn else { return }
+        // AUDIT-FIX #3 — track.updateNowPlaying fires at track start (here), not at scrobble threshold
         lfm.updateNowPlaying(
             track:    track.title ?? "",
             artist:   track.trackartist ?? track.albumartist ?? "",

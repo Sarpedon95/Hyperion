@@ -99,32 +99,10 @@ struct LibraryView: View {
 
                         Color.roonBorder.frame(height: 0.5).padding(.leading, 66)
 
-                        NavigationLink(destination: ComposerListView()) {
-                            LibraryMenuRow(icon: "person.badge.key.fill",    label: "Composers")
-                        }
-                        .buttonStyle(.plain)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
-
-                        Color.roonBorder.frame(height: 0.5).padding(.leading, 66)
-
-                        NavigationLink(destination: WorkListView(composerID: nil, composerName: nil)) {
-                            LibraryMenuRow(icon: "music.quarternote.3",      label: "Works")
-                        }
-                        .buttonStyle(.plain)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
-
-                        Color.roonBorder.frame(height: 0.5).padding(.leading, 66)
-
-                        NavigationLink(destination: ClassicalBrowserView()) {
-                            LibraryMenuRow(icon: "music.note.tv",             label: "Classical")
-                        }
-                        .buttonStyle(.plain)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
-
-                        Color.roonBorder.frame(height: 0.5).padding(.leading, 66)
+                        // Composers / Works / Classical are intentionally absent
+                        // from the Library tab. When classical mode is on they live
+                        // in the dedicated Classical tab; when off they're hidden
+                        // everywhere. Either way the Library tab stays non-classical.
 
                         NavigationLink(destination: HistoryView()) {
                             LibraryMenuRow(icon: "chart.bar.fill",            label: "History")
@@ -173,6 +151,37 @@ struct LibraryView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 14))
                     .padding(.horizontal, 16)
 
+                    // MARK: - Streaming (admin only)
+                    if UserSession.shared.isAdmin {
+                        Text("STREAMING")
+                            .font(.roonBody(13, weight: .semibold))
+                            .foregroundColor(.roonSecondary)
+                            .padding(.horizontal, 20)
+                            .padding(.top, 32)
+                            .padding(.bottom, 12)
+
+                        VStack(spacing: 0) {
+                            NavigationLink(destination: StreamingFavoritesView(source: .qobuz)) {
+                                StreamingLibraryRow(source: .qobuz, label: "Qobuz Favorites")
+                            }
+                            .buttonStyle(.plain)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+
+                            Color.roonBorder.frame(height: 0.5).padding(.leading, 66)
+
+                            NavigationLink(destination: StreamingFavoritesView(source: .deezer)) {
+                                StreamingLibraryRow(source: .deezer, label: "Deezer Favorites")
+                            }
+                            .buttonStyle(.plain)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                        }
+                        .background(Color.roonSurface)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                        .padding(.horizontal, 16)
+                    }
+
                     Spacer(minLength: 40)
                 }
             }
@@ -183,6 +192,57 @@ struct LibraryView: View {
             .toolbarBackground(.hidden, for: .navigationBar)
             .toolbarColorScheme(.dark, for: .navigationBar)
         }
+    }
+}
+
+// Library row for streaming sources. Visually matches LibraryMenuRow but
+// swaps the system-icon tile for the source's coloured initial badge.
+struct StreamingLibraryRow: View {
+    let source: StreamSourceType
+    let label: String
+
+    private var color: Color {
+        switch source {
+        case .qobuz:  return Color(red: 0,     green: 0.706, blue: 0.847)
+        case .deezer: return Color(red: 0.937, green: 0.329, blue: 0.4)
+        case .local:  return .roonAccent
+        }
+    }
+
+    private var initial: String {
+        switch source {
+        case .qobuz:  return "Q"
+        case .deezer: return "D"
+        case .local:  return "L"
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(color.opacity(0.18))
+                    .frame(width: 36, height: 36)
+                Text(initial)
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundColor(color)
+            }
+            .padding(.leading, 16)
+            .padding(.trailing, 14)
+
+            Text(label)
+                .font(.roonBody(17, weight: .medium))
+                .foregroundColor(.roonPrimary)
+
+            Spacer()
+
+            Image(systemName: "chevron.right")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.roonTertiary)
+                .padding(.trailing, 16)
+        }
+        .frame(height: 60)
+        .contentShape(Rectangle())
     }
 }
 
@@ -870,6 +930,8 @@ struct AlbumListView: View {
 
     @ObservedObject private var library = LibraryViewModel.shared
 
+    @AppStorage(ClassicalMode.defaultsKey) private var classicalModeEnabled: Bool = true
+
     @State private var sortOrder: AlbumSortOrder = {
         let saved = UserDefaults.standard.string(forKey: "hyperion.library.albumSortOrder") ?? ""
         return AlbumSortOrder(rawValue: saved) ?? .album
@@ -905,6 +967,10 @@ struct AlbumListView: View {
 
     private var displayedAlbums: [Album] {
         var albums = library.albums
+        // Hide purely-classical albums entirely when classical mode is off.
+        if !classicalModeEnabled {
+            albums = albums.filter { !$0.looksClassical }
+        }
         if !searchNeedle.isEmpty {
             albums = albums.filter {
                 searchNeedle.matches($0.album) ||
@@ -2071,6 +2137,28 @@ struct SongListView: View {
                 .contentShape(Rectangle())
                 .listRowBackground(Color.clear)
                 .listRowSeparatorTint(Color.roonBorder)
+                // AUDIT-FIX: cursor-based pagination — trigger the next page
+                // once the user scrolls within a page-size window of the tail.
+                // Only fires while no client-side filter narrows the visible
+                // set, otherwise the trigger row may never be reached.
+                .onAppear {
+                    guard searchNeedle.isEmpty, formatFilter == .all else { return }
+                    guard !library.songsExhausted, !library.isLoadingSongs else { return }
+                    let triggerOffset = 50
+                    if let idx = filtered.firstIndex(where: { $0.id == track.id }),
+                       idx >= filtered.count - triggerOffset {
+                        Task { await library.loadNextSongsPage() }
+                    }
+                }
+            }
+            if library.isLoadingSongs && !library.songs.isEmpty {
+                HStack {
+                    Spacer()
+                    ProgressView().tint(.roonAccent)
+                    Spacer()
+                }
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
             }
         }
         .listStyle(.plain)
@@ -2114,7 +2202,20 @@ struct SongListView: View {
             }
         }
         .task {
-            if library.songs.isEmpty { await library.loadSongs() }
+            // AUDIT-FIX: load only the first page on entry. Further pages stream
+            // in as the user scrolls (see ForEach.onAppear above). Avoids the
+            // 30–60s full-library fetch on libraries with 50k+ tracks.
+            if library.songs.isEmpty && !library.songsExhausted {
+                await library.loadNextSongsPage()
+            }
+        }
+        .onChange(of: searchNeedle) { _, needle in
+            // When the user types into the search field we may need more tracks
+            // in memory than the first page provides to surface a match. Kick
+            // off the next page as a best-effort backfill while server search
+            // (in `LibraryViewModel.search`) handles the authoritative answer.
+            guard !needle.isEmpty, !library.songsExhausted, !library.isLoadingSongs else { return }
+            Task { await library.loadNextSongsPage() }
         }
     }
 

@@ -27,6 +27,13 @@ struct ContentView: View {
     @State private var libraryNavID = UUID()
     @State private var queueNavID   = UUID()
     @State private var orpheusNavID = UUID()
+    @State private var classicalNavID = UUID()
+    @State private var radioNavID = UUID()
+    /// Controls whether classical content (Classical tab + classical sections
+    /// in Home/Library/Search) is surfaced. Observed app-wide via @AppStorage.
+    @AppStorage(ClassicalMode.defaultsKey) private var classicalModeEnabled: Bool = true
+    /// Controls whether the internet-radio tab is shown.
+    @AppStorage(RadioMode.defaultsKey) private var radioModeEnabled: Bool = false
     /// Set to true after the first launch restore attempt so we only show
     /// the resume banner once per cold start.
     @State private var didAttemptRestore: Bool = false
@@ -41,33 +48,39 @@ struct ContentView: View {
     @State private var showOnboarding: Bool = !UserDefaults.standard.bool(forKey: "hyperion.onboarding.complete")
 
     enum Tab: CaseIterable {
-        case home, search, library, queue, orpheus
+        case home, search, library, classical, queue, orpheus, radio
 
         var title: String {
             switch self {
-            case .home:    return "Home"
-            case .search:  return "Search"
-            case .library: return "Library"
-            case .queue:   return "Queue"
-            case .orpheus: return "Orpheus"
+            case .home:      return "Home"
+            case .search:    return "Search"
+            case .library:   return "Library"
+            case .classical: return "Classical"
+            case .queue:     return "Queue"
+            case .orpheus:   return "Orpheus"
+            case .radio:     return "Radio"
             }
         }
         var icon: String {
             switch self {
-            case .home:    return "house"
-            case .search:  return "magnifyingglass"
-            case .library: return "books.vertical"
-            case .queue:   return "list.bullet"
-            case .orpheus: return "waveform"
+            case .home:      return "house"
+            case .search:    return "magnifyingglass"
+            case .library:   return "books.vertical"
+            case .classical: return "music.note.tv"
+            case .queue:     return "list.bullet"
+            case .orpheus:   return "waveform"
+            case .radio:     return "dot.radiowaves.left.and.right"
             }
         }
         var selectedIcon: String {
             switch self {
-            case .home:    return "house.fill"
-            case .search:  return "magnifyingglass.circle.fill"
-            case .library: return "books.vertical.fill"
-            case .queue:   return "list.bullet.rectangle.fill"
-            case .orpheus: return "waveform.circle.fill"
+            case .home:      return "house.fill"
+            case .search:    return "magnifyingglass.circle.fill"
+            case .library:   return "books.vertical.fill"
+            case .classical: return "music.note.tv.fill"
+            case .queue:     return "list.bullet.rectangle.fill"
+            case .orpheus:   return "waveform.circle.fill"
+            case .radio:     return "dot.radiowaves.left.and.right"
             }
         }
     }
@@ -79,6 +92,18 @@ struct ContentView: View {
 
     private var selectedTabOptional: Binding<Tab?> {
         Binding(get: { selectedTab }, set: { if let t = $0 { selectedTab = t } })
+    }
+
+    /// Tabs shown in the bar / sidebar. Classical and Radio tabs are each
+    /// gated on their own Settings toggle.
+    private var visibleTabs: [Tab] {
+        Tab.allCases.filter { tab in
+            switch tab {
+            case .classical: return classicalModeEnabled
+            case .radio:     return radioModeEnabled
+            default:         return true
+            }
+        }
     }
 
     // MARK: - Body
@@ -97,6 +122,27 @@ struct ContentView: View {
         }
         .fullScreenCover(isPresented: $showOnboarding) {
             HyperionOnboardingFlow()
+        }
+        .onChange(of: classicalModeEnabled) { _, enabled in
+            // If the user turns classical mode off while sitting on the Classical
+            // tab, bounce them back to Home so they don't land on a hidden tab.
+            if !enabled, selectedTab == .classical {
+                selectedTab = .home
+            }
+        }
+        .onChange(of: radioModeEnabled) { _, enabled in
+            if !enabled, selectedTab == .radio {
+                selectedTab = .home
+            }
+        }
+        .onChange(of: selectedTab) { oldTab, newTab in
+            // Classical tab forces the classical playback profile while open;
+            // leaving it restores the prior profile. Radio does not change it.
+            if newTab == .classical {
+                player.activateClassicalProfile()
+            } else if oldTab == .classical {
+                player.restorePreviousProfile()
+            }
         }
         .task {
             // Mark the tab bar interactive immediately — each tab shows its own
@@ -156,7 +202,7 @@ struct ContentView: View {
             resumeBannerTask?.cancel()
             resumeBannerTask = nil
         }
-        .animation(.easeInOut(duration: 0.2), value: player.currentTrack != nil)
+        .animation(.easeInOut(duration: 0.2), value: player.hasActivePlayback)
     }
 
     // MARK: - Compact layout (iPhone / compact horizontal size class)
@@ -185,7 +231,7 @@ struct ContentView: View {
                         .fill(Color.roonBorder)
                         .frame(height: 0.5)
 
-                    if player.currentTrack != nil {
+                    if player.hasActivePlayback {
                         MiniPlayerView(showingNowPlaying: $showingNowPlaying)
                             .frame(height: miniPlayerHeight)
                             .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -204,6 +250,7 @@ struct ContentView: View {
 
                 errorBannerOverlay(geo: geo, chromeHeight: compactChromeHeight(geo: geo))
                 resumeBannerOverlay(geo: geo, chromeHeight: compactChromeHeight(geo: geo))
+                profileToastOverlay(chromeHeight: compactChromeHeight(geo: geo))
             }
         }
         // The outer GeometryReader must also ignore safe areas so it measures
@@ -215,7 +262,7 @@ struct ContentView: View {
 
     private var iPadLayout: some View {
         NavigationSplitView {
-            List(ContentView.Tab.allCases, id: \.self, selection: selectedTabOptional) { tab in
+            List(visibleTabs, id: \.self, selection: selectedTabOptional) { tab in
                 Label(tab.title, systemImage: selectedTab == tab ? tab.selectedIcon : tab.icon)
                     .foregroundStyle(selectedTab == tab ? Color.roonAccent : Color.roonPrimary)
                     .font(.roonBody(17, weight: selectedTab == tab ? .semibold : .regular))
@@ -242,7 +289,7 @@ struct ContentView: View {
                             .fill(Color.roonBorder)
                             .frame(height: 0.5)
 
-                        if player.currentTrack != nil {
+                        if player.hasActivePlayback {
                             MiniPlayerView(showingNowPlaying: $showingNowPlaying)
                                 .frame(height: miniPlayerHeight)
                                 .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -256,6 +303,7 @@ struct ContentView: View {
 
                     errorBannerOverlay(geo: geo, chromeHeight: iPadChromeHeight(geo: geo))
                     resumeBannerOverlay(geo: geo, chromeHeight: iPadChromeHeight(geo: geo))
+                    profileToastOverlay(chromeHeight: iPadChromeHeight(geo: geo))
                 }
             }
             .ignoresSafeArea()
@@ -265,12 +313,12 @@ struct ContentView: View {
     // MARK: - Chrome height helpers
 
     private func compactChromeHeight(geo: GeometryProxy) -> CGFloat {
-        let miniH = player.currentTrack != nil ? miniPlayerHeight : 0
+        let miniH = player.hasActivePlayback ? miniPlayerHeight : 0
         return miniH + tabBarHeight + geo.safeAreaInsets.bottom
     }
 
     private func iPadChromeHeight(geo: GeometryProxy) -> CGFloat {
-        let miniH = player.currentTrack != nil ? miniPlayerHeight : 0
+        let miniH = player.hasActivePlayback ? miniPlayerHeight : 0
         return miniH + geo.safeAreaInsets.bottom
     }
 
@@ -349,6 +397,30 @@ struct ContentView: View {
         }
     }
 
+    @ViewBuilder
+    private func profileToastOverlay(chromeHeight: CGFloat) -> some View {
+        if let message = player.profileToast {
+            HStack(spacing: 8) {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.roonAccent)
+                Text(message)
+                    .font(.roonBody(13, weight: .medium))
+                    .foregroundColor(.roonPrimary)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(Color.roonSurface)
+            .clipShape(Capsule())
+            .overlay(Capsule().strokeBorder(Color.roonBorder, lineWidth: 1))
+            .shadow(color: .black.opacity(0.3), radius: 8, y: 3)
+            .padding(.bottom, chromeHeight + 12)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+            .animation(.spring(response: 0.35, dampingFraction: 0.8), value: player.profileToast)
+        }
+    }
+
     // MARK: - Tab helpers
 
     private var tabBar: some View {
@@ -362,6 +434,11 @@ struct ContentView: View {
             RoonTabButton(icon: "books.vertical",  selectedIcon: "books.vertical.fill",         tab: .library, selected: $selectedTab) {
                 libraryPath = NavigationPath(); libraryNavID = UUID()
             }
+            if classicalModeEnabled {
+                RoonTabButton(icon: "music.note.tv", selectedIcon: "music.note.tv.fill",      tab: .classical, selected: $selectedTab) {
+                    classicalNavID = UUID()
+                }
+            }
             // PASS 6 — selected Queue icon now switches to a filled rect-list
             // variant so the user gets the same visual feedback as the other
             // tabs. Previously both states used `list.bullet` so the active
@@ -373,6 +450,11 @@ struct ContentView: View {
             RoonTabButton(icon: "waveform",        selectedIcon: "waveform.circle.fill",        tab: .orpheus, selected: $selectedTab) {
                 orpheusPath = NavigationPath(); orpheusNavID = UUID()
             }
+            if radioModeEnabled {
+                RoonTabButton(icon: "dot.radiowaves.left.and.right", selectedIcon: "dot.radiowaves.left.and.right", tab: .radio, selected: $selectedTab) {
+                    radioNavID = UUID()
+                }
+            }
         }
         .disabled(!isInitialized)
     }
@@ -380,11 +462,13 @@ struct ContentView: View {
     @ViewBuilder
     private var activeTabView: some View {
         switch selectedTab {
-        case .home:    HomeView(path: $homePath).id(homeNavID)
-        case .search:  SearchView(path: $searchPath).id(searchNavID)
-        case .library: LibraryView(path: $libraryPath).id(libraryNavID)
-        case .queue:   QueueView(path: $queuePath).id(queueNavID)
-        case .orpheus: OrpheusView(path: $orpheusPath).id(orpheusNavID)
+        case .home:      HomeView(path: $homePath).id(homeNavID)
+        case .search:    SearchView(path: $searchPath).id(searchNavID)
+        case .library:   LibraryView(path: $libraryPath).id(libraryNavID)
+        case .classical: ClassicalBrowserView().id(classicalNavID)
+        case .queue:     QueueView(path: $queuePath).id(queueNavID)
+        case .orpheus:   OrpheusView(path: $orpheusPath).id(orpheusNavID)
+        case .radio:     RadioView().id(radioNavID)
         }
     }
 }
@@ -418,11 +502,13 @@ struct RoonTabButton: View {
     /// would otherwise read out the SF Symbol name to users.
     private var accessibilityName: String {
         switch tab {
-        case .home:    return "Home"
-        case .search:  return "Search"
-        case .library: return "Library"
-        case .queue:   return "Queue"
-        case .orpheus: return "Orpheus"
+        case .home:      return "Home"
+        case .search:    return "Search"
+        case .library:   return "Library"
+        case .classical: return "Classical"
+        case .queue:     return "Queue"
+        case .orpheus:   return "Orpheus"
+        case .radio:     return "Radio"
         }
     }
 
@@ -456,20 +542,52 @@ struct MiniPlayerView: View {
     @Binding var showingNowPlaying: Bool
     @ObservedObject private var player = PlayerViewModel.shared
 
+    private var miniPlayerTitle: String {
+        if let station = player.currentRadioStation { return station.name }
+        if let stream = player.currentStreamTrack { return stream.title }
+        return player.currentTrack?.title ?? ""
+    }
+
+    private var miniPlayerSubtitle: String {
+        if let station = player.currentRadioStation {
+            return station.genre ?? "Radio"
+        }
+        if let stream = player.currentStreamTrack {
+            return stream.artist
+        }
+        if let work = player.currentTrack?.classicalMetadata?.work, !work.isEmpty {
+            return work
+        }
+        return player.currentTrack?.composer
+            ?? player.currentTrack?.albumartist
+            ?? ""
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Rectangle().fill(Color.roonBorder)
+            // AUDIT-FIX: was a GeometryReader purely to size the fill capsule
+            // as `width * progress`. The MiniPlayer fills the bottom chrome's
+            // width edge-to-edge, so the nearest container's horizontal extent
+            // matches what the GR was measuring — containerRelativeFrame drops
+            // the GR while keeping the visual identical.
+            ZStack(alignment: .leading) {
+                Rectangle().fill(Color.roonBorder)
+                    .frame(height: 1.5)
+                // Hide the progress strip when there's no duration to scrub
+                // (live radio, or a streaming track with unknown duration).
+                if !player.isPlayingRadio && player.duration > 0 {
                     Rectangle()
                         .fill(Color.roonAccent)
-                        .frame(width: geo.size.width * CGFloat(min(max(player.progress, 0), 1)))
-                        // PASS 6 — also key the animation on track id so the
-                        // progress strip snaps to 0 (no animation) when the
-                        // track changes, instead of visibly animating
-                        // backward from the previous track's progress.
+                        .frame(height: 1.5)
+                        .containerRelativeFrame(.horizontal, alignment: .leading) { length, _ in
+                            length * CGFloat(min(max(player.progress, 0), 1))
+                        }
+                        // PASS 6 — key the animation on track id so the strip
+                        // snaps to 0 (no animation) when the track changes
+                        // instead of visibly animating backward from the
+                        // previous track's progress.
                         .animation(.linear(duration: 0.5), value: player.progress)
-                        .id(player.currentTrack?.id ?? -1)
+                        .id(player.currentStreamTrack?.id ?? "track-\(player.currentTrack?.id ?? -1)")
                 }
             }
             .frame(height: 1.5)
@@ -477,9 +595,27 @@ struct MiniPlayerView: View {
             HStack(spacing: 12) {
                 HStack(spacing: 12) {
                     ZStack(alignment: .topTrailing) {
-                        ArtworkView(coverid: player.currentTrack?.coverid, size: 40)
+                        // Priority: radio > streaming > local track.
+                        if player.isPlayingRadio {
+                            RadioLogoImage(
+                                url: player.currentRadioStation?.logoURL,
+                                size: 40,
+                                fallbackInitials: player.currentRadioStation?.initials ?? "")
+                                .frame(width: 40, height: 40)
+                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                        } else if let stream = player.currentStreamTrack {
+                            AsyncImage(url: stream.artworkURL) { img in
+                                img.resizable().aspectRatio(contentMode: .fill)
+                            } placeholder: {
+                                Color.roonElevated
+                            }
+                            .frame(width: 40, height: 40)
                             .clipShape(RoundedRectangle(cornerRadius: 6))
-                        if player.isRadioEnabled {
+                        } else {
+                            ArtworkView(coverid: player.currentTrack?.coverid, size: 40)
+                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                        }
+                        if player.isRadioEnabled || player.isPlayingRadio {
                             Image(systemName: "antenna.radiowaves.left.and.right")
                                 .font(.system(size: 8, weight: .bold))
                                 .foregroundColor(.black)
@@ -487,23 +623,29 @@ struct MiniPlayerView: View {
                                 .background(Color.roonAccent)
                                 .clipShape(Circle())
                                 .offset(x: 4, y: -4)
+                        } else if let stream = player.currentStreamTrack {
+                            SourceBadge(source: stream.source)
+                                .offset(x: 4, y: -4)
                         }
                     }
                     .padding(.leading, 12)
 
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(player.currentTrack?.title ?? "")
+                        Text(miniPlayerTitle)
                             .font(.roonBody(14, weight: .semibold))
                             .foregroundColor(.roonPrimary)
                             .lineLimit(1)
                             .transition(.push(from: .trailing))
-                            .id(player.currentTrack?.id)
-                        Text(player.currentTrack?.composer ?? player.currentTrack?.albumartist ?? "")
+                            .id(player.currentStreamTrack?.id ?? "track-\(player.currentTrack?.id ?? -1)")
+                        // When classical metadata is loaded and the track is part of a
+                        // work, show the WORK title as subtitle (movements are the
+                        // primary title). Falls back to composer/albumartist otherwise.
+                        Text(miniPlayerSubtitle)
                             .font(.roonBody(12))
                             .foregroundColor(.roonSecondary)
                             .lineLimit(1)
                             .transition(.push(from: .trailing))
-                            .id(player.currentTrack?.id)
+                            .id(player.currentStreamTrack?.id ?? "track-\(player.currentTrack?.id ?? -1)")
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -530,18 +672,23 @@ struct MiniPlayerView: View {
                 .buttonStyle(.borderless)
                 .accessibilityLabel(player.isLoading ? "Loading" : (player.isPlaying ? "Pause" : "Play"))
 
-                Button {
-                    Haptics.medium()
-                    player.nextTrack()
-                } label: {
-                    Image(systemName: "forward.end.fill")
-                        .font(.system(size: 20))
-                        .foregroundColor(.roonPrimary)
-                        .frame(width: 44, height: 44)
+                // Next is meaningless for a live stream — hide it for radio.
+                if !player.isPlayingRadio {
+                    Button {
+                        Haptics.medium()
+                        player.nextTrack()
+                    } label: {
+                        Image(systemName: "forward.end.fill")
+                            .font(.system(size: 20))
+                            .foregroundColor(.roonPrimary)
+                            .frame(width: 44, height: 44)
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("Next track")
+                    .padding(.trailing, 12)
+                } else {
+                    Spacer().frame(width: 12)
                 }
-                .buttonStyle(.borderless)
-                .accessibilityLabel("Next track")
-                .padding(.trailing, 12)
             }
             .frame(height: 62)
         }

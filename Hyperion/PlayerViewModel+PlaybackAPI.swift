@@ -12,6 +12,8 @@ extension PlayerViewModel {
 
     func playWork(_ workGroup: WorkGroup, startingAt index: Int) {
         guard !workGroup.tracks.isEmpty else { return }
+        exitRadioForNewPlayback()
+        exitStreamForNewPlayback()
         originalQueueBeforeShuffle = nil
         isShuffle        = false
         currentWorkGroup = workGroup
@@ -23,6 +25,8 @@ extension PlayerViewModel {
     func playAlbum(_ workGroups: [WorkGroup]) {
         let tracks = workGroups.flatMap(\.tracks)
         guard !tracks.isEmpty else { return }
+        exitRadioForNewPlayback()
+        exitStreamForNewPlayback()
         originalQueueBeforeShuffle = nil
         isShuffle        = false
         currentWorkGroup = workGroups.first
@@ -32,6 +36,8 @@ extension PlayerViewModel {
     }
 
     func playSingleTrack(_ track: Track) {
+        exitRadioForNewPlayback()
+        exitStreamForNewPlayback()
         originalQueueBeforeShuffle = nil
         isShuffle        = false
         currentWorkGroup = nil
@@ -42,6 +48,8 @@ extension PlayerViewModel {
 
     func playTracks(_ tracks: [Track], startingAt index: Int = 0, shuffle: Bool = false) {
         guard !tracks.isEmpty else { return }
+        exitRadioForNewPlayback()
+        exitStreamForNewPlayback()
         originalQueueBeforeShuffle = nil
         isShuffle        = false
         currentWorkGroup = nil
@@ -93,6 +101,8 @@ extension PlayerViewModel {
 
     func playTrack(at index: Int) {
         guard queue.indices.contains(index) else { return }
+        exitRadioForNewPlayback()
+        exitStreamForNewPlayback()
         currentIndex = index
         syncCurrentWorkGroup()
         playCurrentTrack()
@@ -111,7 +121,7 @@ extension PlayerViewModel {
     }
 
     func resume() {
-        guard currentTrack != nil || !queue.isEmpty else {
+        guard currentTrack != nil || !queue.isEmpty || isPlayingStream else {
             ServerLogStore.shared.debug("Resume: No track or queue available")
             return
         }
@@ -165,6 +175,13 @@ extension PlayerViewModel {
         let now = Date().timeIntervalSinceReferenceDate
         guard now - lastSkipTimestamp >= 0.15 else { return }
         lastSkipTimestamp = now
+
+        // Streaming uses its own queue and runs on a dedicated engine path.
+        if isPlayingStream {
+            advanceStreamQueueOrStop()
+            return
+        }
+
         guard !queue.isEmpty else { return }
         if currentIndex < queue.count - 1 {
             currentIndex += 1
@@ -256,6 +273,8 @@ extension PlayerViewModel {
     // MARK: - Radio mode
 
     func startRadio(seed: Track) {
+        exitRadioForNewPlayback()
+        exitStreamForNewPlayback()
         radioSeed = seed
         isRadioEnabled = true
         originalQueueBeforeShuffle = nil

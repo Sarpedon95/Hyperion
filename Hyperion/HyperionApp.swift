@@ -22,6 +22,9 @@ struct HyperionApp: App {
         _ = AudiomuseManager.shared
         // ADDED: Task 7 — remove widget artwork files older than 60 days.
         NowPlayingWidgetStore.cleanupOldArtwork()
+        // First admin launch: seed Deezer ARL + Qobuz credentials into Keychain.
+        // The seeder no-ops for non-admin users and never overwrites existing keys.
+        StreamingKeychainSeeder.seedIfNeeded()
     }
 
     var body: some Scene {
@@ -29,6 +32,9 @@ struct HyperionApp: App {
             ContentView()
                 .preferredColorScheme(.dark)
                 .tint(.roonAccent)
+                // Streaming views (StreamingFavoritesView, StreamingAlbumView,
+                // StreamTrackRow) consume the player via @EnvironmentObject.
+                .environmentObject(player)
                 .onChange(of: scenePhase) { _, newPhase in
                     let phaseName: String
                     switch newPhase {

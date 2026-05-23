@@ -58,9 +58,13 @@ final class SearchViewModel: ObservableObject {
     @Published var scope: SearchScope = .all
     @Published var ooComposers: [OOComposer] = []
     @Published var ooWorks: [OOWorkResult] = []
+    // Qobuz + Deezer search results (admin only). Populated after local search
+    // completes; cleared when the query is cleared.
+    @Published var streamingSections: [SearchResultSection] = []
 
     private var searchTask: Task<Void, Never>? = nil
     private var ooSearchTask: Task<Void, Never>? = nil
+    private var streamingSearchTask: Task<Void, Never>? = nil
     private var searchSequence: Int = 0
 
     private var cache: [String: LibraryViewModel.SearchResults] = [:]
@@ -70,11 +74,13 @@ final class SearchViewModel: ObservableObject {
             || !results.artists.isEmpty || !results.tracks.isEmpty
             || !results.genres.isEmpty || !results.playlists.isEmpty
             || !ooComposers.isEmpty || !ooWorks.isEmpty
+            || !streamingSections.isEmpty
     }
 
     func performSearch(query: String, library: LibraryViewModel) {
         searchTask?.cancel()
         ooSearchTask?.cancel()
+        streamingSearchTask?.cancel()
         searchSequence += 1
         let sequence = searchSequence
         let key = query.lowercased().trimmingCharacters(in: .whitespaces)
@@ -82,16 +88,18 @@ final class SearchViewModel: ObservableObject {
             results = ([], [], [], [], [], [], [])
             ooComposers = []
             ooWorks = []
+            streamingSections = []
             isSearching = false
             return
         }
 
         ooComposers = []
         ooWorks = []
+        streamingSections = []
 
         // 1. Return cached results immediately if available.
         if let cached = cache[key] {
-            results = cached
+            results = filteredForClassicalMode(cached)
             isSearching = false
         } else {
             isSearching = true
@@ -101,7 +109,7 @@ final class SearchViewModel: ObservableObject {
             let hasLocal = !local.composers.isEmpty || !local.works.isEmpty || !local.albums.isEmpty
                 || !local.artists.isEmpty || !local.tracks.isEmpty
             if hasLocal {
-                results = local
+                results = filteredForClassicalMode(local)
                 isSearching = false  // server results will replace these silently
             }
 
@@ -117,17 +125,18 @@ final class SearchViewModel: ObservableObject {
                 let r = await library.search(query: key)
                 guard !Task.isCancelled, self.searchSequence == sequence else { return }
                 RecentSearchStore.shared.add(key)
-                self.results = r
+                self.results = self.filteredForClassicalMode(r)
                 self.isSearching = false
                 self.cache[key] = r
             }
         }
 
         // 4. OpenOpus omnisearch in parallel (All scope only, same debounce).
+        //    Skipped entirely when classical mode is off — OO is classical-only.
         ooSearchTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 150_000_000)
             guard !Task.isCancelled, let self, self.searchSequence == sequence else { return }
-            guard self.scope == .all else { return }
+            guard self.scope == .all, ClassicalMode.isEnabled else { return }
             let raw = (try? await OpenOpusService.shared.omnisearch(key)) ?? []
             guard !Task.isCancelled, self.searchSequence == sequence else { return }
             self.ooComposers = raw.filter { $0.type == "composer" }.map { res in
@@ -141,6 +150,27 @@ final class SearchViewModel: ObservableObject {
                 return OOWorkResult(work: work, composer: comp)
             }
         }
+
+        // 5. Qobuz + Deezer search in parallel (admin only, same debounce as
+        //    OpenOpus). Local results render first; streaming sections append
+        //    underneath when ready.
+        streamingSearchTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            guard !Task.isCancelled, let self, self.searchSequence == sequence else { return }
+            guard UserSession.shared.isAdmin, self.scope == .all else { return }
+
+            async let qTracks = QobuzClient.shared.search(query: key)
+            async let dTracks = DeezerClient.shared.search(query: key)
+            async let qAlbums = QobuzClient.shared.searchAlbums(query: key)
+            async let dAlbums = DeezerClient.shared.searchAlbums(query: key)
+            let (qt, dt, qa, da) = await (qTracks, dTracks, qAlbums, dAlbums)
+            guard !Task.isCancelled, self.searchSequence == sequence else { return }
+
+            self.streamingSections = [
+                SearchResultSection(id: "qobuz",  title: "Qobuz",  source: .qobuz,  tracks: qt, albums: qa),
+                SearchResultSection(id: "deezer", title: "Deezer", source: .deezer, tracks: dt, albums: da),
+            ].filter { !$0.tracks.isEmpty || !$0.albums.isEmpty }
+        }
     }
 
     func cancelSearch() {
@@ -148,7 +178,21 @@ final class SearchViewModel: ObservableObject {
         searchTask = nil
         ooSearchTask?.cancel()
         ooSearchTask = nil
+        streamingSearchTask?.cancel()
+        streamingSearchTask = nil
         isSearching = false
+    }
+
+    /// Strips classical result categories (composers + works) when classical
+    /// mode is off, so the main Search tab never surfaces classical scopes.
+    /// Albums / artists / tracks / genres / playlists are unaffected.
+    private func filteredForClassicalMode(
+        _ r: LibraryViewModel.SearchResults
+    ) -> LibraryViewModel.SearchResults {
+        guard !ClassicalMode.isEnabled else { return r }
+        return (composers: [], works: [],
+                albums: r.albums, artists: r.artists, tracks: r.tracks,
+                genres: r.genres, playlists: r.playlists)
     }
 }
 
@@ -200,7 +244,8 @@ struct SearchView: View {
                     } else {
                         SearchResultsView(results: vm.results,
                                          ooComposers: vm.ooComposers,
-                                         ooWorks: vm.ooWorks)
+                                         ooWorks: vm.ooWorks,
+                                         streamingSections: vm.streamingSections)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -280,6 +325,8 @@ struct SearchSuggestionsView: View {
     @ObservedObject private var library       = LibraryViewModel.shared
     @ObservedObject private var recentSearches = RecentSearchStore.shared
 
+    @AppStorage(ClassicalMode.defaultsKey) private var classicalModeEnabled: Bool = true
+
     private let pinnedNames = [
         "Bach", "Beethoven", "Brahms", "Mozart", "Schubert",
         "Tchaikovsky", "Mahler", "Bruckner", "Wagner", "Sibelius",
@@ -309,8 +356,8 @@ struct SearchSuggestionsView: View {
                     GenresSection(genres: library.genres)
                 }
 
-                // MARK: Popular composers
-                if !cachedPinnedComposers.isEmpty {
+                // MARK: Popular composers (classical — gated)
+                if classicalModeEnabled, !cachedPinnedComposers.isEmpty {
                     VStack(alignment: .leading, spacing: 14) {
                         Text("Popular Composers")
                             .font(.roonTitle(22))
@@ -333,8 +380,8 @@ struct SearchSuggestionsView: View {
                     }
                 }
 
-                // MARK: All composers
-                if !cachedOtherComposers.isEmpty {
+                // MARK: All composers (classical — gated)
+                if classicalModeEnabled, !cachedOtherComposers.isEmpty {
                     VStack(alignment: .leading, spacing: 12) {
                         HStack {
                             Text("All Composers")
@@ -582,6 +629,7 @@ struct SearchResultsView: View {
     let results: (composers: [Composer], works: [Work], albums: [Album], artists: [Artist], tracks: [Track], genres: [Genre], playlists: [LocalPlaylist])
     var ooComposers: [OOComposer] = []
     var ooWorks: [OOWorkResult] = []
+    var streamingSections: [SearchResultSection] = []
     @ObservedObject private var library = LibraryViewModel.shared
     @ObservedObject private var player  = PlayerViewModel.shared
 
@@ -813,6 +861,47 @@ struct SearchResultsView: View {
                         .background(Color.roonSurface)
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                         .padding(.horizontal, 16)
+                    }
+                }
+
+                // MARK: - Streaming (Qobuz / Deezer) — admin only
+                // Ordered after every local section so the library always wins
+                // visual priority. SearchViewModel guarantees Qobuz precedes
+                // Deezer in `streamingSections`.
+                if UserSession.shared.isAdmin {
+                    ForEach(streamingSections) { section in
+                        if !section.albums.isEmpty {
+                            searchSection("\(section.title.uppercased()) — ALBUMS") {
+                                ScrollView(.horizontal, showsIndicators: false) {
+                                    LazyHStack(spacing: 12) {
+                                        ForEach(section.albums) { album in
+                                            NavigationLink(destination: StreamingAlbumView(album: album)) {
+                                                StreamAlbumCard(album: album)
+                                                    .frame(width: 140)
+                                            }
+                                            .buttonStyle(.plain)
+                                        }
+                                    }
+                                    .padding(.horizontal, 16)
+                                }
+                            }
+                        }
+                        if !section.tracks.isEmpty {
+                            searchSection(section.title.uppercased()) {
+                                LazyVStack(spacing: 0) {
+                                    ForEach(section.tracks) { track in
+                                        StreamTrackRow(track: track)
+                                            .padding(.horizontal, 14)
+                                        if track.id != section.tracks.last?.id {
+                                            Color.roonBorder.frame(height: 0.5).padding(.leading, 70)
+                                        }
+                                    }
+                                }
+                                .background(Color.roonSurface)
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                                .padding(.horizontal, 16)
+                            }
+                        }
                     }
                 }
 
@@ -1122,6 +1211,9 @@ struct SettingsView: View {
     @ObservedObject private var profileManager = PlaybackProfileManager.shared
     @Environment(\.dismiss) private var dismiss
 
+    @AppStorage(ClassicalMode.defaultsKey) private var classicalModeEnabled: Bool = true
+    @AppStorage(RadioMode.defaultsKey) private var radioModeEnabled: Bool = false
+
     @State private var localURL: String     = ""
     @State private var tailscaleURL: String = ""
     @State private var proxyURL: String     = ""
@@ -1371,6 +1463,46 @@ struct SettingsView: View {
                     .listRowBackground(Color.roonSurface)
 
                 Section {
+                    Toggle(isOn: $classicalModeEnabled) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Classical Mode")
+                                .foregroundColor(.roonPrimary)
+                            Text(classicalModeEnabled
+                                 ? "Composers, works, conductors, ensembles and soloists live in the Classical tab."
+                                 : "Classical content is hidden everywhere — Home, Library, Search and the Classical tab.")
+                                .font(.roonBody(12))
+                                .foregroundColor(.roonSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .tint(.roonAccent)
+                } header: { Text("CLASSICAL MUSIC") } footer: {
+                    Text("Turn this off if you don't use the classical features. Now Playing still shows classical tags for any classical track you play.")
+                        .font(.roonBody(12)).foregroundColor(.roonTertiary)
+                }
+                .listRowBackground(Color.roonSurface)
+
+                Section {
+                    Toggle(isOn: $radioModeEnabled) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Radio")
+                                .foregroundColor(.roonPrimary)
+                            Text(radioModeEnabled
+                                 ? "Internet radio stations appear in a dedicated Radio tab."
+                                 : "The Radio tab is hidden.")
+                                .font(.roonBody(12))
+                                .foregroundColor(.roonSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .tint(.roonAccent)
+                } header: { Text("INTERNET RADIO") } footer: {
+                    Text("Stream free internet radio stations from RadioBrowser. Distinct from the auto-DJ radio that builds a queue from a track.")
+                        .font(.roonBody(12)).foregroundColor(.roonTertiary)
+                }
+                .listRowBackground(Color.roonSurface)
+
+                Section {
                     Toggle(isOn: Binding(
                         get: { UserDefaults.standard.bool(forKey: "hyperion.journal.promptEnabled") },
                         set: { UserDefaults.standard.set($0, forKey: "hyperion.journal.promptEnabled") }
@@ -1396,6 +1528,28 @@ struct SettingsView: View {
                     }
                 } header: { Text("LISTENING PROFILE") }
                 .listRowBackground(Color.roonSurface)
+
+                // MARK: - Admin Control Room
+                // Streaming source priority editor — gated on isAdmin so a
+                // non-admin user never sees streaming controls anywhere.
+                if UserSession.shared.isAdmin {
+                    Section {
+                        NavigationLink(destination: StreamingSourcePriorityView()) {
+                            HStack {
+                                Text("Source Priority").foregroundColor(.roonPrimary)
+                                Spacer()
+                                Text(PlaybackRouter.shared.sourcePriority
+                                    .map { $0.capitalized }.joined(separator: " → "))
+                                    .font(.roonBody(13)).foregroundColor(.roonSecondary)
+                                    .lineLimit(1).truncationMode(.tail)
+                            }
+                        }
+                    } header: { Text("CONTROL ROOM") } footer: {
+                        Text("Order Hyperion uses when resolving a stream URL. Local is always tried first; Qobuz and Deezer fall back in the order listed.")
+                            .font(.roonBody(12)).foregroundColor(.roonTertiary)
+                    }
+                    .listRowBackground(Color.roonSurface)
+                }
 
                 Section {
                     HStack {
@@ -1561,8 +1715,10 @@ private struct PlaybackProfilesSection: View {
             HStack {
                 Text("Default Profile").foregroundColor(.roonPrimary)
                 Spacer()
+                // Classical is excluded — it activates automatically from the
+                // Classical tab, not as a manual default.
                 Picker("Default Profile", selection: $profileManager.globalDefaultProfile) {
-                    ForEach(PlaybackProfile.allCases) { profile in
+                    ForEach(PlaybackProfile.allCases.filter { $0 != .classical }) { profile in
                         Text(profile.displayName).tag(profile)
                     }
                 }
@@ -1593,7 +1749,7 @@ private struct PlaybackProfilesSection: View {
         } header: {
             Text("PLAYBACK PROFILES")
         } footer: {
-            Text("Profiles are auto-detected from track genre tags. The default profile is used as a fallback. Per-album overrides can be set from the album detail view.")
+            Text("Profiles are auto-detected from track genre tags; the default profile is the fallback. The Classical profile activates automatically while the Classical tab is open and restores your previous profile when you leave. Per-album overrides can be set from the album detail view.")
                 .font(.roonBody(12)).foregroundColor(.roonTertiary)
         }
     }
@@ -1723,6 +1879,22 @@ private struct ProfileSettingsDetail: View {
             }
         }
         .tint(.roonAccent)
+
+        // ReplayGain — read-only for now. Stored as profile metadata; not yet
+        // applied by the audio engine, so it is shown for reference only.
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text("ReplayGain").foregroundColor(.roonSecondary)
+                Spacer()
+                Text(settings.replayGainEnabled
+                     ? "\(settings.replayGainMode.displayName) · \(String(format: "%.1f dB", settings.replayGainPreamp))"
+                     : "Off")
+                    .font(.roonMono(13)).foregroundColor(.roonTertiary)
+            }
+            Text("Not yet applied by the engine — display only.")
+                .font(.roonBody(11)).foregroundColor(.roonTertiary)
+        }
+        .padding(.vertical, 2)
     }
 }
 
@@ -2023,5 +2195,92 @@ private struct CrossfadeShapePreview: View {
         }
         .background(Color.roonElevated.opacity(0.5))
         .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+}
+
+// MARK: - Streaming Source Priority (admin Control Room)
+//
+// Editor for PlaybackRouter.shared.sourcePriority. Local is pinned to the
+// top of the list and is not movable; only Qobuz and Deezer can be reordered.
+// Changes are written back to UserDefaults via the property wrapper and take
+// effect the next time PlaybackRouter resolves a stream URL.
+
+private struct StreamingSourcePriorityView: View {
+    @State private var streamingOrder: [String] = []
+
+    var body: some View {
+        List {
+            Section {
+                HStack {
+                    sourceIcon(for: "local")
+                    Text("Local").foregroundColor(.roonPrimary)
+                    Spacer()
+                    Text("Always first")
+                        .font(.roonBody(12)).foregroundColor(.roonTertiary)
+                }
+                .listRowBackground(Color.roonSurface)
+            } header: { Text("PINNED") } footer: {
+                Text("Hyperion always tries your LMS library first. Drag the streaming sources below into the order they should be consulted as fallbacks.")
+                    .font(.roonBody(12)).foregroundColor(.roonTertiary)
+            }
+
+            Section {
+                ForEach(streamingOrder, id: \.self) { key in
+                    HStack {
+                        sourceIcon(for: key)
+                        Text(key.capitalized).foregroundColor(.roonPrimary)
+                        Spacer()
+                    }
+                }
+                .onMove(perform: move)
+                .listRowBackground(Color.roonSurface)
+            } header: { Text("STREAMING FALLBACKS") }
+        }
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+        .background(Color.roonBase)
+        .navigationTitle("Source Priority")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(Color.roonBase, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
+        .toolbarColorScheme(.dark, for: .navigationBar)
+        .toolbar { EditButton().foregroundColor(.roonAccent) }
+        .onAppear { loadFromRouter() }
+    }
+
+    private func loadFromRouter() {
+        let stored = PlaybackRouter.shared.sourcePriority
+        // Strip "local" and keep only known streaming keys, preserving order.
+        let known: Set<String> = ["qobuz", "deezer"]
+        var ordered = stored.filter { known.contains($0) }
+        // Backfill any missing source (e.g. if defaults were mutated externally).
+        for k in known where !ordered.contains(k) { ordered.append(k) }
+        streamingOrder = ordered
+    }
+
+    private func move(from source: IndexSet, to destination: Int) {
+        streamingOrder.move(fromOffsets: source, toOffset: destination)
+        PlaybackRouter.shared.sourcePriority = ["local"] + streamingOrder
+    }
+
+    @ViewBuilder
+    private func sourceIcon(for key: String) -> some View {
+        let color: Color = {
+            switch key {
+            case "qobuz":  return Color(red: 0,     green: 0.706, blue: 0.847)
+            case "deezer": return Color(red: 0.937, green: 0.329, blue: 0.4)
+            default:       return .roonAccent
+            }
+        }()
+        let initial = key.prefix(1).uppercased()
+        ZStack {
+            RoundedRectangle(cornerRadius: 6)
+                .fill(color.opacity(0.18))
+                .frame(width: 28, height: 28)
+            Text(initial)
+                .font(.system(size: 13, weight: .bold))
+                .foregroundColor(color)
+        }
+        .padding(.trailing, 8)
     }
 }

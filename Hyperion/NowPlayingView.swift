@@ -71,6 +71,7 @@ struct NowPlayingView: View {
     @State private var showFullLyrics:    Bool = false
     @State private var albumNavTarget:    Album? = nil
     @State private var artistNavTarget:   Artist? = nil
+    @State private var showClassicalInfo: Bool = false
 
     // MARK: - Derived
 
@@ -110,51 +111,54 @@ struct NowPlayingView: View {
             backgroundLayer
                 .ignoresSafeArea()
 
-            // 2. CONTENT — uses the computed properties defined below in MARK sections
-            VStack(spacing: 0) {
-                headerBar
-                    .padding(.horizontal, 8)
-                    .padding(.top, 8)
+            // 2. CONTENT — radio gets a dedicated live-stream layout; everything
+            // else uses the standard track layout.
+            if player.isPlayingRadio {
+                radioNowPlayingContent
+            } else {
+                VStack(spacing: 0) {
+                    headerBar
+                        .padding(.horizontal, 8)
+                        .padding(.top, 8)
 
-                artworkSection
-                    .padding(.top, 20)
+                    artworkSection
+                        .padding(.top, 20)
 
-                trackInfo
-                    .padding(.horizontal, 24)
-                    .padding(.top, 16)
+                    trackInfo
+                        .padding(.horizontal, 24)
+                        .padding(.top, 16)
 
-                scrubberSection
-                    .padding(.horizontal, 24)
-                    .padding(.top, 16)
+                    scrubberSection
+                        .padding(.horizontal, 24)
+                        .padding(.top, 16)
 
-                if showLyrics {
-                    InlineLyricsPanel(state: inlineLyrics, player: player) {
-                        showFullLyrics = true
+                    if showLyrics {
+                        InlineLyricsPanel(state: inlineLyrics, player: player) {
+                            showFullLyrics = true
+                        }
+                        .padding(.horizontal, 24)
+                        .padding(.top, 12)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
                     }
-                    .padding(.horizontal, 24)
-                    .padding(.top, 12)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+
+                    if let group = player.currentWorkGroup, group.tracks.count > 1 {
+                        WorkProgressBar(
+                            group:          group,
+                            currentTrackID: player.currentTrack?.id
+                        )
+                        .padding(.horizontal, 24)
+                        .padding(.top, 8)
+                    }
+
+                    Spacer(minLength: 0)
+
+                    transportControls
+                        .padding(.horizontal, 8)
+                        .padding(.bottom, 4)
+
+                    bottomToolbar
+                        .padding(.bottom, 12)
                 }
-
-                if let wpi = workProgressInfo {
-                    WorkProgressBar(
-                        progress: wpi.progress,
-                        title:    wpi.title,
-                        elapsed:  wpi.elapsed,
-                        total:    wpi.total
-                    )
-                    .padding(.horizontal, 24)
-                    .padding(.top, 8)
-                }
-
-                Spacer(minLength: 0)
-
-                transportControls
-                    .padding(.horizontal, 8)
-                    .padding(.bottom, 4)
-
-                bottomToolbar
-                    .padding(.bottom, 12)
             }
 
             if showQueuePanel {
@@ -187,6 +191,12 @@ struct NowPlayingView: View {
             NavigationStack { ArtistDetailView(artist: artist) }
                 .environment(\.hyperionBottomOverlayHeight, 0)
         }
+        .sheet(isPresented: $showClassicalInfo) {
+            if let metadata = player.currentTrack?.classicalMetadata {
+                ClassicalInfoSheet(metadata: metadata)
+                    .environment(\.hyperionBottomOverlayHeight, 0)
+            }
+        }
         .preferredColorScheme(.dark)
         .sensoryFeedback(.selection, trigger: player.currentTrack?.id)
         .sensoryFeedback(.impact(weight: .light, intensity: 0.6), trigger: player.isPlaying)
@@ -214,6 +224,114 @@ struct NowPlayingView: View {
             )
             inlineLyrics = InlineLyricsState(from: result)
         }
+    }
+
+    // MARK: - Radio Now Playing
+
+    @ViewBuilder
+    private var radioNowPlayingContent: some View {
+        let station = player.currentRadioStation
+        let side = (UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first?.screen.bounds.width ?? 390) - 96
+
+        VStack(spacing: 0) {
+            HStack {
+                TopChromeButton(systemName: "chevron.down", accessibilityLabel: "Close") {
+                    Haptics.light(); dismiss()
+                }
+                Spacer()
+                Color.clear.frame(width: 44, height: 44)   // balances the close button
+            }
+            .padding(.horizontal, 8)
+            .padding(.top, 8)
+
+            Spacer(minLength: 0)
+
+            RadioLogoImage(url: station?.logoURL, size: side, fallbackInitials: station?.initials ?? "")
+                .frame(width: side, height: side)
+                .clipShape(RoundedRectangle(cornerRadius: 16))
+                .shadow(color: .black.opacity(0.4), radius: 16, x: 0, y: 8)
+
+            VStack(spacing: 8) {
+                // LIVE badge
+                Text("LIVE")
+                    .font(.roonBody(11, weight: .bold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Color.red)
+                    .clipShape(Capsule())
+
+                Text(station?.name ?? "Radio")
+                    .font(.roonTitle(24))
+                    .foregroundColor(.roonPrimary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.7)
+
+                if let genre = station?.genre, !genre.isEmpty {
+                    Text(genre)
+                        .font(.roonBody(15))
+                        .foregroundColor(.roonSecondary)
+                        .lineLimit(1)
+                }
+
+                if let detail = radioDetailLine(station) {
+                    Text(detail)
+                        .font(.roonBody(12))
+                        .foregroundColor(.roonTertiary)
+                        .lineLimit(1)
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 24)
+
+            Spacer(minLength: 0)
+
+            // Play / pause only — no scrubber, no skip controls.
+            Button {
+                if !player.isLoading { Haptics.medium() }
+                player.togglePlayPause()
+            } label: {
+                ZStack {
+                    if player.isLoading {
+                        ProgressView().tint(.white).scaleEffect(1.4)
+                    } else {
+                        Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                            .font(.system(size: 64))
+                    }
+                }
+                .frame(width: 80, height: 80)
+                .contentShape(Rectangle())
+            }
+            .foregroundColor(.white)
+
+            Button {
+                Haptics.light()
+                player.stopRadioStation()
+                dismiss()
+            } label: {
+                Text("Stop")
+                    .font(.roonBody(14, weight: .semibold))
+                    .foregroundColor(.roonAccent)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 8)
+                    .background(Color.roonAccent.opacity(0.15))
+                    .clipShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 16)
+            .padding(.bottom, 24)
+
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func radioDetailLine(_ station: RadioStation?) -> String? {
+        guard let station else { return nil }
+        let parts = [station.country, station.bitrateDisplay].compactMap { $0 }.filter { !$0.isEmpty }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     // MARK: - Background
@@ -252,7 +370,13 @@ struct NowPlayingView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Audio quality: \(qualityPillInfo.label). Tap for signal path.")
 
-                if player.currentTrack != nil {
+                // Radio LIVE badge (handled elsewhere) > stream source badge >
+                // profile pill. Stream and profile are mutually exclusive — if
+                // a stream track is playing, the stream pill replaces the
+                // profile pill since profile only applies to local playback.
+                if let streamTrack = player.currentStreamTrack {
+                    StreamSourcePill(track: streamTrack)
+                } else if player.currentTrack != nil {
                     Button {
                         Haptics.light()
                         showProfileSheet = true
@@ -333,7 +457,17 @@ struct NowPlayingView: View {
 
     // MARK: - Track info
 
+    @ViewBuilder
     private var trackInfo: some View {
+        if let metadata = player.currentTrack?.classicalMetadata,
+           metadata.isPartOfWork {
+            classicalTrackInfo(metadata: metadata)
+        } else {
+            standardTrackInfo
+        }
+    }
+
+    private var standardTrackInfo: some View {
         let artistLine = player.currentTrack?.composer
             ?? player.currentTrack?.albumartist
             ?? player.currentTrack?.trackartist
@@ -342,53 +476,144 @@ struct NowPlayingView: View {
         return VStack(alignment: .center, spacing: 6) {
 
             // Title — taps to album detail
-            Button {
-                guard let id = player.currentTrack?.albumID,
-                      let album = LibraryViewModel.shared.albums.first(where: { $0.id == id })
-                else { return }
-                albumNavTarget = album
-            } label: {
-                HStack(alignment: .firstTextBaseline, spacing: 5) {
-                    Text(player.currentTrack?.title ?? "")
-                        .font(.roonTitle(22))
-                        .foregroundColor(.roonPrimary)
-                        .multilineTextAlignment(.center)
-                        .lineLimit(2)
-                        .minimumScaleFactor(0.7)
-                    if player.currentTrack?.albumID != nil {
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundColor(.roonPrimary.opacity(0.35))
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .center)
-            }
-            .buttonStyle(.plain)
+            titleButton
 
             // Artist/composer — taps to artist detail
             if !artistLine.isEmpty {
-                Button {
-                    guard let artist = LibraryViewModel.shared.artists.first(where: {
-                        $0.name.caseInsensitiveCompare(artistLine) == .orderedSame
-                    }) else { return }
-                    artistNavTarget = artist
-                } label: {
-                    HStack(alignment: .firstTextBaseline, spacing: 4) {
-                        Text(artistLine)
-                            .font(.roonBody(16))
-                            .foregroundColor(.roonSecondary)
-                            .multilineTextAlignment(.center)
-                            .lineLimit(1)
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundColor(.roonSecondary.opacity(0.45))
-                    }
-                    .frame(maxWidth: .infinity, alignment: .center)
-                }
-                .buttonStyle(.plain)
+                artistButton(name: artistLine)
             }
         }
         .frame(maxWidth: .infinity)
+    }
+
+    /// Classical layout: SECTION → WORK → PART → COMPOSER → CONDUCTOR · ENSEMBLE → SOLOISTS.
+    /// Each subsidiary line collapses when its data is nil/empty so we never
+    /// reserve blank space.
+    private func classicalTrackInfo(metadata: ClassicalMetadata) -> some View {
+        let composerLine = metadata.composer
+            ?? player.currentTrack?.composer
+            ?? player.currentTrack?.albumartist
+            ?? ""
+
+        let conductorEnsemble: String? = {
+            let conductor = metadata.conductor?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let ensemble  = metadata.ensemble?.trimmingCharacters(in: .whitespacesAndNewlines)
+            switch (conductor?.isEmpty == false ? conductor : nil,
+                    ensemble?.isEmpty  == false ? ensemble  : nil) {
+            case let (c?, e?): return "\(c) · \(e)"
+            case let (c?, nil): return c
+            case let (nil, e?): return e
+            default: return nil
+            }
+        }()
+
+        let soloistsLine: String? = {
+            let soloists = metadata.soloists.filter { !$0.isEmpty }
+            return soloists.isEmpty ? nil : soloists.joined(separator: " · ")
+        }()
+
+        return VStack(alignment: .center, spacing: 4) {
+
+            // SECTION (opera/oratorio) — smallest, quaternary
+            if let section = metadata.section, !section.isEmpty {
+                Text(section)
+                    .font(.roonBody(11, weight: .medium))
+                    .foregroundColor(.white.opacity(0.45))
+                    .kerning(0.8)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(1)
+                    .padding(.bottom, 2)
+            }
+
+            // WORK title — secondary, max 2 lines, truncates with ellipsis
+            if let work = metadata.work, !work.isEmpty {
+                Text(work)
+                    .font(.roonBody(14, weight: .medium))
+                    .foregroundColor(.roonSecondary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+                    .padding(.bottom, 2)
+            }
+
+            // PART (movement label) — main title style; preserves album-tap behaviour.
+            titleButton
+
+            // COMPOSER — primary artist line, taps to artist detail.
+            if !composerLine.isEmpty {
+                artistButton(name: composerLine)
+            }
+
+            // CONDUCTOR · ENSEMBLE — caption, tertiary.
+            if let line = conductorEnsemble {
+                Text(line)
+                    .font(.roonBody(12))
+                    .foregroundColor(.roonTertiary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+
+            // SOLOISTS — caption, tertiary, one line (full list available in info sheet).
+            if let line = soloistsLine {
+                Text(line)
+                    .font(.roonBody(12))
+                    .foregroundColor(.roonTertiary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    // MARK: - Track-info building blocks
+
+    private var titleButton: some View {
+        Button {
+            guard let id = player.currentTrack?.albumID,
+                  let album = LibraryViewModel.shared.albums.first(where: { $0.id == id })
+            else { return }
+            albumNavTarget = album
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Text(player.currentTrack?.title ?? "")
+                    .font(.roonTitle(22))
+                    .foregroundColor(.roonPrimary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.7)
+                if player.currentTrack?.albumID != nil {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.roonPrimary.opacity(0.35))
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .center)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func artistButton(name: String) -> some View {
+        Button {
+            guard let artist = LibraryViewModel.shared.artists.first(where: {
+                $0.name.caseInsensitiveCompare(name) == .orderedSame
+            }) else { return }
+            artistNavTarget = artist
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text(name)
+                    .font(.roonBody(16))
+                    .foregroundColor(.roonSecondary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(1)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(.roonSecondary.opacity(0.45))
+            }
+            .frame(maxWidth: .infinity, alignment: .center)
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: - Scrubber
@@ -483,19 +708,6 @@ struct NowPlayingView: View {
         .frame(height: 44)
     }
 
-    private var workProgressInfo: (progress: Double, title: String, elapsed: Double, total: Double)? {
-        guard let group = player.currentWorkGroup,
-              group.tracks.count > 1,
-              !group.isFlatFallbackGroup,
-              let currentTrack = player.currentTrack else { return nil }
-        let trackIdx = group.tracks.firstIndex(where: { $0.id == currentTrack.id }) ?? 0
-        let completedDuration = group.tracks.prefix(trackIdx).compactMap(\.duration).reduce(0, +)
-        let elapsed = completedDuration + player.currentTime
-        let total = group.totalDuration
-        guard total > 0 else { return nil }
-        return (progress: min(1, elapsed / total), title: group.workTitle, elapsed: elapsed, total: total)
-    }
-
     // MARK: - Transport controls
 
     private var transportControls: some View {
@@ -569,8 +781,19 @@ struct NowPlayingView: View {
             Button {
                 if let track = player.currentTrack {
                     Haptics.medium()
+                    let wasLiked = likedTracks.isLiked(track)
                     withAnimation(.spring(response: 0.28, dampingFraction: 0.58)) {
                         likedTracks.toggle(track)
+                    }
+                    // AUDIT-FIX #1 — mirror love/unlove to Last.fm
+                    let lfm = LastFmAuthManager.shared
+                    if lfm.isSignedIn {
+                        let artist = track.trackartist ?? track.albumartist ?? ""
+                        if wasLiked {
+                            lfm.unlove(track: track.title ?? "", artist: artist)
+                        } else {
+                            lfm.love(track: track.title ?? "", artist: artist)
+                        }
                     }
                 }
             } label: {
@@ -586,6 +809,18 @@ struct NowPlayingView: View {
                 Image(systemName: "slider.horizontal.3")
                     .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
+            }
+            if player.currentTrack?.classicalMetadata?.isPartOfWork == true {
+                Spacer()
+                Button {
+                    Haptics.light()
+                    showClassicalInfo = true
+                } label: {
+                    Image(systemName: "info.circle")
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .accessibilityLabel("Work info")
             }
             Spacer()
             Button {
@@ -701,38 +936,78 @@ struct NowPlayingView: View {
 }
 
 // MARK: - Work progress bar
+//
+// Segmented bar: one capsule per movement in the current work group. Past
+// movements are filled in accent (dimmed), the current movement is fully
+// accent and pulses gently, and future movements are unfilled. Tapping a
+// segment hands the entire work to the player at that movement index.
 
 private struct WorkProgressBar: View {
-    let progress: Double
-    let title: String
-    let elapsed: Double
-    let total: Double
+    let group: WorkGroup
+    let currentTrackID: Int?
+
+    @State private var isPulsing = false
+
+    private var currentSegmentIndex: Int {
+        guard let id = currentTrackID,
+              let idx = group.tracks.firstIndex(where: { $0.id == id }) else { return 0 }
+        return idx
+    }
 
     var body: some View {
-        VStack(spacing: 4) {
-            GeometryReader { geo in
-                let width = max(geo.size.width, 1)
-                ZStack(alignment: .leading) {
-                    Capsule()
-                        .fill(Color.white.opacity(0.18))
-                        .frame(height: 3)
-                    Capsule()
-                        .fill(Color.white.opacity(0.65))
-                        .frame(width: width * CGFloat(max(0, min(1, progress))), height: 3)
+        VStack(spacing: 6) {
+            HStack(spacing: 3) {
+                ForEach(Array(group.tracks.enumerated()), id: \.offset) { idx, track in
+                    segment(at: idx, track: track)
                 }
             }
-            .frame(height: 3)
+            .frame(height: 14)
 
             HStack {
-                Text(title)
+                Text(group.workTitle)
                     .font(.roonBody(10, weight: .medium))
                     .foregroundColor(.white.opacity(0.45))
                     .lineLimit(1)
                 Spacer()
-                Text("\(TimeFormatting.formatDuration(elapsed)) / \(TimeFormatting.formatDuration(total))")
+                Text("\(currentSegmentIndex + 1) / \(group.tracks.count)")
                     .font(.roonMono(10))
-                    .foregroundColor(.white.opacity(0.35))
+                    .foregroundColor(.white.opacity(0.5))
             }
+        }
+        .onAppear { isPulsing = true }
+    }
+
+    private func segment(at index: Int, track: Track) -> some View {
+        let isCurrent = index == currentSegmentIndex
+        let isPast    = index <  currentSegmentIndex
+        let fill: Color = isCurrent
+            ? .roonAccent
+            : (isPast ? .roonAccent.opacity(0.55) : .white.opacity(0.18))
+
+        // Outer 14-pt tall container is the tap target (matches the
+        // surrounding HStack height); inner capsule is a 4-pt visual.
+        return ZStack {
+            Color.clear
+            Capsule()
+                .fill(fill)
+                .frame(height: 4)
+                // Subtle pulse on the current segment only.
+                .opacity(isCurrent && isPulsing ? 0.55 : 1.0)
+                .animation(
+                    isCurrent
+                        ? .easeInOut(duration: 1.1).repeatForever(autoreverses: true)
+                        : .default,
+                    value: isPulsing
+                )
+        }
+        .frame(maxWidth: .infinity)
+        .contentShape(Rectangle())
+        .accessibilityLabel("Movement \(index + 1) of \(group.tracks.count): \(track.title)")
+        .accessibilityAddTraits(isCurrent ? [.isSelected] : [])
+        .onTapGesture {
+            guard !isCurrent else { return }
+            Haptics.light()
+            PlayerViewModel.shared.playWork(group, startingAt: index)
         }
     }
 }
@@ -1289,5 +1564,63 @@ private struct ProfileQuickSettingsSheet: View {
             get: { profileManager.resolvedCrossfeedPreset },
             set: { profileManager.sessionCrossfeedPreset = $0 }
         )
+    }
+}
+
+// MARK: - Streaming source pill (expanded Now Playing only)
+//
+// Shown in place of the playback-profile pill when a Qobuz / Deezer track is
+// playing. Carries the source name + a small quality label underneath
+// ("24bit · 96kHz" for Qobuz, "FLAC" or "320 kbps" for Deezer).
+
+private struct StreamSourcePill: View {
+    let track: StreamTrack
+
+    private var qobuzColor: Color { Color(red: 0,     green: 0.706, blue: 0.847) }
+    private var deezerColor: Color { Color(red: 0.937, green: 0.329, blue: 0.4)   }
+
+    private var pillText: String {
+        switch track.source {
+        case .qobuz:  return "Qobuz"
+        case .deezer: return "Deezer"
+        case .local:  return ""
+        }
+    }
+
+    private var pillColor: Color {
+        switch track.source {
+        case .qobuz:  return qobuzColor
+        case .deezer: return deezerColor
+        case .local:  return .roonAccent
+        }
+    }
+
+    private var qualityText: String? {
+        if let label = track.qualityLabel, !label.isEmpty { return label }
+        switch track.source {
+        case .deezer: return "FLAC"
+        case .qobuz:  return nil
+        case .local:  return nil
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 2) {
+            Text(pillText)
+                .font(.roonBody(11, weight: .semibold))
+                .foregroundColor(pillColor)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(pillColor.opacity(0.2))
+                .clipShape(Capsule())
+
+            if let quality = qualityText {
+                Text(quality)
+                    .font(.roonBody(10))
+                    .foregroundColor(.roonSecondary)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Streaming from \(pillText)\(qualityText.map { ", \($0)" } ?? "")")
     }
 }

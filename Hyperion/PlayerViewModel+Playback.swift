@@ -196,7 +196,9 @@ extension PlayerViewModel {
             self.orpheusDidStartAudiblePlayback = confirmed
             if confirmed {
                 ServerLogStore.shared.info("Orpheus: first audio confirmed through DSP chain")
-                self.prefetchNextTrackAsset()
+                // AUDIT-FIX #15 — removed prefetchNextTrackAsset() call here; it
+                // races with the call in onNearEnd and causes a double-preload.
+                // The sole normal-path trigger is onNearEnd (≤3 s remaining).
                 // Schedule gapless preload now that the first track is audibly playing.
                 if PlaybackProfileManager.shared.resolvedGaplessEnabled {
                     self.scheduleOrpheusGaplessPreload(for: self.currentIndex)
@@ -1072,21 +1074,52 @@ extension PlayerViewModel {
         }
     }
 
+    /// Resolves the current work group from the WORK tag on the playing track's
+    /// classical metadata. Replaces the prior queue-heuristic implementation:
+    /// the canonical source is now LMS's WORK/work_id tags via the resolver.
+    ///
+    /// Behavior:
+    ///   • No track, or no work tag → currentWorkGroup = nil.
+    ///   • Same workID as currently set → no-op (avoid churn / redundant fetch).
+    ///   • New workID → clear immediately, then fetch tracks in the work group
+    ///     via LyrionAPI.fetchTracksForWork (cached) and assign when ready.
+    ///   • Stale guard: if the track changes during the async fetch, the
+    ///     result is discarded.
     func syncCurrentWorkGroup() {
-        guard let match = queueWorkGroups.first(where: { group in
-            group.tracks.contains(where: { $0.index == currentIndex })
-        }) else {
+        guard let track = currentTrack,
+              let metadata = track.classicalMetadata,
+              metadata.isPartOfWork,
+              let workID = metadata.workID,
+              workID > 0 else {
             currentWorkGroup = nil
             return
         }
 
-        currentWorkGroup = WorkGroup(
-            id:        match.id,
-            workTitle: match.workTitle,
-            composer:  match.composer,
-            tracks:    match.tracks.map(\.track),
-            coverid:   match.tracks.first?.track.coverid
-        )
+        // Already showing this work — leave it alone so a same-work track
+        // change doesn't blink the UI between fetch resolutions.
+        if currentWorkGroup?.id == workID { return }
+
+        // Different work (or none yet). Clear before the async fetch resolves.
+        currentWorkGroup = nil
+
+        let trackIDAtStart = track.id
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let tracks = await LyrionAPI.shared.fetchTracksForWork(workID: workID)
+            // Stale: the user moved on before the fetch came back.
+            guard let current = self.currentTrack,
+                  current.id == trackIDAtStart,
+                  current.classicalMetadata?.workID == workID,
+                  !tracks.isEmpty else { return }
+
+            self.currentWorkGroup = WorkGroup(
+                id:        workID,
+                workTitle: metadata.work ?? current.work ?? "Work",
+                composer:  metadata.composer ?? current.composer,
+                tracks:    tracks,
+                coverid:   tracks.first?.coverid ?? current.coverid
+            )
+        }
     }
 
     func trackDidFinish() {
@@ -1129,7 +1162,7 @@ extension PlayerViewModel {
 
                 // Orpheus gapless path — pending engine is already feeding the node.
                 if isPlaybackRoutedThroughOrpheus,
-                   profileManager.resolvedGaplessEnabled,
+                   shouldUseGaplessForNextTrack(from: currentIndex),
                    let pending = pendingOrpheusEngine,
                    queue.indices.contains(nextIdx) {
                     performOrpheusGaplessHandoff(pending: pending, nextIndex: nextIdx)
@@ -1138,7 +1171,7 @@ extension PlayerViewModel {
 
                 // AVPlayer gapless path — pre-inserted item plays with no gap.
                 if !isPlaybackRoutedThroughOrpheus,
-                   profileManager.resolvedGaplessEnabled,
+                   shouldUseGaplessForNextTrack(from: currentIndex),
                    let g = gaplessPreloadedItem,
                    queue.indices.contains(nextIdx),
                    g.trackID == queue[nextIdx].id {
@@ -1426,18 +1459,81 @@ extension PlayerViewModel {
     }
 
     static func radioTracks(seedTrack: Track?) async -> [Track] {
+        // Radio is the non-classical suggestion engine. Classical tracks never
+        // enter it — whether classical mode is off (hidden everywhere) or on
+        // (classical discovery lives only in the Classical tab). The two engines
+        // stay separate.
+        func nonClassical(_ tracks: [Track]) -> [Track] {
+            tracks.filter { !$0.looksClassical }
+        }
+
         // Try to get tracks for the seed track's genre; fall back to random songs.
         if let genreStr = seedTrack?.genres,
            let genreName = genreStr.split(separator: ",").first.map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) }),
            !genreName.isEmpty,
            let genre = LibraryViewModel.shared.genres.first(where: { $0.name == genreName }) {
-            let tracks = (try? await LyrionAPI.shared.getTracksForGenre(genreID: genre.id, count: 15)) ?? []
+            let tracks = nonClassical((try? await LyrionAPI.shared.getTracksForGenre(genreID: genre.id, count: 30)) ?? [])
             if !tracks.isEmpty { return Array(tracks.shuffled().prefix(10)) }
         }
         // Fallback: random songs from library
-        let songs = LibraryViewModel.shared.songs
+        let songs = nonClassical(LibraryViewModel.shared.songs)
         if !songs.isEmpty { return Array(songs.shuffled().prefix(10)) }
         return []
+    }
+
+    // MARK: - Work-boundary gapless (Stage 6)
+
+    /// Whether the transition from `currentIdx` to the next track should be
+    /// gapless. Under the classical profile, gapless is restricted to movements
+    /// of the SAME work (equal, non-nil workID); across different works (or when
+    /// either workID is unknown) the track plays to its natural end instead.
+    /// Other profiles keep the existing behaviour (resolvedGaplessEnabled).
+    func shouldUseGaplessForNextTrack(from currentIdx: Int) -> Bool {
+        guard profileManager.resolvedGaplessEnabled else { return false }
+        guard profileManager.activeProfile == .classical else { return true }
+
+        let nextIdx = currentIdx + 1
+        guard queue.indices.contains(currentIdx), queue.indices.contains(nextIdx) else {
+            // Wrap-around (repeat-all) or out of range → treat as a work boundary.
+            return false
+        }
+        guard let a = queue[currentIdx].classicalMetadata?.workID,
+              let b = queue[nextIdx].classicalMetadata?.workID,
+              a == b else {
+            return false   // different work, or metadata not resolved → natural end
+        }
+        return true
+    }
+
+    // MARK: - Profile activation (Stage 6)
+
+    /// Force the classical profile while the Classical tab is open. Saves the
+    /// current profile so it can be restored on leaving.
+    func activateClassicalProfile() {
+        guard profileManager.forcedProfile != .classical else { return }
+        previousProfileID = profileManager.activeProfile.rawValue
+        profileManager.setForcedProfile(.classical, currentTrack: currentTrack)
+        applyProfileToDSP()
+        showProfileToast("Classical mode")
+    }
+
+    /// Clear the forced classical profile; per-track auto-detection resumes.
+    func restorePreviousProfile() {
+        guard profileManager.forcedProfile != nil else { return }
+        profileManager.setForcedProfile(nil, currentTrack: currentTrack)
+        applyProfileToDSP()
+        previousProfileID = nil
+        showProfileToast("Restored \(profileManager.activeProfile.displayName)")
+    }
+
+    private func showProfileToast(_ message: String) {
+        profileToast = message
+        profileToastTask?.cancel()
+        profileToastTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard !Task.isCancelled else { return }
+            self?.profileToast = nil
+        }
     }
 
     // MARK: - Profile DSP integration
@@ -1466,6 +1562,10 @@ extension PlayerViewModel {
     func scheduleOrpheusGaplessPreload(for currentIdx: Int) {
         let nextIdx = currentIdx + 1
         guard queue.indices.contains(nextIdx) else { return }
+        // Work-boundary gapless: under the classical profile, only preload when
+        // the next track is part of the same work. Across works, let the current
+        // track end naturally (no preload, no gapless handoff).
+        guard shouldUseGaplessForNextTrack(from: currentIdx) else { return }
         // Don't double-preload.
         guard pendingOrpheusEngine == nil else { return }
 
@@ -1490,20 +1590,32 @@ extension PlayerViewModel {
         pendingOrpheusLoadTask?.cancel()
         pendingOrpheusLoadTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            do {
-                try await engine.load(url: url, headers: headers, startTime: 0,
-                                      preloadedAsset: preloaded)
-                guard self.pendingOrpheusEngine === engine else { return }
-                // Begin scheduling next track's PCM buffers on the live player node.
-                engine.playGapless()
-                ServerLogStore.shared.info("Orpheus: gapless preload active for \(nextTrack.title)")
-            } catch {
-                ServerLogStore.shared.warn(
-                    "Orpheus: gapless preload failed for \(nextTrack.title): \(error.localizedDescription)"
-                )
-                guard self.pendingOrpheusEngine === engine else { return }
-                self.pendingOrpheusEngine  = nil
-                self.pendingOrpheusLoadTask = nil
+            // AUDIT-FIX #16 — one retry after 0.5 s on transient load failures.
+            for attempt in 1...2 {
+                do {
+                    try await engine.load(url: url, headers: headers, startTime: 0,
+                                          preloadedAsset: attempt == 1 ? preloaded : nil)
+                    guard self.pendingOrpheusEngine === engine else { return }
+                    engine.playGapless()
+                    ServerLogStore.shared.info("Orpheus: gapless preload active for \(nextTrack.title)")
+                    return
+                } catch {
+                    if attempt == 1 {
+                        ServerLogStore.shared.warn(
+                            "Orpheus: gapless preload attempt 1 failed (\(error.localizedDescription)), retrying…"
+                        )
+                        try? await Task.sleep(nanoseconds: 500_000_000)
+                        guard !Task.isCancelled,
+                              self.pendingOrpheusEngine === engine else { return }
+                    } else {
+                        ServerLogStore.shared.warn(
+                            "Orpheus: gapless preload failed for \(nextTrack.title): \(error.localizedDescription)"
+                        )
+                        guard self.pendingOrpheusEngine === engine else { return }
+                        self.pendingOrpheusEngine  = nil
+                        self.pendingOrpheusLoadTask = nil
+                    }
+                }
             }
         }
     }
@@ -1694,4 +1806,255 @@ extension PlayerViewModel {
         pendingSeekWatchdogTask = nil
     }
 
+    // MARK: - Classical metadata resolution
+
+    /// Kicks off a non-blocking resolve of the current track's classical
+    /// metadata via ClassicalMetadataResolver. When the resolve completes:
+    ///   • currentTrack is reassigned with the populated metadata so
+    ///     SwiftUI observers refresh,
+    ///   • syncCurrentWorkGroup re-runs so the WORK-tag-driven work group
+    ///     can populate.
+    /// Also schedules a background prefetch for the next 3 queue items so
+    /// the resolver cache is warm before their playback turn.
+    func resolveClassicalMetadataForCurrentTrack() {
+        guard let track = currentTrack else { return }
+        let trackID = track.id
+
+        // Foreground resolve for the current track.
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let metadata = await ClassicalMetadataResolver.shared.resolve(trackID: trackID)
+            // Stale: a different track is playing now — discard the result.
+            guard let current = self.currentTrack, current.id == trackID else { return }
+            // No-op if metadata is unchanged (e.g. resolver returned the cached value).
+            guard current.classicalMetadata != metadata else { return }
+
+            var updated = current
+            updated.classicalMetadata = metadata
+            self.currentTrack = updated
+            // currentTrack didSet's id-guard skips the play-time side effects;
+            // re-derive the work group and refresh lock-screen metadata
+            // explicitly now that classical fields are known.
+            self.syncCurrentWorkGroup()
+            self.updateNowPlayingInfo(track: updated)
+        }
+
+        // Background prefetch for upcoming tracks so a fast skip finds them cached.
+        let upcoming = upcomingTrackIDsForClassicalPrefetch(count: 3)
+        if !upcoming.isEmpty {
+            Task { @MainActor in
+                await ClassicalMetadataResolver.shared.prefetch(trackIDs: upcoming)
+            }
+        }
+    }
+
+    private func upcomingTrackIDsForClassicalPrefetch(count: Int) -> [Int] {
+        let start = currentIndex + 1
+        let end = min(start + count, queue.count)
+        guard start < end else { return [] }
+        return queue[start..<end].map(\.id)
+    }
+
+    // MARK: - Internet radio playback
+    //
+    // Radio runs on a dedicated path so the track/queue/persistence machinery
+    // is never involved. currentTrack stays nil; currentRadioStation drives the
+    // UI. Reuses the Orpheus engine for streamLike playback, falling back to
+    // AVPlayer (which handles ICY radio streams natively) on any failure.
+
+    func playRadioStation(_ station: RadioStation) {
+        // Streaming and radio are mutually exclusive — clear stream state first.
+        exitStreamForNewPlayback()
+
+        // Preserve the current track session so the Stop button can restore it.
+        if currentRadioStation == nil, !queue.isEmpty {
+            savedQueueBeforeRadio = queue
+            savedIndexBeforeRadio = currentIndex
+        }
+
+        // Tear down current track playback manually rather than via clearQueue()
+        // — clearQueue() would delete the on-disk snapshot, but we want the
+        // pre-radio queue to survive for a later relaunch.
+        teardownPlaybackForRadio()
+
+        currentRadioStation = station
+        currentStreamURL    = station.streamURL
+        duration            = 0
+        currentTime         = 0
+        progress            = 0
+        error               = nil
+        isLoading           = true
+
+        startRadioStream(station: station)
+        updateNowPlayingInfoForRadio(station: station)
+    }
+
+    func stopRadioStation() {
+        guard currentRadioStation != nil else { return }
+        teardownPlaybackForRadio()
+        currentRadioStation = nil
+        currentStreamURL    = nil
+        isLoading           = false
+        isPlaying           = false
+        isPaused            = false
+
+        // Restore the pre-radio queue (paused) if we saved one.
+        if let saved = savedQueueBeforeRadio, !saved.isEmpty {
+            queue = saved
+            currentIndex = saved.indices.contains(savedIndexBeforeRadio) ? savedIndexBeforeRadio : 0
+            currentTrack = queue.indices.contains(currentIndex) ? queue[currentIndex] : nil
+            savedQueueBeforeRadio = nil
+        } else {
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        }
+        MPNowPlayingInfoCenter.default().playbackState = .stopped
+        deactivateAudioSession()
+    }
+
+    /// Called by the normal play entry points so tapping a library track exits
+    /// radio cleanly. The subsequent play path builds its own engine.
+    func exitRadioForNewPlayback() {
+        guard currentRadioStation != nil else { return }
+        orpheusEngine?.stop()
+        orpheusEngine = nil
+        orpheusLoadTask?.cancel()
+        orpheusLoadTask = nil
+        currentRadioStation   = nil
+        savedQueueBeforeRadio = nil   // user chose new content — discard saved
+        currentStreamURL      = nil
+        isPlaybackRoutedThroughOrpheus = false
+    }
+
+    private func teardownPlaybackForRadio() {
+        orpheusEngine?.stop()
+        orpheusEngine = nil
+        pendingOrpheusEngine?.stop()
+        pendingOrpheusEngine = nil
+        pendingOrpheusLoadTask?.cancel(); pendingOrpheusLoadTask = nil
+        orpheusLoadTask?.cancel();        orpheusLoadTask = nil
+        prefetchTask?.cancel();           prefetchTask = nil
+        lmsAudioQualityTask?.cancel();    lmsAudioQualityTask = nil
+        crossfadeTask?.cancel();          crossfadeTask = nil
+        isCrossfadingOut = false
+        crossfadeVolume  = 1
+
+        statusObservation?.invalidate();      statusObservation = nil
+        durationObservation?.invalidate();    durationObservation = nil
+        timeControlObservation?.invalidate(); timeControlObservation = nil
+        removeTimeObserver()
+        removeItemNotificationObservers()
+
+        audioManager.pause()
+        audioManager.replaceCurrentItem(with: nil)
+        playerItem = nil
+
+        isPlaybackRoutedThroughOrpheus = false
+        gaplessPreloadedItem = nil
+        prefetchedNextAsset  = nil
+
+        // Radio replaces the track session in memory but keeps the on-disk
+        // snapshot so the pre-radio queue can restore on next launch.
+        currentTrack = nil
+        queue        = []
+        currentIndex = 0
+        currentWorkGroup = nil
+    }
+
+    private func startRadioStream(station: RadioStation) {
+        let url = station.streamURL
+        activePlaybackID = UUID()
+        let playbackID   = activePlaybackID
+
+        guard activateAudioSession() else {
+            isLoading = false
+            error = "Could not start audio for radio"
+            return
+        }
+
+        let routeOutputs = AVAudioSession.sharedInstance().currentRoute.outputs.map(\.portType)
+        let canUseOrpheus = useOrpheusEngine && !routeOutputs.contains(.airPlay)
+
+        guard canUseOrpheus else {
+            startRadioStreamAVPlayer(url: url, playbackID: playbackID)
+            return
+        }
+
+        let engine = OrpheusPlaybackEngine(manager: audioManager)
+        orpheusEngine = engine
+
+        engine.onBufferingChanged = { [weak self] buffering in
+            guard let self, playbackID == self.activePlaybackID, self.isPlayingRadio else { return }
+            self.isLoading = buffering
+        }
+        engine.onRoutingConfirmed = { [weak self] confirmed in
+            guard let self, playbackID == self.activePlaybackID, self.isPlayingRadio else { return }
+            self.isPlaybackRoutedThroughOrpheus = confirmed
+            if confirmed { self.isLoading = false }
+        }
+        engine.onError = { [weak self, weak engine] msg in
+            guard let self, playbackID == self.activePlaybackID, self.isPlayingRadio else { return }
+            ServerLogStore.shared.warn("Radio Orpheus error: \(msg) — falling back to AVPlayer")
+            engine?.stop()
+            self.orpheusEngine = nil
+            self.isPlaybackRoutedThroughOrpheus = false
+            self.startRadioStreamAVPlayer(url: url, playbackID: playbackID)
+        }
+        engine.onPlaybackEnded = { [weak self] in
+            guard let self, playbackID == self.activePlaybackID, self.isPlayingRadio else { return }
+            // A live stream "ending" usually means a dropped connection — try
+            // AVPlayer, which reconnects ICY streams more gracefully.
+            self.orpheusEngine = nil
+            self.startRadioStreamAVPlayer(url: url, playbackID: playbackID)
+        }
+
+        let headers = LyrionAPI.shared.httpHeaders(accept: "audio/aac,audio/mpeg,audio/ogg,audio/*,*/*")
+        orpheusLoadTask?.cancel()
+        orpheusLoadTask = Task { @MainActor [weak self] in
+            guard let self, self.orpheusEngine === engine, playbackID == self.activePlaybackID else { return }
+            do {
+                try await engine.load(url: url, headers: headers, startTime: 0)
+                guard self.orpheusEngine === engine, playbackID == self.activePlaybackID, self.isPlayingRadio else { return }
+                engine.play()
+                self.isPlaying = true
+                self.isPaused  = false
+                self.refreshNowPlayingPlaybackState(force: true)
+            } catch {
+                guard playbackID == self.activePlaybackID, self.isPlayingRadio else { return }
+                self.orpheusEngine = nil
+                self.startRadioStreamAVPlayer(url: url, playbackID: playbackID)
+            }
+        }
+    }
+
+    private func startRadioStreamAVPlayer(url: URL, playbackID: UUID) {
+        guard playbackID == activePlaybackID, isPlayingRadio else { return }
+        let asset = AVURLAsset(url: url, options: [
+            "AVURLAssetHTTPHeaderFieldsKey": LyrionAPI.shared.httpHeaders(accept: "audio/aac,audio/mpeg,audio/ogg,audio/*,*/*")
+        ])
+        let item = AVPlayerItem(asset: asset)
+        playerItem = item
+        statusObservation?.invalidate()
+        statusObservation = item.observe(\.status, options: [.new]) { [weak self] obsItem, _ in
+            Task { @MainActor [weak self] in
+                guard let self, playbackID == self.activePlaybackID, self.isPlayingRadio else { return }
+                switch obsItem.status {
+                case .readyToPlay:
+                    self.isLoading = false
+                case .failed:
+                    self.isLoading = false
+                    self.error = "Radio stream unavailable"
+                    ServerLogStore.shared.error("Radio AVPlayer failed: \(obsItem.error?.localizedDescription ?? "unknown")")
+                default:
+                    break
+                }
+            }
+        }
+        audioManager.replaceCurrentItem(with: item)
+        player.volume = volume * crossfadeVolume
+        player.play()
+        isPlaybackRoutedThroughOrpheus = false
+        isPlaying = true
+        isPaused  = false
+        refreshNowPlayingPlaybackState(force: true)
+    }
 }
