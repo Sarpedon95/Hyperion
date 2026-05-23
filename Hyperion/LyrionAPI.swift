@@ -30,10 +30,16 @@ final class LyrionAPI {
     // Tags for titles_loop / songinfo:
     //   A=trackartist C=composer G=genres S=albumartist
     //   X=album_replay_gain Y=replay_gain
+    //   b=work + work_id (canonical work tag)
     //   c=compilation d=duration e=album_id i=disc l=album t=tracknum
     //   u=url w=work y=year o=type I=samplesize T=samplerate
     //   r=bitrate Q=lossless x=remote
-    private let trackTags = "ACGSXYcdeiltuwyoITrQx"
+    private let trackTags = "ACGSXYbcdeiltuwyoITrQx"
+
+    // Cache for fetchTracksForWork — keyed by workID. Cleared with the
+    // process. Work groupings rarely change at runtime so an in-memory
+    // cache is the cheapest correctness-preserving lookup.
+    private var workTracksCache: [Int: [Track]] = [:]
 
     private var nextRPCID: Int = 0
 
@@ -490,6 +496,367 @@ final class LyrionAPI {
             let ld = lhs.discnum ?? 0, rd = rhs.discnum ?? 0
             if ld != rd { return ld < rd }
             return (lhs.tracknum ?? 0) < (rhs.tracknum ?? 0)
+        }
+    }
+
+    // MARK: - Classical metadata (Source A + Source B)
+
+    /// Returns combined classical metadata for one track, fetched from:
+    ///   • SOURCE A — LMS JSON-RPC songinfo (tags=bAyl)
+    ///   • SOURCE B — ClassicalTags plugin endpoint
+    /// Non-throwing: returns nil only if BOTH calls fail. A 404 from the
+    /// plugin endpoint is not a failure — it means the track is not yet
+    /// indexed and plugin-side fields remain nil.
+    func fetchClassicalMetadata(for trackID: Int) async -> ClassicalMetadata? {
+        async let songinfoTask: SonginfoClassicalFields? = fetchSongInfoClassicalFields(trackID: trackID)
+        async let pluginTask:   ClassicalTagsPluginFields? = fetchClassicalTagsPluginFields(trackID: trackID)
+
+        let songinfo = await songinfoTask
+        let plugin   = await pluginTask
+
+        if songinfo == nil && plugin == nil { return nil }
+
+        return ClassicalMetadata(
+            work:          songinfo?.work,
+            workID:        songinfo?.workID,
+            ensemble:      songinfo?.ensemble,
+            composer:      songinfo?.composer,
+            conductor:     songinfo?.conductor,
+            recordingYear: songinfo?.recordingYear,
+            soloist:       plugin?.soloist,
+            section:       plugin?.section,
+            workID_slug:   plugin?.workIDSlug
+        )
+    }
+
+    /// Returns every track that shares a given workID (movements of one work)
+    /// in disc/track order. Cached in memory keyed by workID. Returns an empty
+    /// array on any failure or non-positive workID.
+    func fetchTracksForWork(workID: Int) async -> [Track] {
+        guard workID > 0 else { return [] }
+        if let cached = workTracksCache[workID] { return cached }
+
+        do {
+            let result = try await request(params: [
+                "tracks", 0, 100, "work_id:\(workID)", "tags:bAyldti"
+            ])
+            // The LMS `tracks` command returns titles_loop on this server;
+            // accept tracks_loop too in case a future Lyrion version renames it.
+            let arr = (result["titles_loop"] as? [[String: Any]])
+                ?? (result["tracks_loop"] as? [[String: Any]])
+                ?? []
+            let parsed = Self.parseTracks(arr)
+            let sorted = parsed.sorted { lhs, rhs in
+                let ld = lhs.discnum ?? 0, rd = rhs.discnum ?? 0
+                if ld != rd { return ld < rd }
+                return (lhs.tracknum ?? 0) < (rhs.tracknum ?? 0)
+            }
+            workTracksCache[workID] = sorted
+            return sorted
+        } catch {
+            return []
+        }
+    }
+
+    // MARK: - Classical browse (Stage 3)
+    //
+    // These methods feed the Ensemble / Conductor / Soloist / Work browsers in
+    // the Classical tab. They are non-throwing (return empty collections on
+    // failure) so the UI never has to surface server errors mid-browse. Each
+    // browser handles its own empty-state messaging.
+
+    /// All ensembles in the library (BAND contributors, LMS role_id:4).
+    /// Sorted by name (case-insensitive). albumCount is left at 0 here and
+    /// populated by the detail view on demand.
+    func fetchAllEnsembles() async -> [Ensemble] {
+        do {
+            let result = try await request(params: [
+                "artists", 0, 999, "role_id:4", "tags:s"
+            ])
+            guard let arr = result["artists_loop"] as? [[String: Any]] else { return [] }
+            let parsed: [Ensemble] = arr.compactMap { dict in
+                guard let id   = JSON.int(dict["id"]),
+                      let name = (dict["artist"] as? String) ?? JSON.string(dict["name"]),
+                      !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                else { return nil }
+                return Ensemble(id: id, name: name, albumCount: 0)
+            }
+            return parsed.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        } catch {
+            return []
+        }
+    }
+
+    /// Albums credited to a given ensemble (contributor ID).
+    func fetchAlbumsForEnsemble(ensembleID: Int) async -> [Album] {
+        await fetchAlbumsForContributor(contributorID: ensembleID)
+    }
+
+    /// All conductors in the library (LMS role_id:3). Sorted by name.
+    func fetchAllConductors() async -> [Conductor] {
+        do {
+            let result = try await request(params: [
+                "artists", 0, 999, "role_id:3", "tags:s"
+            ])
+            guard let arr = result["artists_loop"] as? [[String: Any]] else { return [] }
+            let parsed: [Conductor] = arr.compactMap { dict in
+                guard let id   = JSON.int(dict["id"]),
+                      let name = (dict["artist"] as? String) ?? JSON.string(dict["name"]),
+                      !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                else { return nil }
+                return Conductor(id: id, name: name, albumCount: 0)
+            }
+            return parsed.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        } catch {
+            return []
+        }
+    }
+
+    /// Albums credited to a given conductor.
+    func fetchAlbumsForConductor(conductorID: Int) async -> [Album] {
+        await fetchAlbumsForContributor(contributorID: conductorID)
+    }
+
+    /// All unique soloist names known to the ClassicalTags plugin, with a
+    /// track count per name. Returns an empty array when the plugin endpoint
+    /// is unavailable — the browser shows its empty state.
+    func fetchAllSoloists() async -> [SoloistEntry] {
+        guard let url = classicalTagsURL(path: "soloists", queryItems: nil) else { return [] }
+        var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.setValue("Hyperion iOS",      forHTTPHeaderField: "User-Agent")
+        HyperionURLAuth.addAuthorizationHeader(to: &req, baseURL: baseURL)
+        req.timeoutInterval = 10
+        do {
+            let (data, response) = try await session.data(for: req)
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode),
+                  let json = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [] }
+            let entries: [SoloistEntry] = json.compactMap { dict in
+                guard let name = JSON.string(dict["name"])?
+                                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                      !name.isEmpty else { return nil }
+                let count = JSON.int(dict["track_count"]) ?? 0
+                return SoloistEntry(name: name, trackCount: count)
+            }
+            return entries.sorted {
+                $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+        } catch {
+            return []
+        }
+    }
+
+    /// Tracks whose soloist field matches (LIKE %name%) the given soloist
+    /// name. Resolves track IDs via the plugin then hydrates them via
+    /// LMS songinfo. Returns empty on any failure.
+    func fetchTracksWithSoloist(name: String) async -> [Track] {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let url = classicalTagsURL(
+                  path: "tracks",
+                  queryItems: [URLQueryItem(name: "soloist", value: trimmed)]
+              ) else { return [] }
+
+        var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.setValue("Hyperion iOS",      forHTTPHeaderField: "User-Agent")
+        HyperionURLAuth.addAuthorizationHeader(to: &req, baseURL: baseURL)
+        req.timeoutInterval = 10
+
+        do {
+            let (data, response) = try await session.data(for: req)
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode),
+                  let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let ids = json["track_ids"] as? [Any] else { return [] }
+            let trackIDs = ids.compactMap { JSON.int($0) }
+            guard !trackIDs.isEmpty else { return [] }
+            return await hydrateTracksByID(trackIDs)
+        } catch {
+            return []
+        }
+    }
+
+    /// Works credited to a given composer name. Returns ClassicalWork
+    /// objects with empty `tracks` arrays — call back through
+    /// `fetchTracksForWork(workID:)` to hydrate movements on demand
+    /// (avoids N+1 traffic on the works list).
+    func fetchWorksForComposer(composerName: String) async -> [ClassicalWork] {
+        // Resolve composer name → contributor ID.
+        let trimmed = composerName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+
+        let composerID: Int? = await {
+            do {
+                let result = try await request(params: ["artists", 0, 50, "search:\(trimmed)"])
+                let arr = result["artists_loop"] as? [[String: Any]] ?? []
+                for dict in arr {
+                    if let name = dict["artist"] as? String,
+                       name.localizedCaseInsensitiveCompare(trimmed) == .orderedSame,
+                       let id = JSON.int(dict["id"]) {
+                        return id
+                    }
+                }
+                return JSON.int(arr.first?["id"])
+            } catch { return nil }
+        }()
+
+        guard let composerID else { return [] }
+
+        do {
+            let result = try await request(params: [
+                "works", 0, 999, "contributor_id:\(composerID)", "tags:w"
+            ])
+            guard let arr = result["works_loop"] as? [[String: Any]] else { return [] }
+            let parsed: [ClassicalWork] = arr.compactMap { dict in
+                guard let id = JSON.int(dict["work_id"]),
+                      let title = dict["work"] as? String,
+                      !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                else { return nil }
+                return ClassicalWork(
+                    id: id,
+                    title: title,
+                    workID_slug: nil,
+                    tracks: [],
+                    performanceCount: 0
+                )
+            }
+            return parsed.sorted {
+                $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
+            }
+        } catch {
+            return []
+        }
+    }
+
+    // MARK: - Classical browse helpers
+
+    private func fetchAlbumsForContributor(contributorID: Int) async -> [Album] {
+        do {
+            let result = try await request(params: [
+                "albums", 0, 999, "artist_id:\(contributorID)", "tags:aljySC"
+            ])
+            return Self.parseAlbums(result["albums_loop"] as? [[String: Any]] ?? [])
+        } catch {
+            return []
+        }
+    }
+
+    /// Build a URL pointing at a ClassicalTags plugin sub-path. Mirrors the
+    /// path-suffix logic in fetchClassicalTagsPluginFields so proxy-prefixed
+    /// servers continue to work.
+    private func classicalTagsURL(path: String, queryItems: [URLQueryItem]?) -> URL? {
+        let baseURLSnapshot = baseURL
+        guard !baseURLSnapshot.isEmpty,
+              var components = URLComponents(string: baseURLSnapshot) else { return nil }
+        let basePath = components.percentEncodedPath
+        let joiner = (basePath.isEmpty || basePath.hasSuffix("/")) ? "" : "/"
+        components.percentEncodedPath = basePath + joiner + "plugins/ClassicalTags/" + path
+        components.queryItems = queryItems
+        return components.url
+    }
+
+    /// Batched songinfo hydration. Pages through the given track IDs in
+    /// chunks of 50, calling songinfo per ID. Tolerant of missing IDs.
+    private func hydrateTracksByID(_ ids: [Int]) async -> [Track] {
+        var tracks: [Track] = []
+        tracks.reserveCapacity(ids.count)
+        // Sequential is fine here — soloist track lists are short in practice.
+        for id in ids.prefix(500) {
+            if let track = try? await getSong(id: id) {
+                tracks.append(track)
+            }
+        }
+        return tracks
+    }
+
+    // Internal field structs used to merge the two classical sources.
+    private struct SonginfoClassicalFields {
+        let work: String?
+        let workID: Int?
+        let ensemble: String?
+        let composer: String?
+        let conductor: String?
+        let recordingYear: Int?
+    }
+
+    private struct ClassicalTagsPluginFields {
+        let soloist: String?
+        let section: String?
+        let workIDSlug: String?
+    }
+
+    private func fetchSongInfoClassicalFields(trackID: Int) async -> SonginfoClassicalFields? {
+        do {
+            let result = try await request(params: [
+                "songinfo", 0, 100, "track_id:\(trackID)", "tags:bAyl"
+            ])
+            guard let arr = result["songinfo_loop"] as? [[String: Any]], !arr.isEmpty else {
+                return nil
+            }
+            // songinfo_loop is [[singleKey: value]] — flatten into one dict.
+            var merged: [String: Any] = [:]
+            for entry in arr { for (k, v) in entry { merged[k] = v } }
+            return SonginfoClassicalFields(
+                work:          Self.normalizeString(merged["work"] as? String),
+                workID:        JSON.int(merged["work_id"]),
+                ensemble:      Self.normalizeString(JSON.string(merged["band"] ?? merged["orchestra"] ?? merged["ensemble"])),
+                composer:      Self.normalizeString(JSON.string(merged["composer"])),
+                conductor:     Self.normalizeString(JSON.string(merged["conductor"])),
+                recordingYear: JSON.int(merged["year"])
+            )
+        } catch {
+            return nil
+        }
+    }
+
+    private func fetchClassicalTagsPluginFields(trackID: Int) async -> ClassicalTagsPluginFields? {
+        let baseURLSnapshot = baseURL
+        guard !baseURLSnapshot.isEmpty,
+              var components = URLComponents(string: baseURLSnapshot) else { return nil }
+
+        // Append /plugins/ClassicalTags/tags to the existing path so this works
+        // both when baseURL is a host root and when it's a path-prefixed proxy.
+        let basePath = components.percentEncodedPath
+        let joiner = (basePath.isEmpty || basePath.hasSuffix("/")) ? "" : "/"
+        components.percentEncodedPath = basePath + joiner + "plugins/ClassicalTags/tags"
+        components.queryItems = [URLQueryItem(name: "track_id", value: String(trackID))]
+
+        guard let url = components.url else { return nil }
+
+        var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.setValue("Hyperion iOS",      forHTTPHeaderField: "User-Agent")
+        HyperionURLAuth.addAuthorizationHeader(to: &req, baseURL: baseURLSnapshot)
+        req.timeoutInterval = 8
+
+        do {
+            let (data, response) = try await session.data(for: req)
+            guard let http = response as? HTTPURLResponse else { return nil }
+
+            // 404 means the track has not been indexed by the plugin yet.
+            // Treat it as a "successful no-data" response so callers still get
+            // Source A fields without classifying the plugin call as a failure.
+            if http.statusCode == 404 {
+                return ClassicalTagsPluginFields(soloist: nil, section: nil, workIDSlug: nil)
+            }
+            guard (200..<300).contains(http.statusCode) else { return nil }
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+            // Some Lyrion plugins wrap the error case in a 200 with {"error": "..."}.
+            if json["error"] != nil {
+                return ClassicalTagsPluginFields(soloist: nil, section: nil, workIDSlug: nil)
+            }
+            return ClassicalTagsPluginFields(
+                soloist:    Self.normalizeString(JSON.string(json["soloist"])),
+                section:    Self.normalizeString(JSON.string(json["section"])),
+                workIDSlug: Self.normalizeString(JSON.string(json["workid"]))
+            )
+        } catch {
+            return nil
         }
     }
 

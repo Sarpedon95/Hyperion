@@ -30,6 +30,11 @@ struct Track: Identifiable, Hashable, Codable {
     let albumReplayGain: Double?
     let isRemote: Bool?
 
+    // Populated lazily by ClassicalMetadataResolver when a track is needed
+    // for display or playback. Nil for non-classical tracks and for tracks
+    // whose metadata has not been resolved yet.
+    var classicalMetadata: ClassicalMetadata? = nil
+
     init(
         id: Int,
         title: String,
@@ -92,7 +97,7 @@ struct Track: Identifiable, Hashable, Codable {
 
     func withAlbumIDIfMissing(_ fallbackAlbumID: Int?) -> Track {
         guard albumID == nil, let fallbackAlbumID else { return self }
-        return Track(
+        var copy = Track(
             id:          id,
             title:       title,
             album:       album,
@@ -118,6 +123,8 @@ struct Track: Identifiable, Hashable, Codable {
             albumReplayGain: albumReplayGain,
             isRemote: isRemote
         )
+        copy.classicalMetadata = classicalMetadata
+        return copy
     }
 }
 

@@ -13,11 +13,9 @@ struct HomeView: View {
     @ObservedObject private var mixGen     = MixGenerator.shared
     @ObservedObject private var audiomuse  = AudiomuseManager.shared
 
+    @AppStorage(ClassicalMode.defaultsKey) private var classicalModeEnabled: Bool = true
+
     @State private var showingSettings: Bool = false
-    @State private var recommendedComposers: [OOComposer] = []
-    @State private var isLoadingClassical: Bool = false
-    @State private var popularWorks: [OORandomWork] = []
-    @State private var isLoadingHighlights: Bool = false
     @State private var recentActivityTab: RecentActivityTab = .played
 
     enum RecentActivityTab { case played, added }
@@ -87,11 +85,10 @@ struct HomeView: View {
                     // MARK: Daily Mixes
                     mixesSection
 
-                    // MARK: Classical Highlights
-                    classicalHighlightsSection
-
-                    // MARK: Classical Composers
-                    classicalSection
+                    // MARK: Genres + Liked Tracks (non-classical)
+                    // Classical content (composers, works) lives exclusively in
+                    // the Classical tab now and never appears on Home.
+                    nonClassicalSection
 
                     // MARK: Artists
                     if !library.artists.isEmpty {
@@ -141,9 +138,7 @@ struct HomeView: View {
                 async let recentPlayed: Void = library.loadRecentlyPlayed()
                 async let artistsLoad: Void  = library.loadArtists()
                 async let genresLoad: Void   = library.loadGenres()
-                async let classicalLoad: Void    = loadClassicalComposers()
-                async let highlightsLoad: Void   = loadClassicalHighlights()
-                _ = await (totals, recentAdded, recentPlayed, artistsLoad, genresLoad, classicalLoad, highlightsLoad)
+                _ = await (totals, recentAdded, recentPlayed, artistsLoad, genresLoad)
                 mixGen.refreshIfNeeded()
             }
         }
@@ -154,41 +149,6 @@ struct HomeView: View {
         Color(red: 0.9, green: 0.35, blue: 0.55), .mint, .cyan,
         Color(red: 0.85, green: 0.75, blue: 0.2), Color(red: 0.3, green: 0.75, blue: 0.4)
     ]
-
-    private var hasClassicalContent: Bool {
-        !library.composers.isEmpty ||
-        library.albums.contains { $0.isClassical == 1 || $0.composer != nil }
-    }
-
-    @ViewBuilder
-    private var classicalHighlightsSection: some View {
-        if hasClassicalContent, !popularWorks.isEmpty || isLoadingHighlights {
-            HomeSectionHeader(label: "CLASSICAL MUSIC", title: "Popular Works")
-                .padding(.horizontal, 16)
-                .padding(.bottom, 14)
-
-            if isLoadingHighlights && popularWorks.isEmpty {
-                ProgressView()
-                    .tint(.roonAccent)
-                    .padding(.bottom, 32)
-            } else {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    LazyHStack(spacing: 14) {
-                        ForEach(popularWorks.prefix(10)) { item in
-                            NavigationLink {
-                                OOWorkDetailView(work: item.work, composer: item.composer)
-                            } label: {
-                                PopularWorkCard(item: item)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    .padding(.horizontal, 16)
-                }
-                .padding(.bottom, 32)
-            }
-        }
-    }
 
     @ViewBuilder
     private var nonClassicalSection: some View {
@@ -252,7 +212,8 @@ struct HomeView: View {
     private var mixesSection: some View {
         let showAI        = audiomuse.isEnabled && audiomuse.audiomuseAvailable && !audiomuse.mixes.isEmpty
         let aiGenerating  = audiomuse.isEnabled && audiomuse.audiomuseAvailable && audiomuse.mixes.isEmpty
-        let localMixes    = mixGen.mixes
+        // Classical mixes never appear on Home — they belong to the Classical tab.
+        let localMixes    = mixGen.mixes.filter { !$0.isClassical }
         let showLocal     = !showAI && !localMixes.isEmpty
         let showSection   = showAI || showLocal || aiGenerating
 
@@ -346,73 +307,6 @@ struct HomeView: View {
     }
 
     @ViewBuilder
-    private var classicalSection: some View {
-        if !hasClassicalContent {
-            nonClassicalSection
-        } else if !recommendedComposers.isEmpty || isLoadingClassical {
-            HomeSectionHeader(label: "CLASSICAL MUSIC", title: "Essential Composers")
-                .padding(.horizontal, 16)
-                .padding(.bottom, 14)
-
-            if isLoadingClassical && recommendedComposers.isEmpty {
-                ProgressView()
-                    .tint(.roonAccent)
-                    .padding(.bottom, 32)
-            } else {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    LazyHStack(spacing: 16) {
-                        ForEach(recommendedComposers.prefix(15)) { composer in
-                            NavigationLink {
-                                ComposerDetailView(composer: composer)
-                            } label: {
-                                ClassicalComposerCard(composer: composer)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        NavigationLink {
-                            ClassicalBrowserView()
-                        } label: {
-                            VStack(spacing: 6) {
-                                ZStack {
-                                    Circle()
-                                        .fill(Color.roonElevated)
-                                        .frame(width: 72, height: 72)
-                                    Image(systemName: "chevron.right")
-                                        .font(.system(size: 20, weight: .semibold))
-                                        .foregroundColor(.roonAccent)
-                                }
-                                Text("All")
-                                    .font(.roonBody(11, weight: .medium))
-                                    .foregroundColor(.roonSecondary)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    .padding(.horizontal, 16)
-                }
-                .padding(.bottom, 32)
-            }
-        }
-    }
-
-    private func loadClassicalComposers() async {
-        guard recommendedComposers.isEmpty else { return }
-        isLoadingClassical = true
-        recommendedComposers = (try? await OpenOpusService.shared.recommendedComposers()) ?? []
-        if recommendedComposers.isEmpty {
-            recommendedComposers = (try? await OpenOpusService.shared.popularComposers()) ?? []
-        }
-        isLoadingClassical = false
-    }
-
-    private func loadClassicalHighlights() async {
-        guard popularWorks.isEmpty else { return }
-        isLoadingHighlights = true
-        popularWorks = (try? await OpenOpusService.shared.randomWorks(popularWork: true)) ?? []
-        isLoadingHighlights = false
-    }
-
-    @ViewBuilder
     private var recentActivitySection: some View {
         // Section header with tab toggle
         HStack(alignment: .center, spacing: 0) {
@@ -438,9 +332,13 @@ struct HomeView: View {
         .padding(.horizontal, 16)
         .padding(.bottom, 14)
 
-        let activeItems: [Album] = recentActivityTab == .played
+        let rawItems: [Album] = recentActivityTab == .played
             ? library.recentlyPlayed
             : library.recentAlbums
+        // Keep purely-classical albums out of Home when classical mode is off.
+        let activeItems: [Album] = classicalModeEnabled
+            ? rawItems
+            : rawItems.filter { !$0.looksClassical }
 
         if activeItems.isEmpty {
             if recentActivityTab == .played {
@@ -508,62 +406,6 @@ struct HomeView: View {
         .buttonStyle(.plain)
     }
 
-}
-
-struct PopularWorkCard: View {
-    let item: OORandomWork
-    private let cardWidth: CGFloat = 160
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ZStack {
-                Color.roonElevated
-                AsyncImage(url: composerPortraitURL) { phase in
-                    if case .success(let img) = phase {
-                        img.resizable().aspectRatio(contentMode: .fill)
-                    }
-                }
-                .frame(width: cardWidth, height: cardWidth)
-                .clipped()
-
-                // Genre badge overlay
-                if let genre = item.work.genre, !genre.isEmpty {
-                    Text(genre)
-                        .font(.roonBody(10, weight: .semibold))
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Color.black.opacity(0.55))
-                        .clipShape(Capsule())
-                        .padding(8)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-                }
-            }
-            .frame(width: cardWidth, height: cardWidth)
-            .clipShape(RoundedRectangle(cornerRadius: 6))
-            .shadow(color: .black.opacity(0.4), radius: 6, y: 3)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(item.work.title)
-                    .font(.roonBody(13, weight: .semibold))
-                    .foregroundColor(.roonPrimary)
-                    .lineLimit(2)
-                    .frame(width: cardWidth, alignment: .leading)
-                Text(item.composer.name)
-                    .font(.roonBody(12))
-                    .foregroundColor(.roonSecondary)
-                    .lineLimit(1)
-                    .frame(width: cardWidth, alignment: .leading)
-            }
-            .padding(.top, 8)
-        }
-        .contentShape(Rectangle())
-    }
-
-    private var composerPortraitURL: URL? {
-        guard let p = item.composer.portrait, !p.isEmpty else { return nil }
-        return URL(string: p)
-    }
 }
 
 struct RecentlyPlayedEmptyCard: View {

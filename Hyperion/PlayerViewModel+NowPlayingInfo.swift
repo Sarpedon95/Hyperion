@@ -86,6 +86,28 @@ extension PlayerViewModel {
 
         cc.skipForwardCommand.isEnabled  = false
         cc.skipBackwardCommand.isEnabled = false
+
+        // AUDIT-FIX #2 — wire lock-screen heart to LikedTracksStore + Last.fm love
+        cc.likeCommand.removeTarget(nil)
+        cc.likeCommand.isEnabled = true
+        cc.likeCommand.addTarget { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, let track = self.currentTrack else { return }
+                let wasLiked = LikedTracksStore.shared.isLiked(track)
+                LikedTracksStore.shared.toggle(track)
+                let lfm = LastFmAuthManager.shared
+                guard lfm.isSignedIn else { return }
+                let artist = track.trackartist ?? track.albumartist ?? ""
+                if wasLiked {
+                    lfm.unlove(track: track.title ?? "", artist: artist)
+                } else {
+                    lfm.love(track: track.title ?? "", artist: artist)
+                }
+            }
+            return .success
+        }
+        cc.dislikeCommand.isEnabled = false
+
         ServerLogStore.shared.debug("Remote controls registered")
     }
 
@@ -110,6 +132,9 @@ extension PlayerViewModel {
             accentColor = .roonAccent
         }
 
+        // AUDIT-FIX #2 — keep lock-screen heart state in sync with LikedTracksStore
+        MPRemoteCommandCenter.shared().likeCommand.isActive = LikedTracksStore.shared.isLiked(track)
+
         guard let track else {
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
             return
@@ -119,10 +144,28 @@ extension PlayerViewModel {
         let loadID  = artworkLoadID
         let trackID = track.id
 
+        // Classical override: when the resolved metadata has a work tag, the
+        // lock screen / Control Center / CarPlay header surfaces classical
+        // fields rather than the raw album/trackartist values:
+        //   • title  → track.title (PART) — unchanged
+        //   • artist → composer
+        //   • albumTitle → work
+        //   • albumArtist → conductor || ensemble
+        let classicalOverride = track.classicalMetadata.flatMap { meta -> (artist: String, albumTitle: String, albumArtist: String?)? in
+            guard let work = meta.work, !work.isEmpty else { return nil }
+            let artist = (meta.composer?.isEmpty == false ? meta.composer : nil) ?? (track.composer ?? "")
+            let albumArtist = (meta.conductor?.isEmpty == false ? meta.conductor : nil)
+                ?? (meta.ensemble?.isEmpty  == false ? meta.ensemble  : nil)
+            return (artist: artist, albumTitle: work, albumArtist: albumArtist)
+        }
+
+        let resolvedArtist     = classicalOverride?.artist     ?? (track.trackartist ?? track.albumartist ?? "")
+        let resolvedAlbumTitle = classicalOverride?.albumTitle ?? (track.album ?? "")
+
         var info: [String: Any] = [
             MPMediaItemPropertyTitle:              track.title,
-            MPMediaItemPropertyArtist:             track.trackartist ?? track.albumartist ?? "",
-            MPMediaItemPropertyAlbumTitle:         track.album ?? "",
+            MPMediaItemPropertyArtist:             resolvedArtist,
+            MPMediaItemPropertyAlbumTitle:         resolvedAlbumTitle,
             MPMediaItemPropertyComposer:           track.composer ?? "",
             MPNowPlayingInfoPropertyElapsedPlaybackTime: currentTime,
             MPMediaItemPropertyPlaybackDuration:   duration,
@@ -133,6 +176,9 @@ extension PlayerViewModel {
             MPNowPlayingInfoPropertyPlaybackQueueCount: queue.count
         ]
         info[MPMediaItemPropertyAlbumTrackNumber] = track.tracknum ?? 0
+        if let albumArtist = classicalOverride?.albumArtist, !albumArtist.isEmpty {
+            info[MPMediaItemPropertyAlbumArtist] = albumArtist
+        }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
         MPNowPlayingInfoCenter.default().playbackState = isPlaying ? .playing : (isPaused ? .paused : .stopped)
 
@@ -150,6 +196,43 @@ extension PlayerViewModel {
             guard self.artworkLoadID == loadID, self.currentTrack?.id == trackID else { return }
             let artwork = MPMediaItemArtwork(boundsSize: screenSize) { _ in image }
             var updated = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+            updated[MPMediaItemPropertyArtwork] = artwork
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = updated
+        }
+    }
+
+    /// Lock-screen / Control Center metadata for a live radio stream.
+    /// Title = station name, Artist = genre, Album = "Radio". Streams have no
+    /// duration, so no elapsed/duration keys are set.
+    func updateNowPlayingInfoForRadio(station: RadioStation) {
+        NowPlayingWidgetStore.shared.update(track: nil, isPlaying: isPlaying, artworkURL: station.logoURL)
+        accentColorExtractionTask?.cancel()
+        accentColor = .roonAccent
+
+        let info: [String: Any] = [
+            MPMediaItemPropertyTitle:           station.name,
+            MPMediaItemPropertyArtist:          station.genre ?? "",
+            MPMediaItemPropertyAlbumTitle:      "Radio",
+            MPNowPlayingInfoPropertyIsLiveStream: true,
+            MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? 1.0 : 0.0,
+            MPNowPlayingInfoPropertyMediaType:  MPNowPlayingInfoMediaType.audio.rawValue
+        ]
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        MPNowPlayingInfoCenter.default().playbackState = isPlaying ? .playing : .paused
+
+        // Fetch the station logo for lock-screen artwork (best effort).
+        guard let logoURL = station.logoURL else { return }
+        let stationID = station.id
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let screenSize = UIApplication.shared.connectedScenes
+                .compactMap { $0 as? UIWindowScene }
+                .first?.screen.bounds.size ?? CGSize(width: 390, height: 844)
+            guard let image = await self.loadImage(from: logoURL, targetPoints: max(screenSize.width, screenSize.height)) else { return }
+            // Discard if the station changed or radio stopped while loading.
+            guard self.currentRadioStation?.id == stationID else { return }
+            let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+            var updated = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? info
             updated[MPMediaItemPropertyArtwork] = artwork
             MPNowPlayingInfoCenter.default().nowPlayingInfo = updated
         }
