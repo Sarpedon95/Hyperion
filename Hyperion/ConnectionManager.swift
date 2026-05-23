@@ -192,9 +192,11 @@ final class ConnectionManager: ObservableObject {
     }
 
     func saveSettings() {
-        localURL     = Self.sanitizedURL(localURL)
-        tailscaleURL = Self.sanitizedURL(tailscaleURL)
-        proxyURL     = Self.sanitizedURL(proxyURL)
+        // AUDIT-FIX #4 — strip embedded user:pass@ from URLs before persisting;
+        // migrateCredentials() moves them to Keychain and returns the bare URL.
+        localURL     = Self.sanitizedURL(HyperionURLAuth.migrateCredentials(from: localURL))
+        tailscaleURL = Self.sanitizedURL(HyperionURLAuth.migrateCredentials(from: tailscaleURL))
+        proxyURL     = Self.sanitizedURL(HyperionURLAuth.migrateCredentials(from: proxyURL))
 
         UserDefaults.standard.set(localURL,                forKey: Keys.localURL)
         UserDefaults.standard.set(tailscaleURL,            forKey: Keys.tailscaleURL)

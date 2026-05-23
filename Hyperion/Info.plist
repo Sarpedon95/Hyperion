@@ -24,15 +24,15 @@
 	<true/>
 	<key>NSAppTransportSecurity</key>
 	<dict>
-		<!-- Hyperion supports user-supplied LMS server URLs which can be
-		     bare LAN HTTP (192.168.x.x:9000), Tailscale (100.64.x.x:9000),
-		     or a remote HTTPS reverse proxy. NSAllowsArbitraryLoads is
-		     therefore necessary; NSAllowsLocalNetworking permits LAN
-		     hosts even on stricter ATS regimes.
-		     PASS 6 — removed the hardcoded 31.223.16.10 + TLSv1.0
-		     exception: that IP was specific to one developer setup, and
-		     listing TLSv1.0 here triggers an App Store reviewer warning
-		     for no benefit (NSAllowsArbitraryLoads already covers it). -->
+		<!-- AUDIT-FIX #6 — ATS scope note:
+		     Hyperion connects to user-supplied LMS URLs: bare LAN HTTP
+		     (192.168.x.x:9000), Tailscale (100.64.x.x:9000), or HTTPS
+		     reverse proxies. iOS ATS NSExceptionDomains requires literal
+		     hostnames; it cannot match CIDR ranges. NSAllowsArbitraryLoads
+		     must remain true to allow arbitrary LAN IPs over plain HTTP.
+		     NSAllowsLocalNetworking is redundant (ArbitraryLoads already
+		     covers it) but kept for clarity. No domain-specific exceptions
+		     are listed — they would require hardcoding server IPs. -->
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 		<key>NSAllowsLocalNetworking</key>
