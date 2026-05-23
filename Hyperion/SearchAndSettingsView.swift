@@ -1880,21 +1880,48 @@ private struct ProfileSettingsDetail: View {
         }
         .tint(.roonAccent)
 
-        // ReplayGain — read-only for now. Stored as profile metadata; not yet
-        // applied by the audio engine, so it is shown for reference only.
-        VStack(alignment: .leading, spacing: 2) {
-            HStack {
-                Text("ReplayGain").foregroundColor(.roonSecondary)
-                Spacer()
-                Text(settings.replayGainEnabled
-                     ? "\(settings.replayGainMode.displayName) · \(String(format: "%.1f dB", settings.replayGainPreamp))"
-                     : "Off")
-                    .font(.roonMono(13)).foregroundColor(.roonTertiary)
+        Toggle(isOn: Binding(
+            get: { settings.replayGainEnabled },
+            set: { v in profileManager.updateSettings(for: profile) { $0.replayGainEnabled = v }
+                       PlayerViewModel.shared.pushReplayGainToDSP() }
+        )) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("ReplayGain").foregroundColor(.roonPrimary)
+                Text("Normalize loudness from the track's ReplayGain tags. Only attenuates — never boosts — so there is no clipping risk.")
+                    .font(.roonBody(12)).foregroundColor(.roonSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            Text("Not yet applied by the engine — display only.")
-                .font(.roonBody(11)).foregroundColor(.roonTertiary)
         }
-        .padding(.vertical, 2)
+        .tint(.roonAccent)
+
+        if settings.replayGainEnabled {
+            Picker("Mode", selection: Binding(
+                get: { settings.replayGainMode },
+                set: { v in profileManager.updateSettings(for: profile) { $0.replayGainMode = v }
+                           PlayerViewModel.shared.pushReplayGainToDSP() }
+            )) {
+                ForEach(ReplayGainMode.allCases) { mode in
+                    Text(mode.displayName).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("Pre-amp").font(.roonBody(13)).foregroundColor(.roonSecondary)
+                    Spacer()
+                    Text(String(format: "%+.1f dB", settings.replayGainPreamp))
+                        .font(.roonMono(13)).foregroundColor(.roonTertiary)
+                }
+                Slider(value: Binding(
+                    get: { settings.replayGainPreamp },
+                    set: { v in profileManager.updateSettings(for: profile) { $0.replayGainPreamp = v }
+                               PlayerViewModel.shared.pushReplayGainToDSP() }
+                ), in: -12...12, step: 0.5)
+                .tint(.roonAccent)
+            }
+            .padding(.vertical, 2)
+        }
     }
 }
 

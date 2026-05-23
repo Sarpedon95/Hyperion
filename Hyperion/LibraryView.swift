@@ -557,6 +557,41 @@ struct WorkDetailView: View {
                     Color.roonBorder.frame(height: 0.5)
 
                     WorkTrackList(tracks: tracks, workGroup: workGroup)
+
+                    // All recordings of this work across the library, grouped by
+                    // performance. Only meaningful for a real LMS work_id.
+                    if work.work_id > 0 {
+                        Color.roonBorder.frame(height: 0.5)
+                        NavigationLink {
+                            WorkPerformancesView(
+                                workID: work.work_id,
+                                workTitle: work.work,
+                                initialTracks: tracks
+                            )
+                        } label: {
+                            HStack(spacing: 14) {
+                                ZStack {
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .fill(Color.roonElevated)
+                                        .frame(width: 36, height: 36)
+                                    Image(systemName: "square.stack.3d.up")
+                                        .font(.system(size: 16, weight: .medium))
+                                        .foregroundColor(.roonSecondary)
+                                }
+                                Text("All Performances")
+                                    .font(.roonBody(16, weight: .medium))
+                                    .foregroundColor(.roonPrimary)
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundColor(.roonTertiary)
+                            }
+                            .padding(.horizontal, 20)
+                            .padding(.vertical, 14)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
 
                 if isLoading {

@@ -182,6 +182,20 @@ final class OrpheusDSPEngine: NSObject, ObservableObject {
     @Published var volumeLevelingTargetLUFS: Float         = -14  // −23…−9
     @Published var volumeLevelingBypassed: Bool            = false
 
+    // MARK: ReplayGain
+    //
+    // Runtime state pushed from the active PlaybackProfile each track — not part
+    // of OrpheusPreset persistence. ReplayGain shares the leveling-mixer stage
+    // with volume leveling: both are scalar dB level adjustments.
+    @Published var replayGainEnabled: Bool          = false
+    @Published var replayGainMode: ReplayGainMode   = .album
+    @Published var replayGainPreampDB: Float        = 0   // dB, added on top of the tag gain
+
+    // Current track's ReplayGain tag values in dB, pushed by the playback layer.
+    // Nil when the track exposes no RG tags.
+    private var currentTrackReplayGainDB: Float? = nil
+    private var currentAlbumReplayGainDB: Float? = nil
+
     // MARK: Balance
     @Published var balanceLeft: Float   = 0    // −6…+6 dB
     @Published var balanceRight: Float  = 0
@@ -292,14 +306,48 @@ final class OrpheusDSPEngine: NSObject, ObservableObject {
     }
 
     func applyVolumeLeveling() {
-        let mixer = audioManager.levelingMixer
-        if isPureModeEnabled || volumeLevelingBypassed {
-            mixer.outputVolume = 1.0
-        } else {
-            let gainDB = volumeLevelingTargetLUFS - (-14.0)
-            mixer.outputVolume = min(1.0, max(0.01, pow(10.0, gainDB / 20.0)))
-        }
+        updateLevelingMixerGain()
         scheduleSettingsSave()
+    }
+
+    /// Push the current track's ReplayGain tag values (dB) and recompute the
+    /// leveling mixer so the gain takes effect immediately. Per-track call — does
+    /// not schedule a settings save (RG is not persisted in OrpheusPreset).
+    func setReplayGainValues(trackGainDB: Double?, albumGainDB: Double?) {
+        currentTrackReplayGainDB = trackGainDB.map { Float($0) }
+        currentAlbumReplayGainDB = albumGainDB.map { Float($0) }
+        updateLevelingMixerGain()
+    }
+
+    /// Effective ReplayGain in dB for the current track (selected tag + preamp),
+    /// or 0 when disabled, in Pure Mode, or no tag is available.
+    private var effectiveReplayGainDB: Float {
+        guard replayGainEnabled, !isPureModeEnabled else { return 0 }
+        let tagGain: Float?
+        switch replayGainMode {
+        case .album: tagGain = currentAlbumReplayGainDB ?? currentTrackReplayGainDB
+        case .track: tagGain = currentTrackReplayGainDB ?? currentAlbumReplayGainDB
+        }
+        guard let g = tagGain else { return 0 }
+        return g + replayGainPreampDB
+    }
+
+    /// Combined level adjustment for the leveling mixer: volume leveling offset +
+    /// ReplayGain. ReplayGain is typically negative (attenuation toward the
+    /// reference); clamping the combined gain at unity means we only ever
+    /// attenuate — no boost, so no clipping risk (there is no limiter downstream).
+    private func updateLevelingMixerGain() {
+        let mixer = audioManager.levelingMixer
+        if isPureModeEnabled {
+            mixer.outputVolume = 1.0
+            return
+        }
+        var gainDB: Float = 0
+        if !volumeLevelingBypassed {
+            gainDB += volumeLevelingTargetLUFS - (-14.0)
+        }
+        gainDB += effectiveReplayGainDB
+        mixer.outputVolume = min(1.0, max(0.01, pow(10.0, gainDB / 20.0)))
     }
 
     func applyBalance() {

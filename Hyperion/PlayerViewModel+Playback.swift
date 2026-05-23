@@ -752,6 +752,10 @@ extension PlayerViewModel {
                     statusMatchedCurrentTrack: statusMatchedCurrentTrack
                 )
 
+                // Re-apply ReplayGain now that authoritative LMS tags are available
+                // (the per-track push in applyProfileToDSP ran before songinfo).
+                self.pushReplayGainToDSP()
+
                 ServerLogStore.shared.debug(
                     "Signal path LMS fields used: \(fieldsUsed.joined(separator: ", ")); missing: \(missing.joined(separator: ", "))"
                 )
@@ -1552,6 +1556,22 @@ extension PlayerViewModel {
         if wantCrossfeed {
             dsp.applyCrossfeedPreset(pm.resolvedCrossfeedPreset)
         }
+
+        pushReplayGainToDSP()
+    }
+
+    /// Push ReplayGain profile settings and the current track's RG tag values to
+    /// the DSP engine. Prefers the authoritative LMS songinfo tags
+    /// (lmsAudioQuality) and falls back to the track model's own tags.
+    func pushReplayGainToDSP() {
+        let s   = profileManager.resolvedSettings
+        let dsp = OrpheusDSPEngine.shared
+        dsp.replayGainEnabled  = s.replayGainEnabled
+        dsp.replayGainMode     = s.replayGainMode
+        dsp.replayGainPreampDB = Float(s.replayGainPreamp)
+        let trackGain = lmsAudioQuality?.replayGain ?? currentTrack?.replayGain
+        let albumGain = lmsAudioQuality?.albumReplayGain ?? currentTrack?.albumReplayGain
+        dsp.setReplayGainValues(trackGainDB: trackGain, albumGainDB: albumGain)
     }
 
     // MARK: - Orpheus gapless preload
