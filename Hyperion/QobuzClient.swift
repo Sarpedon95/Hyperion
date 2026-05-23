@@ -3,6 +3,7 @@
 // Personal use only
 
 import Foundation
+import CryptoKit
 
 final class QobuzClient: StreamingSource {
 
@@ -12,6 +13,10 @@ final class QobuzClient: StreamingSource {
     let name = "Qobuz"
     let sourceType: StreamSourceType = .qobuz
 
+    private func log(_ s: String) {
+        Task { @MainActor in ServerLogStore.shared.debug("[Qobuz] \(s)") }
+    }
+
     // MARK: - Credentials (from Keychain)
 
     private var userAuthToken: String? {
@@ -19,6 +24,12 @@ final class QobuzClient: StreamingSource {
     }
     private var userID: String? {
         KeychainManager.shared.load(key: "qobuz.userID")
+    }
+    // App secret paired with `appID`. Required to sign /track/getFileUrl requests.
+    // Qobuz rotates app_id/secret pairs, so this lives in Keychain rather than
+    // being hardcoded.
+    private var appSecret: String? {
+        KeychainManager.shared.load(key: "qobuz.secret")
     }
 
     // Standard mobile app_id used by open source clients
@@ -32,7 +43,10 @@ final class QobuzClient: StreamingSource {
     // MARK: - Request helper
 
     private func get(_ path: String, params: [String: String] = [:]) async -> Data? {
-        guard let token = userAuthToken else { return nil }
+        guard let token = userAuthToken else {
+            log("request \(path) skipped — no Qobuz token in Keychain")
+            return nil
+        }
         var all = params
         all["app_id"] = appID
         var comps = URLComponents(string: apiBase + path)!
@@ -40,7 +54,18 @@ final class QobuzClient: StreamingSource {
         var req = URLRequest(url: comps.url!)
         req.setValue(token, forHTTPHeaderField: "X-User-Auth-Token")
         req.setValue(appID, forHTTPHeaderField: "X-App-Id")
-        return try? await URLSession.shared.data(for: req).0
+        do {
+            let (data, response) = try await URLSession.shared.data(for: req)
+            let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+            if code != 200 {
+                let body = String(data: data.prefix(200), encoding: .utf8) ?? ""
+                log("request \(path): HTTP \(code) \(body)")
+            }
+            return data
+        } catch {
+            log("request \(path): \(error.localizedDescription)")
+            return nil
+        }
     }
 
     // MARK: - Search
@@ -51,8 +76,13 @@ final class QobuzClient: StreamingSource {
                                    params: ["query": query, "limit": "30", "type": "tracks"]),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let tracks = json["tracks"] as? [String: Any],
-              let items = tracks["items"] as? [[String: Any]] else { return [] }
-        return items.compactMap { parseQobuzTrack($0) }
+              let items = tracks["items"] as? [[String: Any]] else {
+            log("search '\(query)': 0 tracks (see request log above)")
+            return []
+        }
+        let parsed = items.compactMap { parseQobuzTrack($0) }
+        log("search '\(query)': \(items.count) raw → \(parsed.count) tracks")
+        return parsed
     }
 
     func searchAlbums(query: String) async -> [StreamAlbum] {
@@ -125,16 +155,36 @@ final class QobuzClient: StreamingSource {
     }
 
     private func fetchFileURL(trackID: String, formatID: String) async throws -> URL {
+        guard let secret = appSecret, !secret.isEmpty else {
+            log("getFileUrl: missing qobuz.secret in Keychain — cannot sign request")
+            throw StreamingError.authenticationFailed
+        }
+
+        // Qobuz signs getFileUrl: md5 of the method + the request params in
+        // alphabetical order (key+value concatenated, no separators) + a unix
+        // timestamp + the app secret.
+        let intent = "stream"
+        let ts  = String(Int(Date().timeIntervalSince1970))
+        let sig = md5Hex("trackgetFileUrlformat_id\(formatID)intent\(intent)track_id\(trackID)\(ts)\(secret)")
+
         guard let data = await get("/track/getFileUrl",
-                                   params: ["track_id": trackID,
-                                            "format_id": formatID,
-                                            "intent": "stream"]),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let urlString = json["url"] as? String,
-              let url = URL(string: urlString) else {
+                                   params: ["track_id":   trackID,
+                                            "format_id":   formatID,
+                                            "intent":      intent,
+                                            "request_ts":  ts,
+                                            "request_sig": sig]),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw StreamingError.trackNotFound
         }
-        return url
+        if let urlString = json["url"] as? String, let url = URL(string: urlString) {
+            return url
+        }
+        log("getFileUrl fmt \(formatID): \(json["message"] as? String ?? "no url in response")")
+        throw StreamingError.trackNotFound
+    }
+
+    private func md5Hex(_ s: String) -> String {
+        Insecure.MD5.hash(data: Data(s.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
     // MARK: - Quality label

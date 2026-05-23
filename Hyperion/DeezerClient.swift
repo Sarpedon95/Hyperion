@@ -12,6 +12,10 @@ final class DeezerClient: StreamingSource {
     let name = "Deezer"
     let sourceType: StreamSourceType = .deezer
 
+    private func log(_ s: String) {
+        Task { @MainActor in ServerLogStore.shared.debug("[Deezer] \(s)") }
+    }
+
     // MARK: - Keychain
 
     private var arl: String? {
@@ -50,10 +54,28 @@ final class DeezerClient: StreamingSource {
     func search(query: String) async -> [StreamTrack] {
         guard !query.isEmpty else { return [] }
         let url = apiURL("/search", params: ["q": query, "limit": "30"])
-        guard let data = try? await session().data(from: url).0,
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let items = json["data"] as? [[String: Any]] else { return [] }
-        return items.compactMap { parseDeezerTrack($0) }
+        do {
+            let (data, response) = try await session().data(from: url)
+            let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                log("search '\(query)': HTTP \(code), response not JSON")
+                return []
+            }
+            if let err = json["error"] as? [String: Any] {
+                log("search '\(query)': API error \(err)")
+                return []
+            }
+            guard let items = json["data"] as? [[String: Any]] else {
+                log("search '\(query)': HTTP \(code), no 'data' array")
+                return []
+            }
+            let tracks = items.compactMap { parseDeezerTrack($0) }
+            log("search '\(query)': HTTP \(code), \(items.count) raw → \(tracks.count) tracks")
+            return tracks
+        } catch {
+            log("search '\(query)': \(error.localizedDescription)")
+            return []
+        }
     }
 
     func searchAlbums(query: String) async -> [StreamAlbum] {
@@ -105,7 +127,10 @@ final class DeezerClient: StreamingSource {
     // Uses Deezer's internal gateway — same approach as deemix/streamrip for personal use
 
     func getStreamURL(for track: StreamTrack) async throws -> URL {
-        guard let arl else { throw StreamingError.authenticationFailed }
+        guard let arl else {
+            log("getStreamURL: no Deezer ARL in Keychain")
+            throw StreamingError.authenticationFailed
+        }
 
         // Step 1 — get user token
         let userToken = try await fetchUserToken(arl: arl)
@@ -115,6 +140,10 @@ final class DeezerClient: StreamingSource {
 
         // Step 3 — get signed media URL (FLAC preferred, MP3_320 fallback)
         let streamURL = try await fetchMediaURL(trackToken: trackToken, userToken: userToken)
+        // NOTE: Deezer media streams are Blowfish-encrypted (BF_CBC_STRIPE). This
+        // URL points at encrypted bytes — AVPlayer cannot play it directly without
+        // an on-the-fly decryption layer. See getStreamURL callers / PlaybackRouter.
+        log("getStreamURL: resolved encrypted media URL for track \(track.id) — playback needs Blowfish decryption")
 
         return streamURL
     }

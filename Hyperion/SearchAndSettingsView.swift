@@ -166,6 +166,10 @@ final class SearchViewModel: ObservableObject {
             let (qt, dt, qa, da) = await (qTracks, dTracks, qAlbums, dAlbums)
             guard !Task.isCancelled, self.searchSequence == sequence else { return }
 
+            await MainActor.run {
+                ServerLogStore.shared.debug("[Streaming search] '\(key)' → Qobuz \(qt.count)t/\(qa.count)a, Deezer \(dt.count)t/\(da.count)a (admin=\(UserSession.shared.isAdmin), scope=\(self.scope.rawValue))")
+            }
+
             self.streamingSections = [
                 SearchResultSection(id: "qobuz",  title: "Qobuz",  source: .qobuz,  tracks: qt, albums: qa),
                 SearchResultSection(id: "deezer", title: "Deezer", source: .deezer, tracks: dt, albums: da),
