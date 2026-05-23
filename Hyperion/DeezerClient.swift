@@ -3,6 +3,8 @@
 // Personal use only — uses ARL cookie authentication
 
 import Foundation
+import CryptoKit
+import CommonCrypto
 
 final class DeezerClient: StreamingSource {
 
@@ -124,7 +126,15 @@ final class DeezerClient: StreamingSource {
     }
 
     // MARK: - Stream URL
-    // Uses Deezer's internal gateway — same approach as deemix/streamrip for personal use
+    //
+    // Deezer full-quality streams are Blowfish-encrypted (BF_CBC_STRIPE), so the
+    // CDN URL cannot be handed to AVPlayer directly. The flow (personal use):
+    //   1. getUserData  → api_token (checkForm) + user license_token
+    //   2. song.getListData → per-track TRACK_TOKEN
+    //   3. media.deezer.com/v1/get_url → encrypted CDN URL (+ format)
+    //   4. download, Blowfish-decrypt the striped chunks, cache a playable file
+    // getStreamURL returns a local file:// URL the rest of the pipeline plays
+    // like any other local track.
 
     func getStreamURL(for track: StreamTrack) async throws -> URL {
         guard let arl else {
@@ -132,23 +142,41 @@ final class DeezerClient: StreamingSource {
             throw StreamingError.authenticationFailed
         }
 
-        // Step 1 — get user token
-        let userToken = try await fetchUserToken(arl: arl)
+        // Reuse a previously decrypted file if we already fetched this track.
+        for ext in ["flac", "mp3"] {
+            let cached = decryptedFileURL(trackID: track.id, ext: ext)
+            if FileManager.default.fileExists(atPath: cached.path) {
+                log("getStreamURL: reusing cached \(cached.lastPathComponent)")
+                return cached
+            }
+        }
 
-        // Step 2 — get track token
-        let trackToken = try await fetchTrackToken(trackID: track.id, userToken: userToken)
+        let (apiToken, licenseToken) = try await fetchUserData(arl: arl)
+        let trackToken = try await fetchTrackToken(trackID: track.id, apiToken: apiToken)
+        let (encURL, format) = try await fetchMediaURL(trackToken: trackToken, licenseToken: licenseToken)
 
-        // Step 3 — get signed media URL (FLAC preferred, MP3_320 fallback)
-        let streamURL = try await fetchMediaURL(trackToken: trackToken, userToken: userToken)
-        // NOTE: Deezer media streams are Blowfish-encrypted (BF_CBC_STRIPE). This
-        // URL points at encrypted bytes — AVPlayer cannot play it directly without
-        // an on-the-fly decryption layer. See getStreamURL callers / PlaybackRouter.
-        log("getStreamURL: resolved encrypted media URL for track \(track.id) — playback needs Blowfish decryption")
+        log("getStreamURL: downloading \(format) for track \(track.id)")
+        let (encData, response) = try await URLSession.shared.data(from: encURL)
+        if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+            log("getStreamURL: media download HTTP \(http.statusCode)")
+            throw StreamingError.trackNotFound
+        }
 
-        return streamURL
+        let decrypted = Self.decryptDeezerStream(encData, trackID: track.id)
+        let ext = format.uppercased().contains("FLAC") ? "flac" : "mp3"
+        let outURL = decryptedFileURL(trackID: track.id, ext: ext)
+        try decrypted.write(to: outURL, options: .atomic)
+        log("getStreamURL: decrypted \(decrypted.count) bytes → \(outURL.lastPathComponent)")
+        return outURL
     }
 
-    private func fetchUserToken(arl: String) async throws -> String {
+    private func decryptedFileURL(trackID: String, ext: String) -> URL {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("deezer", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("dz-\(trackID).\(ext)")
+    }
+
+    private func fetchUserData(arl: String) async throws -> (apiToken: String, licenseToken: String) {
         var comps = URLComponents(string: gwBase)!
         comps.queryItems = [
             URLQueryItem(name: "method", value: "deezer.getUserData"),
@@ -163,18 +191,21 @@ final class DeezerClient: StreamingSource {
         let (data, _) = try await URLSession.shared.data(for: req)
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let results = json["results"] as? [String: Any],
-              let token = results["checkForm"] as? String else {
+              let apiToken = results["checkForm"] as? String else {
+            log("fetchUserData: no checkForm — ARL likely invalid/expired")
             throw StreamingError.authenticationFailed
         }
-        return token
+        let licenseToken = ((results["USER"] as? [String: Any])?["OPTIONS"] as? [String: Any])?["license_token"] as? String ?? ""
+        if licenseToken.isEmpty { log("fetchUserData: empty license_token (free account or expired ARL?)") }
+        return (apiToken, licenseToken)
     }
 
-    private func fetchTrackToken(trackID: String, userToken: String) async throws -> String {
+    private func fetchTrackToken(trackID: String, apiToken: String) async throws -> String {
         var comps = URLComponents(string: gwBase)!
         comps.queryItems = [
             URLQueryItem(name: "method", value: "song.getListData"),
             URLQueryItem(name: "api_version", value: "1.0"),
-            URLQueryItem(name: "api_token", value: userToken),
+            URLQueryItem(name: "api_token", value: apiToken),
         ]
         var req = URLRequest(url: comps.url!)
         req.httpMethod = "POST"
@@ -193,40 +224,100 @@ final class DeezerClient: StreamingSource {
         return token
     }
 
-    private func fetchMediaURL(trackToken: String, userToken: String) async throws -> URL {
-        var comps = URLComponents(string: gwBase)!
-        comps.queryItems = [
-            URLQueryItem(name: "method", value: "media.getUrl"),
-            URLQueryItem(name: "api_version", value: "1.0"),
-            URLQueryItem(name: "api_token", value: userToken),
-        ]
+    /// Modern Deezer media endpoint. Returns the encrypted CDN URL + the format
+    /// that was actually served (depends on the account's subscription tier).
+    private func fetchMediaURL(trackToken: String, licenseToken: String) async throws -> (url: URL, format: String) {
         let body: [String: Any] = [
-            "license_token": trackToken,
+            "license_token": licenseToken,
             "media": [["type": "FULL", "formats": [
                 ["cipher": "BF_CBC_STRIPE", "format": "FLAC"],
                 ["cipher": "BF_CBC_STRIPE", "format": "MP3_320"],
                 ["cipher": "BF_CBC_STRIPE", "format": "MP3_128"],
-            ]]]
+            ]]],
+            "track_tokens": [trackToken],
         ]
-        var req = URLRequest(url: comps.url!)
+        var req = URLRequest(url: URL(string: "https://media.deezer.com/v1/get_url")!)
         req.httpMethod = "POST"
-        req.setValue("arl=\(arl ?? "")", forHTTPHeaderField: "Cookie")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
         let (data, _) = try await URLSession.shared.data(for: req)
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let results = json["data"] as? [[String: Any]],
-              let first = results.first,
-              let media = first["media"] as? [[String: Any]],
+              let first = results.first else {
+            throw StreamingError.trackNotFound
+        }
+        if let errors = first["errors"] as? [[String: Any]], !errors.isEmpty {
+            log("fetchMediaURL: \(errors)")
+            throw StreamingError.trackNotFound
+        }
+        guard let media = first["media"] as? [[String: Any]],
               let firstMedia = media.first,
               let sources = firstMedia["sources"] as? [[String: Any]],
-              let firstSource = sources.first,
-              let urlString = firstSource["url"] as? String,
+              let urlString = sources.first?["url"] as? String,
               let url = URL(string: urlString) else {
             throw StreamingError.trackNotFound
         }
-        return url
+        let format = firstMedia["format"] as? String ?? "MP3_320"
+        return (url, format)
+    }
+
+    // MARK: - Blowfish decryption (BF_CBC_STRIPE)
+    //
+    // Deezer encrypts every third 2048-byte chunk with Blowfish-CBC; the rest is
+    // plaintext. The per-track key derives from md5(sng_id) XOR'd with a fixed
+    // secret. Personal-use decryption only.
+
+    private static let blowfishSecret = "g4el58wc0zvf9na1"
+
+    private static func blowfishKey(trackID: String) -> [UInt8] {
+        let md5 = Insecure.MD5.hash(data: Data(trackID.utf8)).map { String(format: "%02x", $0) }.joined()
+        let m = Array(md5.utf8)            // 32 ASCII hex chars
+        let s = Array(blowfishSecret.utf8) // 16 chars
+        guard m.count >= 32 else { return Array(repeating: 0, count: 16) }
+        var key = [UInt8](repeating: 0, count: 16)
+        for i in 0..<16 { key[i] = m[i] ^ m[i + 16] ^ s[i] }
+        return key
+    }
+
+    static func decryptDeezerStream(_ data: Data, trackID: String) -> Data {
+        let key = blowfishKey(trackID: trackID)
+        let iv: [UInt8] = [0, 1, 2, 3, 4, 5, 6, 7]
+        let chunkSize = 2048
+        let bytes = [UInt8](data)
+        var output = Data(capacity: bytes.count)
+        var offset = 0
+        var index = 0
+        while offset < bytes.count {
+            let end = min(offset + chunkSize, bytes.count)
+            let chunk = Array(bytes[offset..<end])
+            if index % 3 == 0 && chunk.count == chunkSize,
+               let dec = blowfishDecryptCBC(chunk, key: key, iv: iv) {
+                output.append(contentsOf: dec)
+            } else {
+                output.append(contentsOf: chunk)
+            }
+            offset = end
+            index += 1
+        }
+        return output
+    }
+
+    private static func blowfishDecryptCBC(_ data: [UInt8], key: [UInt8], iv: [UInt8]) -> [UInt8]? {
+        var out = [UInt8](repeating: 0, count: data.count + kCCBlockSizeBlowfish)
+        var moved = 0
+        let status = CCCrypt(
+            CCOperation(kCCDecrypt),
+            CCAlgorithm(kCCAlgorithmBlowfish),
+            0,                       // BF_CBC_STRIPE chunks are exact blocks — no padding
+            key, key.count,
+            iv,
+            data, data.count,
+            &out, out.count,
+            &moved
+        )
+        guard status == Int32(kCCSuccess) else { return nil }
+        return Array(out.prefix(moved))
     }
 
     // MARK: - Parsers

@@ -1538,6 +1538,15 @@ struct SettingsView: View {
                 // non-admin user never sees streaming controls anywhere.
                 if UserSession.shared.isAdmin {
                     Section {
+                        NavigationLink(destination: StreamingCredentialsView()) {
+                            HStack {
+                                Text("Streaming Credentials").foregroundColor(.roonPrimary)
+                                Spacer()
+                                Image(systemName: "key.fill")
+                                    .font(.system(size: 12))
+                                    .foregroundColor(.roonSecondary)
+                            }
+                        }
                         NavigationLink(destination: StreamingSourcePriorityView()) {
                             HStack {
                                 Text("Source Priority").foregroundColor(.roonPrimary)
@@ -1549,7 +1558,7 @@ struct SettingsView: View {
                             }
                         }
                     } header: { Text("CONTROL ROOM") } footer: {
-                        Text("Order Hyperion uses when resolving a stream URL. Local is always tried first; Qobuz and Deezer fall back in the order listed.")
+                        Text("Enter your Deezer ARL and Qobuz token / user ID / app secret. Source priority sets the order Hyperion resolves a stream URL — local is always tried first.")
                             .font(.roonBody(12)).foregroundColor(.roonTertiary)
                     }
                     .listRowBackground(Color.roonSurface)
@@ -2226,6 +2235,103 @@ private struct CrossfadeShapePreview: View {
         }
         .background(Color.roonElevated.opacity(0.5))
         .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+}
+
+// MARK: - Streaming Credentials (admin Control Room)
+//
+// Paste-in editor for the Deezer ARL and Qobuz token / user ID / app secret.
+// Values are written to the Keychain (the same keys the clients read), so they
+// never live in source or UserDefaults. Saving takes effect immediately.
+
+private struct StreamingCredentialsView: View {
+    @State private var deezerARL   = ""
+    @State private var qobuzToken  = ""
+    @State private var qobuzUserID = ""
+    @State private var qobuzSecret = ""
+    @State private var savedAt: Date? = nil
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        List {
+            Section {
+                credField("ARL cookie", text: $deezerARL)
+            } header: { Text("DEEZER") } footer: {
+                Text("The `arl` cookie value from a logged-in Deezer session. Needed to resolve and decrypt streams.")
+                    .font(.roonBody(12)).foregroundColor(.roonTertiary)
+            }
+            .listRowBackground(Color.roonSurface)
+
+            Section {
+                credField("User Auth Token", text: $qobuzToken)
+                credField("User ID",         text: $qobuzUserID)
+                credField("App Secret",      text: $qobuzSecret)
+            } header: { Text("QOBUZ") } footer: {
+                Text("Token + user ID identify your account; the app secret is required to sign stream-URL requests. Without the secret, Qobuz playback cannot start.")
+                    .font(.roonBody(12)).foregroundColor(.roonTertiary)
+            }
+            .listRowBackground(Color.roonSurface)
+
+            Section {
+                Button {
+                    save()
+                } label: {
+                    HStack {
+                        Spacer()
+                        Text(savedAt == nil ? "Save" : "Saved")
+                            .fontWeight(.semibold)
+                            .foregroundColor(.roonAccent)
+                        Spacer()
+                    }
+                }
+            }
+            .listRowBackground(Color.roonSurface)
+        }
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+        .background(Color.roonBase)
+        .navigationTitle("Streaming Credentials")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(Color.roonBase, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
+        .toolbarColorScheme(.dark, for: .navigationBar)
+        .preferredColorScheme(.dark)
+        .onAppear(perform: load)
+    }
+
+    @ViewBuilder
+    private func credField(_ label: String, text: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label).font(.roonBody(12)).foregroundColor(.roonSecondary)
+            TextField("", text: text)
+                .font(.system(size: 13, design: .monospaced))
+                .foregroundColor(.roonPrimary)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .submitLabel(.done)
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func load() {
+        deezerARL   = KeychainManager.shared.load(key: "deezer.arl")   ?? ""
+        qobuzToken  = KeychainManager.shared.load(key: "qobuz.token")  ?? ""
+        qobuzUserID = KeychainManager.shared.load(key: "qobuz.userID") ?? ""
+        qobuzSecret = KeychainManager.shared.load(key: "qobuz.secret") ?? ""
+    }
+
+    private func save() {
+        func write(_ key: String, _ value: String) {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty { KeychainManager.shared.delete(key: key) }
+            else { KeychainManager.shared.save(key: key, value: trimmed) }
+        }
+        write("deezer.arl",   deezerARL)
+        write("qobuz.token",  qobuzToken)
+        write("qobuz.userID", qobuzUserID)
+        write("qobuz.secret", qobuzSecret)
+        savedAt = Date()
+        Haptics.light()
     }
 }
 
