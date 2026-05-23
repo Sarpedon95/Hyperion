@@ -68,61 +68,65 @@ struct LyricsView: View {
 
     private func syncedView(lines: [LyricsLine]) -> some View {
         let displayLines = buildDisplayLines(from: lines)
-        return GeometryReader { geo in
-            ZStack {
-                ScrollViewReader { proxy in
-                    ScrollView(showsIndicators: false) {
-                        VStack(spacing: 0) {
-                            Color.clear.frame(height: geo.size.height * 0.38)
+        return ZStack {
+            ScrollViewReader { proxy in
+                ScrollView(showsIndicators: false) {
+                    VStack(spacing: 0) {
+                        // AUDIT-FIX: replaced outer GeometryReader with
+                        // containerRelativeFrame on the padding views — these are
+                        // sized relative to the ScrollView's vertical container,
+                        // which is exactly what the GR was measuring.
+                        Color.clear
+                            .containerRelativeFrame(.vertical) { value, _ in value * 0.38 }
 
-                            ForEach(Array(displayLines.enumerated()), id: \.element.id) { idx, line in
-                                lyricLine(line: line, index: idx, activeIndex: activeLineIndex)
-                                    .id(line.id)
-                                    .onTapGesture {
-                                        if case .lyric(let ll) = line.kind {
-                                            player.seek(to: ll.time)
-                                        }
+                        ForEach(Array(displayLines.enumerated()), id: \.element.id) { idx, line in
+                            lyricLine(line: line, index: idx, activeIndex: activeLineIndex)
+                                .id(line.id)
+                                .onTapGesture {
+                                    if case .lyric(let ll) = line.kind {
+                                        player.seek(to: ll.time)
                                     }
-                            }
+                                }
+                        }
 
-                            Color.clear.frame(height: geo.size.height * 0.55)
-                        }
-                    }
-                    .onChange(of: activeLineIndex) { _, newIndex in
-                        guard newIndex < displayLines.count else { return }
-                        withAnimation(.easeInOut(duration: 0.25)) {
-                            proxy.scrollTo(displayLines[newIndex].id, anchor: .center)
-                        }
-                    }
-                    .onChange(of: player.currentTime) { _, time in
-                        let newIndex = lineIndex(for: time, in: displayLines)
-                        if newIndex != activeLineIndex { activeLineIndex = newIndex }
-                    }
-                    .onAppear {
-                        let idx = lineIndex(for: player.currentTime, in: displayLines)
-                        activeLineIndex = idx
-                        if idx < displayLines.count {
-                            proxy.scrollTo(displayLines[idx].id, anchor: .center)
-                        }
+                        Color.clear
+                            .containerRelativeFrame(.vertical) { value, _ in value * 0.55 }
                     }
                 }
-
-                // Top and bottom gradient masks
-                VStack {
-                    LinearGradient(
-                        colors: [Color(hex: "#0f1209"), Color(hex: "#0f1209").opacity(0)],
-                        startPoint: .top, endPoint: .bottom
-                    )
-                    .frame(height: 80)
-                    .allowsHitTesting(false)
-                    Spacer()
-                    LinearGradient(
-                        colors: [Color(hex: "#0f1209").opacity(0), Color(hex: "#0f1209")],
-                        startPoint: .top, endPoint: .bottom
-                    )
-                    .frame(height: 80)
-                    .allowsHitTesting(false)
+                .onChange(of: activeLineIndex) { _, newIndex in
+                    guard newIndex < displayLines.count else { return }
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        proxy.scrollTo(displayLines[newIndex].id, anchor: .center)
+                    }
                 }
+                .onChange(of: player.currentTime) { _, time in
+                    let newIndex = lineIndex(for: time, in: displayLines)
+                    if newIndex != activeLineIndex { activeLineIndex = newIndex }
+                }
+                .onAppear {
+                    let idx = lineIndex(for: player.currentTime, in: displayLines)
+                    activeLineIndex = idx
+                    if idx < displayLines.count {
+                        proxy.scrollTo(displayLines[idx].id, anchor: .center)
+                    }
+                }
+            }
+
+            // Top and bottom gradient masks
+            VStack {
+                LinearGradient(
+                    colors: [Color(hex: "#0f1209"), Color(hex: "#0f1209").opacity(0)],
+                    startPoint: .top, endPoint: .bottom
+                )
+                .frame(height: 80)
+                .allowsHitTesting(false)
+                Spacer()
+                LinearGradient(
+                    colors: [Color(hex: "#0f1209").opacity(0), Color(hex: "#0f1209")],
+                    startPoint: .top, endPoint: .bottom
+                )
+                .frame(height: 80)
+                .allowsHitTesting(false)
             }
         }
     }

@@ -663,7 +663,11 @@ final class LRCLIBProvider: LyricsSearchableProvider, @unchecked Sendable {
                     .trimmingCharacters(in: .whitespaces)
             }
             guard !timestamps.isEmpty else { continue }
-            let text = remainder.trimmingCharacters(in: .whitespaces)
+            // AUDIT-FIX #9 — LRCLIB enhanced LRC embeds word-level timing tokens
+            // like "<00:12.34>" between words. Strip them before display.
+            var text = remainder.trimmingCharacters(in: .whitespaces)
+            text = text.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+            text = text.trimmingCharacters(in: .whitespaces)
             for t in timestamps { lines.append(LyricsLine(time: t, text: text)) }
         }
         return lines.sorted { $0.time < $1.time }

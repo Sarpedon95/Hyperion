@@ -382,6 +382,8 @@ struct ServerSetupView: View {
         let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
+        // AUDIT-FIX #4 — persist credentials to Keychain, not embedded in the URL.
+        HyperionURLAuth.saveCredentials(username: username, password: password)
         connection.localURL = trimmed
         connection.saveSettings()
         LibraryViewModel.shared.clearCache()
