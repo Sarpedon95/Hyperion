@@ -111,8 +111,27 @@ enum PlaybackProfile: String, Codable, CaseIterable, Identifiable {
 
     var defaultCrossfadeDuration: TimeInterval {
         switch self {
-        case .electronic: return 2.5
+        // EDM/electronic built-in: 6 s equal-power crossfade (Stage 6 EDM_PROFILE).
+        case .electronic: return 6.0
         default:          return 0.0
+        }
+    }
+
+    // MARK: - ReplayGain defaults (metadata only — not yet applied by the engine)
+
+    var defaultReplayGainEnabled: Bool {
+        switch self {
+        case .classical: return true
+        default:         return false
+        }
+    }
+
+    var defaultReplayGainMode: ReplayGainMode { .album }
+
+    var defaultReplayGainPreamp: Double {
+        switch self {
+        case .classical: return -1.0
+        default:         return 0.0
         }
     }
 
@@ -169,6 +188,16 @@ enum PlaybackProfile: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - ReplayGain mode
+
+enum ReplayGainMode: String, Codable, CaseIterable, Identifiable {
+    case track
+    case album
+
+    var id: String { rawValue }
+    var displayName: String { self == .track ? "Track" : "Album" }
+}
+
 // MARK: - Detection source
 
 enum ProfileDetectionSource: Equatable {
@@ -197,6 +226,13 @@ struct ProfileSettings: Codable {
     var interTrackGap:               InterTrackGap
     var sampleRateConversionEnabled: Bool = true
 
+    // ReplayGain — Stage 6. Stored as profile metadata; the engine does not
+    // yet apply ReplayGain (display/diagnostics only), so these have no audible
+    // effect until a gain stage is added to OrpheusPlaybackEngine.
+    var replayGainEnabled:           Bool = false
+    var replayGainMode:              ReplayGainMode = .album
+    var replayGainPreamp:            Double = 0.0
+
     static func defaults(for profile: PlaybackProfile) -> ProfileSettings {
         ProfileSettings(
             gaplessEnabled:              profile.defaultGaplessEnabled,
@@ -206,7 +242,30 @@ struct ProfileSettings: Codable {
             crossfeedEnabled:            profile.defaultCrossfeedEnabled,
             crossfeedPreset:             profile.defaultCrossfeedPreset,
             interTrackGap:               profile.defaultInterTrackGap,
-            sampleRateConversionEnabled: true
+            sampleRateConversionEnabled: true,
+            replayGainEnabled:           profile.defaultReplayGainEnabled,
+            replayGainMode:              profile.defaultReplayGainMode,
+            replayGainPreamp:            profile.defaultReplayGainPreamp
         )
+    }
+}
+
+// Tolerant decoding so persisted settings from earlier builds (which lack the
+// newer keys) still decode, with sensible fallbacks for any missing field.
+// Declared in an extension to preserve the synthesized memberwise initializer.
+extension ProfileSettings {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.gaplessEnabled   = try c.decodeIfPresent(Bool.self, forKey: .gaplessEnabled) ?? true
+        self.crossfadeEnabled = try c.decodeIfPresent(Bool.self, forKey: .crossfadeEnabled) ?? false
+        self.crossfadeDuration = try c.decodeIfPresent(Double.self, forKey: .crossfadeDuration) ?? 0.0
+        self.crossfadeShape   = try c.decodeIfPresent(CrossfadeShape.self, forKey: .crossfadeShape) ?? .equalPower
+        self.crossfeedEnabled = try c.decodeIfPresent(Bool.self, forKey: .crossfeedEnabled) ?? false
+        self.crossfeedPreset  = try c.decodeIfPresent(CrossfeedPreset.self, forKey: .crossfeedPreset) ?? .light
+        self.interTrackGap    = try c.decodeIfPresent(InterTrackGap.self, forKey: .interTrackGap) ?? .none
+        self.sampleRateConversionEnabled = try c.decodeIfPresent(Bool.self, forKey: .sampleRateConversionEnabled) ?? true
+        self.replayGainEnabled = try c.decodeIfPresent(Bool.self, forKey: .replayGainEnabled) ?? false
+        self.replayGainMode    = try c.decodeIfPresent(ReplayGainMode.self, forKey: .replayGainMode) ?? .album
+        self.replayGainPreamp  = try c.decodeIfPresent(Double.self, forKey: .replayGainPreamp) ?? 0.0
     }
 }

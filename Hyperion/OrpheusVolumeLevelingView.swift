@@ -26,38 +26,40 @@ struct OrpheusVolumeLevelingView: View {
                 .pickerStyle(.segmented)
             }
 
-            Section("Target Level") {
+            // AUDIT-FIX #19 — the gain applied is a fixed offset (dB), not a
+            // measured LUFS value. Relabelled to avoid misleading audiophile users.
+            Section("Offset") {
                 LabeledSlider(
-                    label: "Target LUFS",
+                    label: "Volume Offset (dB)",
                     value: Binding(
                         get: { Double(dsp.volumeLevelingTargetLUFS) },
                         set: { dsp.volumeLevelingTargetLUFS = Float($0); dsp.applyVolumeLeveling() }
                     ),
                     range: -23 ... -9,
-                    format: "%.0f LUFS"
+                    format: "%.0f dB"
                 )
 
                 HStack {
-                    Text("Current target")
+                    Text("Current offset")
                         .font(.roonBody(13))
                         .foregroundColor(.roonSecondary)
                     Spacer()
-                    Text(String(format: "%.0f LUFS", dsp.volumeLevelingTargetLUFS))
+                    Text(String(format: "%.0f dB", dsp.volumeLevelingTargetLUFS))
                         .font(.roonMono(13))
                         .foregroundColor(.roonPrimary)
                 }
             }
 
-            Section("Reference levels") {
-                LevelReferenceRow(label: "Streaming (Spotify, Apple Music)", lufs: -14)
-                LevelReferenceRow(label: "Broadcast standard (EBU R128)", lufs: -23)
-                LevelReferenceRow(label: "CD/audiophile", lufs: -9)
+            Section("Reference offsets") {
+                LevelReferenceRow(label: "Streaming (Spotify, Apple Music)", db: -14)
+                LevelReferenceRow(label: "Broadcast standard (EBU R128)", db: -23)
+                LevelReferenceRow(label: "CD/audiophile", db: -9)
             }
         }
         .scrollContentBackground(.hidden)
         .bottomOverlayAwareScroll()
         .background(Color.roonBase.ignoresSafeArea())
-        .navigationTitle("Volume Leveling")
+        .navigationTitle("Volume Offset")
         .navigationBarTitleDisplayMode(.inline)
         .toolbarColorScheme(.dark, for: .navigationBar)
     }
@@ -65,7 +67,7 @@ struct OrpheusVolumeLevelingView: View {
 
 private struct LevelReferenceRow: View {
     let label: String
-    let lufs: Int
+    let db: Int
 
     var body: some View {
         HStack {
@@ -73,7 +75,7 @@ private struct LevelReferenceRow: View {
                 .font(.roonBody(12))
                 .foregroundColor(.roonSecondary)
             Spacer()
-            Text("\(lufs) LUFS")
+            Text("\(db) dB")
                 .font(.roonMono(12))
                 .foregroundColor(.roonTertiary)
         }

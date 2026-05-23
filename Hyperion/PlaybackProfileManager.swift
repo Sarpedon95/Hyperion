@@ -20,6 +20,12 @@ final class PlaybackProfileManager: ObservableObject {
     @Published private(set) var activeProfile:   PlaybackProfile       = .standard
     @Published private(set) var detectionSource: ProfileDetectionSource = .globalDefault
 
+    /// When non-nil, this profile is forced regardless of per-track genre
+    /// auto-detection. Set by the Classical tab (Stage 6): while the tab is
+    /// open the classical profile is forced; cleared on leaving, after which
+    /// per-track auto-detection resumes.
+    @Published private(set) var forcedProfile: PlaybackProfile? = nil
+
     // MARK: - Session overrides (nil = use profile/settings value)
 
     @Published var sessionGaplessEnabled:    Bool?            = nil
@@ -111,6 +117,12 @@ final class PlaybackProfileManager: ObservableObject {
     /// Update the active profile from the current track's genre metadata.
     /// Call this at the start of each new track.
     func update(for track: Track?) {
+        // A forced profile (Classical tab) wins over per-track detection.
+        if let forced = forcedProfile {
+            activeProfile   = forced
+            detectionSource = .manual
+            return
+        }
         if let key = track.flatMap({ albumKey(for: $0) }),
            let manual = manualOverrides[key] {
             activeProfile   = manual
@@ -124,6 +136,20 @@ final class PlaybackProfileManager: ObservableObject {
         } else {
             activeProfile   = globalDefaultProfile
             detectionSource = .globalDefault
+        }
+    }
+
+    // MARK: - Forced profile (tab-driven, Stage 6)
+
+    /// Force a profile (or clear with nil). On clear, re-resolves from the
+    /// supplied track so per-track auto-detection resumes immediately.
+    func setForcedProfile(_ profile: PlaybackProfile?, currentTrack: Track?) {
+        forcedProfile = profile
+        if let profile {
+            activeProfile   = profile
+            detectionSource = .manual
+        } else {
+            update(for: currentTrack)
         }
     }
 

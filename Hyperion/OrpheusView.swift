@@ -343,8 +343,8 @@ struct OrpheusView: View {
 
     private var volumeLevelingCard: some View {
         OrpheusDSPCard(
-            title: "Volume Leveling",
-            subtitle: "\(dsp.volumeLevelingMode.rawValue) · \(Int(dsp.volumeLevelingTargetLUFS)) LUFS",
+            title: "Volume Offset",
+            subtitle: "\(dsp.volumeLevelingMode.rawValue) · \(Int(dsp.volumeLevelingTargetLUFS)) dB",
             iconName: "waveform.path.ecg",
             isEnabled: Binding(
                 get: { !dsp.volumeLevelingBypassed },

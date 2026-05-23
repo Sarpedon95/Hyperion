@@ -238,7 +238,11 @@ final class OrpheusDSPEngine: NSObject, ObservableObject {
     }
 
     func applyHeadphoneEQ() {
-        applyEQBands(headphoneEQBands, bypassed: isPureModeEnabled || headphoneEQBypassed, to: audioManager.headphoneEQNode)
+        let bypassed = isPureModeEnabled || headphoneEQBypassed
+        applyEQBands(headphoneEQBands, bypassed: bypassed, to: audioManager.headphoneEQNode)
+        // AUDIT-FIX #14 — set node-level bypass so the EQ unit is fully removed
+        // from the signal path (zero CPU) rather than just zeroing all band gains.
+        audioManager.headphoneEQNode.auAudioUnit.shouldBypassEffect = bypassed
         scheduleSettingsSave()
     }
 
