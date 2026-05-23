@@ -7,6 +7,11 @@ final class LikedTracksStore: ObservableObject {
     @Published private(set) var likedTrackIDs: Set<Int> = []
     @Published private(set) var likedTracks: [Track] = []
 
+    // AUDIT-FIX #18 — loved tracks fetched from Last.fm at sign-in; stored as
+    // "lowercased title\0lowercased artist" keys so the heart shows even before
+    // those tracks have been browsed in the LMS library.
+    private var lastFmLovedKeys: Set<String> = []
+
     private let filename   = "hyperion_liked_tracks.json"
     private let legacyKey  = "hyperion.likedTracks.v1"
     private var saveTask: Task<Void, Never>?
@@ -17,7 +22,14 @@ final class LikedTracksStore: ObservableObject {
 
     func isLiked(_ track: Track?) -> Bool {
         guard let track else { return false }
-        return likedTrackIDs.contains(track.id)
+        if likedTrackIDs.contains(track.id) { return true }
+        let artist = track.trackartist ?? track.albumartist ?? ""
+        let key = LastFmAuthManager.lovedTrackKey(title: track.title, artist: artist)
+        return lastFmLovedKeys.contains(key)
+    }
+
+    func setLastFmLovedKeys(_ keys: Set<String>) {
+        lastFmLovedKeys = keys
     }
 
     func toggle(_ track: Track) {

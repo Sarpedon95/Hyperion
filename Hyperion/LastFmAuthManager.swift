@@ -34,12 +34,30 @@ final class LastFmAuthManager: ObservableObject {
         let params: [String: String]
         var retryCount: Int
     }
-    private var pendingScrobbles: [PendingScrobble] = []
+    // AUDIT-FIX #17 — scrobble queue is file-backed so pending scrobbles
+    // survive app restarts (previously lost on every cold start).
+    private var pendingScrobbles: [PendingScrobble] = [] {
+        didSet { saveScrobbleQueue() }
+    }
     private var retryTask: Task<Void, Never>?
+    private let scrobbleQueueURL = AppFiles.url(for: "hyperion_scrobbles.json")
 
     private init() {
         sessionKey = KeychainManager.shared.load(key: Self.keySession)
         username   = KeychainManager.shared.load(key: Self.keyUsername)
+        loadScrobbleQueue()
+    }
+
+    private func loadScrobbleQueue() {
+        guard let data = try? Data(contentsOf: scrobbleQueueURL),
+              let saved = try? JSONDecoder().decode([PendingScrobble].self, from: data) else { return }
+        pendingScrobbles = saved
+        if !pendingScrobbles.isEmpty { scheduleRetry() }
+    }
+
+    private func saveScrobbleQueue() {
+        let data = (try? JSONEncoder().encode(pendingScrobbles)) ?? Data()
+        try? data.write(to: scrobbleQueueURL, options: .atomic)
     }
 
     // MARK: - Authentication
@@ -75,6 +93,8 @@ final class LastFmAuthManager: ObservableObject {
                 self.username   = name
                 KeychainManager.shared.save(key: Self.keySession,  value: key)
                 KeychainManager.shared.save(key: Self.keyUsername, value: name)
+                // AUDIT-FIX #18 — seed local liked tracks from Last.fm on sign-in.
+                Task { await self.syncLovedTracks(user: name, key: key) }
             } else if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                       let msg  = json["message"] as? String {
                 authError = msg
@@ -92,6 +112,46 @@ final class LastFmAuthManager: ObservableObject {
         username   = nil
         KeychainManager.shared.delete(key: Self.keySession)
         KeychainManager.shared.delete(key: Self.keyUsername)
+        LikedTracksStore.shared.setLastFmLovedKeys([])
+    }
+
+    // MARK: - Loved tracks sync
+
+    /// Fetches the first page of loved tracks from Last.fm and merges them into
+    /// `LikedTracksStore` as name+artist keys so the heart shows correctly even
+    /// before the user has browsed those tracks in the LMS library.
+    private func syncLovedTracks(user: String, key: String) async {
+        guard !apiKey.isEmpty else { return }
+        var params: [String: String] = [
+            "method":  "user.getLovedTracks",
+            "user":    user,
+            "api_key": apiKey,
+            "limit":   "200",
+            "format":  "json"
+        ]
+        _ = key // session key not required for this read-only call
+        guard let url = URL(string: "https://ws.audioscrobbler.com/2.0/?" +
+            params.map { "\($0.key)=\($0.value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? $0.value)" }
+                .joined(separator: "&"))
+        else { return }
+
+        guard let (data, _) = try? await session.data(from: url),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let lovedRoot = json["lovedtracks"] as? [String: Any],
+              let tracks = lovedRoot["track"] as? [[String: Any]] else { return }
+
+        var keys = Set<String>()
+        for t in tracks {
+            guard let name = t["name"] as? String,
+                  let artistDict = t["artist"] as? [String: Any],
+                  let artist = artistDict["name"] as? String else { continue }
+            keys.insert(lovedTrackKey(title: name, artist: artist))
+        }
+        await MainActor.run { LikedTracksStore.shared.setLastFmLovedKeys(keys) }
+    }
+
+    static func lovedTrackKey(title: String, artist: String) -> String {
+        "\(title.lowercased())\0\(artist.lowercased())"
     }
 
     // MARK: - Now Playing
