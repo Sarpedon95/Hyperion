@@ -145,7 +145,7 @@ final class LastFmAuthManager: ObservableObject {
             guard let name = t["name"] as? String,
                   let artistDict = t["artist"] as? [String: Any],
                   let artist = artistDict["name"] as? String else { continue }
-            keys.insert(lovedTrackKey(title: name, artist: artist))
+            keys.insert(Self.lovedTrackKey(title: name, artist: artist))
         }
         await MainActor.run { LikedTracksStore.shared.setLastFmLovedKeys(keys) }
     }
