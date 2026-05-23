@@ -269,38 +269,49 @@ final class MusicBrainzProvider: @unchecked Sendable {
               let first = artists.first,
               let mbid = first["id"] as? String else { return nil }
 
-        // Fetch artist details
-        let detailURL = URL(string: "\(base)/artist/\(mbid)?inc=tags+ratings&fmt=json")
+        // AUDIT-FIX #8 — artist-detail and release lookups are independent once
+        // we have the MBID; fire them in parallel so their network round-trips
+        // overlap rather than stacking on top of the rate-limit interval.
+        let detailURL  = URL(string: "\(base)/artist/\(mbid)?inc=tags+ratings&fmt=json")
+        let encArtist  = artist.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+        let encAlbum   = album?.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+        let releaseURL: URL? = album != nil
+            ? URL(string: "\(base)/release/?query=artist:\(encArtist)+release:\(encAlbum)&fmt=json")
+            : nil
+
+        async let detailFetch: Data? = { () async -> Data? in
+            guard let u = detailURL else { return nil }
+            return try? await self.fetch(url: u)
+        }()
+        async let releaseFetch: Data? = { () async -> Data? in
+            guard let u = releaseURL else { return nil }
+            return try? await self.fetch(url: u)
+        }()
+
+        let (detailData, releaseData) = await (detailFetch, releaseFetch)
+
         var tags: [String] = []
-        if let detailURL,
-           let detailData = try? await fetch(url: detailURL),
-           let detailJSON = try? JSONSerialization.jsonObject(with: detailData) as? [String: Any],
+        if let dd = detailData,
+           let detailJSON = try? JSONSerialization.jsonObject(with: dd) as? [String: Any],
            let tagArr = detailJSON["tags"] as? [[String: Any]] {
             tags = tagArr.prefix(8).compactMap { $0["name"] as? String }
         }
 
-        // Fetch release info if album provided
         var releaseYear: String?
         var label: String?
-        let genre: String?  = nil
+        let genre: String? = nil
 
-        if let album {
-            let encArtist = artist.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-            let encAlbum  = album.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-            let releaseURLStr = "\(base)/release/?query=artist:\(encArtist)+release:\(encAlbum)&fmt=json"
-            if let releaseURL = URL(string: releaseURLStr),
-               let releaseData = try? await fetch(url: releaseURL),
-               let releaseJSON = try? JSONSerialization.jsonObject(with: releaseData) as? [String: Any],
-               let releases = releaseJSON["releases"] as? [[String: Any]],
-               let rel = releases.first {
-                if let dateStr = rel["date"] as? String {
-                    releaseYear = String(dateStr.prefix(4))
-                }
-                if let labelInfo = rel["label-info"] as? [[String: Any]],
-                   let labelDict = labelInfo.first,
-                   let labelObj = labelDict["label"] as? [String: Any] {
-                    label = labelObj["name"] as? String
-                }
+        if let rd = releaseData,
+           let releaseJSON = try? JSONSerialization.jsonObject(with: rd) as? [String: Any],
+           let releases = releaseJSON["releases"] as? [[String: Any]],
+           let rel = releases.first {
+            if let dateStr = rel["date"] as? String {
+                releaseYear = String(dateStr.prefix(4))
+            }
+            if let labelInfo = rel["label-info"] as? [[String: Any]],
+               let labelDict = labelInfo.first,
+               let labelObj = labelDict["label"] as? [String: Any] {
+                label = labelObj["name"] as? String
             }
         }
 
@@ -524,6 +535,10 @@ final class DiscogsProvider: @unchecked Sendable {
     private var token: String { KeychainManager.shared.load(key: "discogs.accessToken") ?? "" }
     private let base  = "https://api.discogs.com"
 
+    // AUDIT-FIX #10 — Discogs enforces 60 req/min for authenticated users;
+    // throttle to 1.0 s between requests to stay comfortably under the limit.
+    private let rateLimiter = DiscogsRateLimiter()
+
     private let session: URLSession = {
         let cfg = URLSessionConfiguration.default
         cfg.timeoutIntervalForRequest  = 5
@@ -590,12 +605,37 @@ final class DiscogsProvider: @unchecked Sendable {
     }
 
     private func fetch(url: URL, token: String) async throws -> Data {
+        await rateLimiter.wait()
         var req = URLRequest(url: url)
         req.setValue("Discogs token=\(token)", forHTTPHeaderField: "Authorization")
         req.setValue("Hyperion/1.0 (iOS music player)", forHTTPHeaderField: "User-Agent")
         let (data, response) = try await session.data(for: req)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+        let http = response as? HTTPURLResponse
+        // AUDIT-FIX #10 — honour Retry-After on HTTP 429 (rate limited).
+        if http?.statusCode == 429 {
+            let retryAfter = http?.value(forHTTPHeaderField: "Retry-After")
+                .flatMap(Double.init) ?? 60.0
+            try? await Task.sleep(nanoseconds: UInt64(retryAfter * 1_000_000_000))
+            throw URLError(.badServerResponse)
+        }
+        guard http?.statusCode == 200 else { throw URLError(.badServerResponse) }
         return data
+    }
+}
+
+// MARK: - Discogs rate-limit actor
+
+private actor DiscogsRateLimiter {
+    private var lastRequest: Date = .distantPast
+    private let minInterval: TimeInterval = 1.0
+
+    func wait() async {
+        let elapsed = Date().timeIntervalSince(lastRequest)
+        if elapsed < minInterval {
+            let ns = UInt64((minInterval - elapsed) * 1_000_000_000)
+            try? await Task.sleep(nanoseconds: ns)
+        }
+        lastRequest = Date()
     }
 }
 

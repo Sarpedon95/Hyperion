@@ -25,6 +25,10 @@ final class LibraryViewModel: ObservableObject {
     @Published var totalAlbums: Int? = nil
     @Published var totalSongs:  Int? = nil
     @Published var totalArtists: Int? = nil
+    /// True once every page of the songs cursor has been fetched. Used by the
+    /// Songs tab to stop scheduling `loadNextSongsPage()` once the library is
+    /// fully populated.
+    @Published var songsExhausted: Bool = false
 
     private var composerCache: [Composer]? = nil
     private var artistCache: [Artist]? = nil
@@ -32,6 +36,12 @@ final class LibraryViewModel: ObservableObject {
     private var artistsLoadTask: Task<[Artist], Error>?
     private var genresLoadTask: Task<[Genre], Error>?
     private var songsLoadTask: Task<[Track], Error>?
+    /// Cursor for paginated song loading via `loadNextSongsPage()`. Advances by
+    /// `pageSize` each successful page; reset to 0 in `clearCache()` / `refresh()`.
+    private var nextSongsStart: Int = 0
+    /// Single-flight guard for `loadNextSongsPage()` — prevents overlapping
+    /// page requests when the user scrolls quickly past the trigger row.
+    private var songsPageTask: Task<Void, Never>?
 
     // MARK: - Artist detail cache
 
@@ -302,27 +312,33 @@ final class LibraryViewModel: ObservableObject {
 
     // MARK: - Songs
 
+    /// Loads the full library track-by-track. Prefer `loadNextSongsPage()` for
+    /// scroll-driven UIs — this method blocks until every page has been fetched
+    /// and is appropriate only when a caller genuinely needs the entire library
+    /// in memory (e.g., FocusMode, MixGenerator client-side filtering).
     func loadSongs() async {
-        if !songs.isEmpty {
-            ServerLogStore.shared.debug("[LoadSongs] Already loaded (\(songs.count) songs) — skipping")
+        if songsExhausted {
+            ServerLogStore.shared.debug("[LoadSongs] Already fully loaded (\(songs.count) songs) — skipping")
             return
         }
         if let existing = songsLoadTask {
-            ServerLogStore.shared.debug("[LoadSongs] In-flight load already running — joining it")
+            ServerLogStore.shared.debug("[LoadSongs] In-flight full load already running — joining it")
             _ = try? await existing.value
             return
         }
         ServerLogStore.shared.debug("[LoadSongs] Starting full library song load")
         isLoadingSongs = true
         let pageSize = self.pageSize
+        // Resume from wherever the cursor pagination left off so a callback that
+        // really needs the full library doesn't refetch pages already in memory.
+        let resumeStart = nextSongsStart
         let task = Task<[Track], Error> {
             var all: [Track] = []
-            var start = 0
+            var start = resumeStart
             while true {
                 try Task.checkCancellation()
                 let batch = try await LyrionAPI.shared.getAllSongs(start: start, count: pageSize)
                 all.append(contentsOf: batch)
-                // Publish the first page immediately so the UI shows something fast.
                 if start == 0 && self.songs.isEmpty {
                     self.songs = all
                 }
@@ -334,12 +350,65 @@ final class LibraryViewModel: ObservableObject {
         songsLoadTask = task
         defer { songsLoadTask = nil; isLoadingSongs = false }
         do {
-            let all = try await task.value
-            songs = all
+            let remaining = try await task.value
+            if resumeStart == 0 {
+                songs = remaining
+            } else {
+                songs.append(contentsOf: remaining)
+            }
+            nextSongsStart = songs.count
+            songsExhausted = true
         } catch is CancellationError {
         } catch {
             self.error = error.localizedDescription
         }
+    }
+
+    /// Loads exactly one page of songs and appends to `songs`. Idempotent and
+    /// cancellation-safe — concurrent callers (e.g. multiple list rows triggering
+    /// near-end on fast scrolls) coalesce onto the same task.
+    ///
+    /// AUDIT-FIX: replaces the eager full-library fetch for the Songs tab. The
+    /// caller drives further pages by invoking this again as the user nears the
+    /// end of the list; `songsExhausted` flips once a short page indicates the
+    /// cursor has reached the tail.
+    func loadNextSongsPage() async {
+        if songsExhausted { return }
+        if let inFlight = songsPageTask {
+            await inFlight.value
+            return
+        }
+        let pageStart = nextSongsStart
+        let pageCount = pageSize
+        // If the full-library task is already running, defer to it rather than
+        // racing for the same cursor — its completion will mark songsExhausted.
+        if songsLoadTask != nil {
+            _ = try? await songsLoadTask?.value
+            return
+        }
+        isLoadingSongs = true
+        let task = Task<Void, Never> { @MainActor in
+            defer { isLoadingSongs = false }
+            do {
+                let batch = try await LyrionAPI.shared.getAllSongs(start: pageStart, count: pageCount)
+                // Guard against a concurrent clearCache() that reset the cursor
+                // between the await and our append — drop the stale page rather
+                // than corrupting the freshly cleared list.
+                guard nextSongsStart == pageStart else { return }
+                songs.append(contentsOf: batch)
+                nextSongsStart = pageStart + batch.count
+                if batch.count < pageCount {
+                    songsExhausted = true
+                }
+            } catch is CancellationError {
+                // Cancellation: leave cursor alone so a later caller can retry.
+            } catch {
+                self.error = error.localizedDescription
+            }
+        }
+        songsPageTask = task
+        defer { songsPageTask = nil }
+        await task.value
     }
 
     // ADDED: server-side text filter — avoids loading the full library just for a subset.
@@ -871,6 +940,10 @@ final class LibraryViewModel: ObservableObject {
         genresLoadTask = nil
         songsLoadTask?.cancel()
         songsLoadTask = nil
+        songsPageTask?.cancel()
+        songsPageTask = nil
+        nextSongsStart = 0
+        songsExhausted = false
         worksLoadTasks.values.forEach { $0.cancel() }
         tracksForWorkTasks.values.forEach { $0.cancel() }
         tracksForAlbumTasks.values.forEach { $0.cancel() }
