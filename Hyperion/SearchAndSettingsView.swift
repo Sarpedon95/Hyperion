@@ -2265,9 +2265,9 @@ private struct StreamingCredentialsView: View {
             Section {
                 credField("User Auth Token", text: $qobuzToken)
                 credField("User ID",         text: $qobuzUserID)
-                credField("App Secret",      text: $qobuzSecret)
+                credField("App Secret (optional)", text: $qobuzSecret)
             } header: { Text("QOBUZ") } footer: {
-                Text("Token + user ID identify your account; the app secret is required to sign stream-URL requests. Without the secret, Qobuz playback cannot start.")
+                Text("Token + user ID are all you need — the app secret used to sign stream requests is detected automatically from Qobuz. Only fill in App Secret if auto-detection fails.")
                     .font(.roonBody(12)).foregroundColor(.roonTertiary)
             }
             .listRowBackground(Color.roonSurface)
