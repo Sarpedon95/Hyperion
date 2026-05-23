@@ -65,8 +65,14 @@ final class LyricsService {
     static let shared = LyricsService()
     private init() {}
 
-    /// Swap at startup if a licensed provider with a valid key is configured.
-    var provider: any LyricsProvider = LRCLIBProvider()
+    /// Active provider. Defaults to a failover chain: LRCLIB first (the open,
+    /// community-maintained DB), then NetEase as a secondary free source for
+    /// tracks LRCLIB doesn't cover. Swap for a single licensed provider if one
+    /// with a valid key is configured.
+    var provider: any LyricsProvider = CompositeLyricsProvider([
+        LRCLIBProvider(),
+        NetEaseLyricsProvider(),
+    ])
 
     // In-memory cache keyed by track ID — survives the session, avoids disk I/O on repeat visits.
     private var memoryCache: [Int: LyricsResult] = [:]
@@ -104,7 +110,8 @@ final class LyricsService {
         }
     }
 
-    /// Returns cached lyrics instantly, or fetches via the active provider (5-second timeout).
+    /// Returns cached lyrics instantly, or fetches via the active provider
+    /// (8-second timeout — the failover chain may consult more than one source).
     /// Negative results ("unavailable") are only cached after all provider
     /// fallback attempts have been exhausted.
     /// If `trackID` is provided and a pin exists for it, the pin takes priority.
@@ -147,7 +154,7 @@ final class LyricsService {
                     )
                 }
                 group.addTask {
-                    try await Task.sleep(nanoseconds: 5_000_000_000)
+                    try await Task.sleep(nanoseconds: 8_000_000_000)
                     throw CancellationError()
                 }
                 let r = try await group.next() ?? .unavailable
@@ -727,4 +734,207 @@ private struct LRCLIBResponse: Decodable {
     let instrumental: Bool?
     let plainLyrics:  String?
     let syncedLyrics: String?
+}
+
+// MARK: - Failover chain
+
+/// Tries each provider in order and returns the first usable result, preferring
+/// synced lyrics. Used so a track LRCLIB doesn't have can still resolve via a
+/// secondary source. `.instrumental` from any provider is authoritative and
+/// stops the chain; a `.plain` result is held as a fallback while later
+/// providers are still given a chance to return `.synced`.
+final class CompositeLyricsProvider: LyricsSearchableProvider, @unchecked Sendable {
+
+    private let providers: [any LyricsProvider]
+
+    init(_ providers: [any LyricsProvider]) {
+        self.providers = providers
+    }
+
+    func fetch(
+        artistName: String,
+        trackName:  String,
+        albumName:  String?,
+        duration:   TimeInterval?
+    ) async -> LyricsResult {
+        var fallbackPlain: LyricsResult? = nil
+        for provider in providers {
+            let r = await provider.fetch(
+                artistName: artistName,
+                trackName:  trackName,
+                albumName:  albumName,
+                duration:   duration
+            )
+            switch r {
+            case .synced:       return r          // best possible — stop
+            case .instrumental: return r          // authoritatively no lyrics
+            case .plain:        fallbackPlain = fallbackPlain ?? r
+            case .unavailable:  continue
+            }
+        }
+        return fallbackPlain ?? .unavailable
+    }
+
+    func searchCandidates(artist: String, track: String) async -> [LyricsCandidate] {
+        for provider in providers {
+            guard let searchable = provider as? LyricsSearchableProvider else { continue }
+            let candidates = await searchable.searchCandidates(artist: artist, track: track)
+            if !candidates.isEmpty { return candidates }
+        }
+        return []
+    }
+}
+
+// MARK: - NetEase provider
+
+/// Secondary free synced-lyrics source: NetEase Cloud Music's public JSON API
+/// (music.163.com). No API key. This is an unofficial endpoint (the de-facto
+/// fallback used by most open-source synced-lyrics tools); it is intentionally
+/// placed behind LRCLIB and is self-contained so it can be removed in one step
+/// if it ever stops working. Returns LRC-format synced lyrics when present.
+final class NetEaseLyricsProvider: LyricsProvider, @unchecked Sendable {
+
+    private let session: URLSession = {
+        let cfg = URLSessionConfiguration.default
+        cfg.timeoutIntervalForRequest  = 6
+        cfg.timeoutIntervalForResource = 10
+        return URLSession(configuration: cfg)
+    }()
+
+    private let searchBase = "https://music.163.com/api/search/pc"
+    private let lyricBase  = "https://music.163.com/api/song/lyric"
+
+    func fetch(
+        artistName: String,
+        trackName:  String,
+        albumName:  String?,
+        duration:   TimeInterval?
+    ) async -> LyricsResult {
+        guard let songID = await bestMatchSongID(artist: artistName, track: trackName, duration: duration) else {
+            lyricsLog("NetEase: no confident match for '\(trackName)' by '\(artistName)'")
+            return .unavailable
+        }
+        return await fetchLyric(songID: songID)
+    }
+
+    // MARK: Search + local ranking
+
+    private func bestMatchSongID(artist: String, track: String, duration: TimeInterval?) async -> Int? {
+        let query = "\(track) \(artist)".trimmingCharacters(in: .whitespaces)
+        guard var comps = URLComponents(string: searchBase) else { return nil }
+        comps.queryItems = [
+            URLQueryItem(name: "s",      value: query),
+            URLQueryItem(name: "type",   value: "1"),
+            URLQueryItem(name: "limit",  value: "10"),
+            URLQueryItem(name: "offset", value: "0"),
+        ]
+        guard let url = comps.url, let data = await get(url) else { return nil }
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let result = json["result"] as? [String: Any],
+              let songs = result["songs"] as? [[String: Any]], !songs.isEmpty else { return nil }
+
+        let tTrack  = track.lowercased()
+        let tArtist = artist.lowercased()
+        func score(_ s: [String: Any]) -> Double {
+            let name = (s["name"] as? String ?? "").lowercased()
+            let artists = ((s["artists"] as? [[String: Any]]) ?? [])
+                .compactMap { $0["name"] as? String }
+                .joined(separator: " ")
+                .lowercased()
+            var sc = tTrack.similarity(name) * 0.6 + tArtist.similarity(artists) * 0.4
+            if let dur = duration, dur > 0, let ms = s["duration"] as? Double, ms > 0,
+               abs(ms / 1000.0 - dur) <= 3 {
+                sc += 0.1
+            }
+            return sc
+        }
+
+        guard let best = songs.max(by: { score($0) < score($1) }),
+              score(best) >= 0.5,
+              let id = best["id"] as? Int else { return nil }
+        return id
+    }
+
+    // MARK: Lyric fetch
+
+    private func fetchLyric(songID: Int) async -> LyricsResult {
+        guard var comps = URLComponents(string: lyricBase) else { return .unavailable }
+        comps.queryItems = [
+            URLQueryItem(name: "id", value: String(songID)),
+            URLQueryItem(name: "lv", value: "1"),
+            URLQueryItem(name: "kv", value: "0"),
+            URLQueryItem(name: "tv", value: "-1"),
+        ]
+        guard let url = comps.url, let data = await get(url),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return .unavailable
+        }
+        if let lrcObj = json["lrc"] as? [String: Any],
+           let lrc = lrcObj["lyric"] as? String,
+           !lrc.trimmingCharacters(in: .whitespaces).isEmpty {
+            let lines = NetEaseLyricsProvider.parseLRC(lrc)
+            if !lines.isEmpty {
+                lyricsLog("NetEase: ✓ synced (\(lines.count) lines) for song \(songID)")
+                return .synced(lines)
+            }
+            return .plain(lrc)
+        }
+        return .unavailable
+    }
+
+    // MARK: Networking
+
+    private func get(_ url: URL) async -> Data? {
+        var req = URLRequest(url: url)
+        req.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)",
+                     forHTTPHeaderField: "User-Agent")
+        req.setValue("https://music.163.com/", forHTTPHeaderField: "Referer")
+        // NetEase rejects key-less API calls that arrive with no cookie; a minimal
+        // platform cookie is enough to get a normal JSON response.
+        req.setValue("os=pc; appver=8.7.01", forHTTPHeaderField: "Cookie")
+        do {
+            let (data, response) = try await session.data(for: req)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return nil }
+            return data
+        } catch {
+            lyricsLog("NetEase request error: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    // MARK: LRC parsing (mirrors LRCLIBProvider, incl. AUDIT-FIX #9 token strip)
+
+    static func parseLRC(_ lrc: String) -> [LyricsLine] {
+        var lines: [LyricsLine] = []
+        for raw in lrc.components(separatedBy: "\n") {
+            let trimmed = raw.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("[") else { continue }
+
+            var remainder = trimmed
+            var timestamps: [TimeInterval] = []
+            while remainder.hasPrefix("[") {
+                guard let close = remainder.firstIndex(of: "]") else { break }
+                let tag = String(remainder[remainder.index(after: remainder.startIndex)..<close])
+                if let t = parseTimestamp(tag) { timestamps.append(t) }
+                remainder = String(remainder[remainder.index(after: close)...])
+                    .trimmingCharacters(in: .whitespaces)
+            }
+            guard !timestamps.isEmpty else { continue }
+            var text = remainder.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+            text = text.trimmingCharacters(in: .whitespaces)
+            for t in timestamps { lines.append(LyricsLine(time: t, text: text)) }
+        }
+        return lines.sorted { $0.time < $1.time }
+    }
+
+    private static func parseTimestamp(_ s: String) -> TimeInterval? {
+        // Accept numeric [mm:ss] / [mm:ss.xx]; metadata tags ([ti:], [ar:], …)
+        // fail the Double() parse and are skipped.
+        let parts = s.components(separatedBy: ":")
+        guard parts.count == 2,
+              let mm = Double(parts[0]),
+              let ss = Double(parts[1]),
+              mm >= 0, ss >= 0 else { return nil }
+        return mm * 60 + ss
+    }
 }
