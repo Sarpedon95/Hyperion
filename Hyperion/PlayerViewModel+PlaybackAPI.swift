@@ -164,6 +164,7 @@ extension PlayerViewModel {
         guard !isTransitioningPlayback else { return }
         isTransitioningPlayback = true
         if isPlaying { pause() } else { resume() }
+        forwardToLMSPlayer { dir in await dir.remotePlayPause() }
         playbackToggleDebounceTask?.cancel()
         playbackToggleDebounceTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 400_000_000)
@@ -190,6 +191,7 @@ extension PlayerViewModel {
             currentIndex = 0
             playCurrentTrack()
         }
+        forwardToLMSPlayer { dir in await dir.remoteNext() }
     }
 
     func previousTrack() {
@@ -205,6 +207,19 @@ extension PlayerViewModel {
         guard currentIndex > 0 else { seek(to: 0); return }
         currentIndex -= 1
         playCurrentTrack()
+        forwardToLMSPlayer { dir in await dir.remotePrevious() }
+    }
+
+    // MARK: - LMS hardware-player forwarding (audit phase 7)
+    //
+    // Additive: when the user picks an LMS hardware player in Settings,
+    // these forwarders fire the matching slim.request on that device so
+    // it stays in lock-step with Hyperion's local transport. The local
+    // AVPlayer/Orpheus path is unchanged.
+    fileprivate func forwardToLMSPlayer(_ action: @Sendable @escaping (LMSPlayerDirectory) async -> Bool) {
+        let directory = LMSPlayerDirectory.shared
+        guard directory.isRoutingToHardware else { return }
+        Task { @MainActor in _ = await action(directory) }
     }
 
     func seek(to time: Double) {
@@ -238,6 +253,8 @@ extension PlayerViewModel {
 
     func setVolume(_ value: Float) {
         volume = max(0, min(1, value))
+        let snapshot = volume
+        forwardToLMSPlayer { dir in await dir.remoteSetVolume(snapshot) }
     }
 
     func toggleShuffle() {

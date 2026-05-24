@@ -1221,6 +1221,77 @@ final class LyrionAPI {
         }
     }
 
+    // MARK: - LMS hardware player control (audit phase 7)
+    //
+    // LMS lets one or more "players" (Squeezebox hardware, piCorePlayer,
+    // SqueezeLite endpoints, etc.) be controlled remotely via slim.request.
+    // These methods are the discovery + transport surface used by the
+    // LMSPlayerDirectory service and the player-picker UI in Settings.
+
+    /// All players currently known to the server (online + offline).
+    /// Returns an empty array on failure rather than throwing — discovery
+    /// is best-effort and the UI shows its own empty state.
+    func getPlayers() async -> [LMSPlayer] {
+        do {
+            let result = try await request(playerID: "", params: ["players", 0, 99])
+            guard let arr = result["players_loop"] as? [[String: Any]] else { return [] }
+            return arr.compactMap { dict in
+                guard let id = JSON.string(dict["playerid"]) ?? JSON.string(dict["uuid"]),
+                      let name = JSON.string(dict["name"]) ?? JSON.string(dict["modelname"]) else {
+                    return nil
+                }
+                return LMSPlayer(
+                    id:           id,
+                    name:         name,
+                    model:        JSON.string(dict["model"])     ?? JSON.string(dict["modelname"]),
+                    isConnected:  (JSON.bool(dict["connected"]) ?? (JSON.int(dict["connected"]) ?? 0) != 0),
+                    isPoweredOn:  (JSON.bool(dict["power"])     ?? (JSON.int(dict["power"])     ?? 0) != 0),
+                    canPowerOff:  (JSON.bool(dict["canpoweroff"]) ?? false),
+                    ip:           JSON.string(dict["ip"])
+                )
+            }
+        } catch {
+            return []
+        }
+    }
+
+    @discardableResult
+    func playerPlay(playerID: String) async -> Bool {
+        (try? await request(playerID: playerID, params: ["play"])) != nil
+    }
+
+    @discardableResult
+    func playerPause(playerID: String) async -> Bool {
+        (try? await request(playerID: playerID, params: ["pause"])) != nil
+    }
+
+    @discardableResult
+    func playerStop(playerID: String) async -> Bool {
+        (try? await request(playerID: playerID, params: ["stop"])) != nil
+    }
+
+    @discardableResult
+    func playerNext(playerID: String) async -> Bool {
+        (try? await request(playerID: playerID, params: ["button", "fwd.single"])) != nil
+    }
+
+    @discardableResult
+    func playerPrevious(playerID: String) async -> Bool {
+        (try? await request(playerID: playerID, params: ["button", "rew.single"])) != nil
+    }
+
+    /// LMS volume is 0…100.
+    @discardableResult
+    func playerSetVolume(playerID: String, volume0to100: Int) async -> Bool {
+        let clamped = max(0, min(100, volume0to100))
+        return (try? await request(playerID: playerID, params: ["mixer", "volume", "\(clamped)"])) != nil
+    }
+
+    @discardableResult
+    func playerSetPower(playerID: String, on: Bool) async -> Bool {
+        (try? await request(playerID: playerID, params: ["power", on ? 1 : 0])) != nil
+    }
+
     // MARK: - Work grouping
 
     func groupTracksByWork(_ tracks: [Track]) -> [WorkGroup] {
@@ -1464,6 +1535,19 @@ final class LyrionAPI {
     nonisolated private static let placeholderStrings: Set<String> = [
         "not applicable", "unknown", "various artists", "va", "various"
     ]
+}
+
+// MARK: - LMS hardware player model (audit phase 7)
+
+struct LMSPlayer: Identifiable, Hashable, Codable {
+    /// LMS playerid (typically the device MAC). Canonical handle for slim.request.
+    let id: String
+    let name: String
+    let model: String?
+    let isConnected: Bool
+    let isPoweredOn: Bool
+    let canPowerOff: Bool
+    let ip: String?
 }
 
 // MARK: - Album sort order

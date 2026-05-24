@@ -1191,6 +1191,8 @@ struct SettingsView: View {
     @ObservedObject private var lastFmAuth   = LastFmAuthManager.shared
     @ObservedObject private var discogsAuth    = DiscogsAuthManager.shared
     @ObservedObject private var profileManager = PlaybackProfileManager.shared
+    @ObservedObject private var playerDirectory = LMSPlayerDirectory.shared
+    @State private var showPlayerPicker: Bool = false
     @Environment(\.dismiss) private var dismiss
 
     @AppStorage(ClassicalMode.defaultsKey) private var classicalModeEnabled: Bool = true
@@ -1287,6 +1289,35 @@ struct SettingsView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 } header: { Text("STATUS") }
+                .listRowBackground(Color.roonSurface)
+
+                Section {
+                    Button { showPlayerPicker = true } label: {
+                        HStack {
+                            Image(systemName: playerDirectory.isRoutingToHardware
+                                              ? "hifispeaker.fill"
+                                              : "iphone")
+                                .foregroundColor(.roonAccent)
+                                .frame(width: 24)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Play to")
+                                    .font(.roonBody(15, weight: .medium))
+                                    .foregroundColor(.roonPrimary)
+                                Text(playerDirectory.selectedPlayer?.name ?? "This iPhone")
+                                    .font(.roonBody(12))
+                                    .foregroundColor(.roonSecondary)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .foregroundColor(.roonTertiary)
+                                .font(.system(size: 12, weight: .semibold))
+                        }
+                    }
+                    .buttonStyle(.plain)
+                } header: { Text("LMS PLAYER") } footer: {
+                    Text("Choose where playback commands are sent. Hyperion still plays on this iPhone; selecting an LMS hardware player additionally fires transport commands on that device.")
+                        .font(.roonBody(12)).foregroundColor(.roonTertiary)
+                }
                 .listRowBackground(Color.roonSurface)
 
                 Section {
@@ -1593,6 +1624,9 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $showDiscogsLogin) {
                 DiscogsLoginSheet(pat: $discogsPATInput, isPresented: $showDiscogsLogin)
+            }
+            .sheet(isPresented: $showPlayerPicker) {
+                LMSPlayerPickerView()
             }
         }
     }
