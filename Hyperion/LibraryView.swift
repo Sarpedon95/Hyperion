@@ -1284,12 +1284,12 @@ struct AlbumGridCell: View {
 
 struct AlbumArtworkGrid: View {
     let albums: [Album]
-    var horizontalPadding: CGFloat = 14
+    var horizontalPadding: CGFloat = 16
 
-    private let columns = [GridItem(.adaptive(minimum: 148, maximum: 180), spacing: 12)]
+    private let columns = [GridItem(.adaptive(minimum: 150, maximum: 190), spacing: 16)]
 
     var body: some View {
-        LazyVGrid(columns: columns, spacing: 12) {
+        LazyVGrid(columns: columns, spacing: 20) {
             ForEach(albums) { album in
                 NavigationLink {
                     AlbumDetailView(album: album)
@@ -1307,40 +1307,36 @@ struct AlbumArtworkGrid: View {
 struct AlbumArtworkCard: View {
     let album: Album
 
+    private var subtitle: String? {
+        if let artist = album.artist, !artist.isEmpty { return artist }
+        if let composer = album.composer, !composer.isEmpty { return composer }
+        return nil
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ArtworkView(coverid: album.artwork_track_id, size: 156)
-                .frame(height: 156)
-                .clipped()
+        VStack(alignment: .leading, spacing: 8) {
+            // Square cover filling the column, floating on the page (no card box).
+            Color.clear
+                .aspectRatio(1, contentMode: .fit)
+                .overlay { ArtworkView(coverid: album.artwork_track_id, size: 320) }
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .shadow(color: .black.opacity(0.4), radius: 8, x: 0, y: 4)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(album.album)
                     .font(.roonBody(13, weight: .semibold))
                     .foregroundColor(.roonPrimary)
-                    .lineLimit(2)
-                if let artist = album.artist, !artist.isEmpty {
-                    Text(artist)
-                        .font(.roonBody(11))
+                    .lineLimit(1)
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.roonBody(12))
                         .foregroundColor(.roonSecondary)
                         .lineLimit(1)
-                } else if let composer = album.composer, !composer.isEmpty {
-                    Text(composer)
-                        .font(.roonBody(11))
-                        .foregroundColor(.roonSecondary)
-                        .lineLimit(1)
-                }
-                if let year = album.year, year > 0 {
-                    Text(String(year))
-                        .font(.roonMono(11))
-                        .foregroundColor(.roonTertiary)
                 }
             }
-            .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .background(Color.roonSurface)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .contentShape(RoundedRectangle(cornerRadius: 8))
+        .contentShape(Rectangle())
     }
 }
 

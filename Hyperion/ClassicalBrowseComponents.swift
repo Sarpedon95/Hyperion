@@ -63,33 +63,31 @@ struct ClassicalAlbumGridCard: View {
     let album: Album
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ArtworkView(coverid: album.artwork_track_id, size: 156)
-                .frame(height: 156)
-                .clipped()
+        VStack(alignment: .leading, spacing: 8) {
+            Color.clear
+                .aspectRatio(1, contentMode: .fit)
+                .overlay { ArtworkView(coverid: album.artwork_track_id, size: 320) }
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .shadow(color: .black.opacity(0.4), radius: 8, x: 0, y: 4)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(album.album)
                     .font(.roonBody(13, weight: .semibold))
                     .foregroundColor(.roonPrimary)
-                    .lineLimit(2)
+                    .lineLimit(1)
                 if let composer = album.composer, !composer.isEmpty {
                     Text(composer)
-                        .font(.roonBody(11))
+                        .font(.roonBody(12))
                         .foregroundColor(.roonSecondary)
                         .lineLimit(1)
-                }
-                if let year = album.year, year > 0 {
+                } else if let year = album.year, year > 0 {
                     Text(String(year))
-                        .font(.roonMono(11))
+                        .font(.roonMono(12))
                         .foregroundColor(.roonTertiary)
                 }
             }
-            .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .background(Color.roonSurface)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .contentShape(RoundedRectangle(cornerRadius: 8))
+        .contentShape(Rectangle())
     }
 }
