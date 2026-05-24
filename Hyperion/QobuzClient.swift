@@ -49,9 +49,18 @@ final class QobuzClient: StreamingSource {
         }
         var all = params
         all["app_id"] = appID
-        var comps = URLComponents(string: apiBase + path)!
+        // Defensive URL construction — fail closed if either component is
+        // somehow malformed rather than crashing with a force-unwrap.
+        guard var comps = URLComponents(string: apiBase + path) else {
+            log("request \(path): bad URL base")
+            return nil
+        }
         comps.queryItems = all.map { URLQueryItem(name: $0.key, value: $0.value) }
-        var req = URLRequest(url: comps.url!)
+        guard let url = comps.url else {
+            log("request \(path): URLComponents.url nil after assembly")
+            return nil
+        }
+        var req = URLRequest(url: url)
         req.setValue(token, forHTTPHeaderField: "X-User-Auth-Token")
         req.setValue(appID, forHTTPHeaderField: "X-App-Id")
         do {
@@ -184,7 +193,9 @@ final class QobuzClient: StreamingSource {
         let ts  = String(Int(Date().timeIntervalSince1970))
         let sig = md5Hex("trackgetFileUrlformat_id\(formatID)intent\(intent)track_id\(trackID)\(ts)\(secret)")
 
-        var comps = URLComponents(string: apiBase + "/track/getFileUrl")!
+        guard var comps = URLComponents(string: apiBase + "/track/getFileUrl") else {
+            throw StreamingError.trackNotFound
+        }
         comps.queryItems = [
             URLQueryItem(name: "track_id",    value: trackID),
             URLQueryItem(name: "format_id",   value: formatID),
@@ -193,7 +204,8 @@ final class QobuzClient: StreamingSource {
             URLQueryItem(name: "request_sig", value: sig),
             URLQueryItem(name: "app_id",      value: appID),
         ]
-        var req = URLRequest(url: comps.url!)
+        guard let url = comps.url else { throw StreamingError.trackNotFound }
+        var req = URLRequest(url: url)
         req.setValue(token, forHTTPHeaderField: "X-User-Auth-Token")
         req.setValue(appID, forHTTPHeaderField: "X-App-Id")
 

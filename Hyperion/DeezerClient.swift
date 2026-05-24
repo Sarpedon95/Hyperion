@@ -33,12 +33,16 @@ final class DeezerClient: StreamingSource {
     private let apiBase = "https://api.deezer.com"
     private let gwBase  = "https://www.deezer.com/ajax/gw-light.php"
 
-    private func apiURL(_ path: String, params: [String: String] = [:]) -> URL {
-        var comps = URLComponents(string: apiBase + path)!
+    /// Returns nil only if the api base + path fails to parse as a URL
+    /// (which would indicate a programming error, not user input). All
+    /// call sites guard the result so a malformed URL becomes a silent
+    /// "no results" rather than a crash.
+    private func apiURL(_ path: String, params: [String: String] = [:]) -> URL? {
+        guard var comps = URLComponents(string: apiBase + path) else { return nil }
         if !params.isEmpty {
             comps.queryItems = params.map { URLQueryItem(name: $0.key, value: $0.value) }
         }
-        return comps.url!
+        return comps.url
     }
 
     private func arlCookie() -> String {
@@ -55,7 +59,7 @@ final class DeezerClient: StreamingSource {
 
     func search(query: String) async -> [StreamTrack] {
         guard !query.isEmpty else { return [] }
-        let url = apiURL("/search", params: ["q": query, "limit": "30"])
+        guard let url = apiURL("/search", params: ["q": query, "limit": "30"]) else { return [] }
         do {
             let (data, response) = try await session().data(from: url)
             let code = (response as? HTTPURLResponse)?.statusCode ?? -1
@@ -82,7 +86,7 @@ final class DeezerClient: StreamingSource {
 
     func searchAlbums(query: String) async -> [StreamAlbum] {
         guard !query.isEmpty else { return [] }
-        let url = apiURL("/search/album", params: ["q": query, "limit": "20"])
+        guard let url = apiURL("/search/album", params: ["q": query, "limit": "20"]) else { return [] }
         guard let data = try? await session().data(from: url).0,
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let items = json["data"] as? [[String: Any]] else { return [] }
@@ -92,7 +96,7 @@ final class DeezerClient: StreamingSource {
     // MARK: - Album
 
     func getAlbum(id: String) async throws -> StreamAlbum {
-        let url = apiURL("/album/\(id)")
+        guard let url = apiURL("/album/\(id)") else { throw StreamingError.trackNotFound }
         let data = try await session().data(from: url).0
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let album = parseDeezerAlbum(json) else { throw StreamingError.trackNotFound }
@@ -100,7 +104,7 @@ final class DeezerClient: StreamingSource {
     }
 
     func getAlbumTracks(albumID: String) async -> [StreamTrack] {
-        let url = apiURL("/album/\(albumID)/tracks", params: ["limit": "100"])
+        guard let url = apiURL("/album/\(albumID)/tracks", params: ["limit": "100"]) else { return [] }
         guard let data = try? await session().data(from: url).0,
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let items = json["data"] as? [[String: Any]] else { return [] }
@@ -110,7 +114,7 @@ final class DeezerClient: StreamingSource {
     // MARK: - Favorites
 
     func getUserFavorites() async -> [StreamTrack] {
-        let url = apiURL("/user/me/tracks", params: ["limit": "500"])
+        guard let url = apiURL("/user/me/tracks", params: ["limit": "500"]) else { return [] }
         guard let data = try? await session().data(from: url).0,
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let items = json["data"] as? [[String: Any]] else { return [] }
@@ -118,7 +122,7 @@ final class DeezerClient: StreamingSource {
     }
 
     func getUserFavoriteAlbums() async -> [StreamAlbum] {
-        let url = apiURL("/user/me/albums", params: ["limit": "200"])
+        guard let url = apiURL("/user/me/albums", params: ["limit": "200"]) else { return [] }
         guard let data = try? await session().data(from: url).0,
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let items = json["data"] as? [[String: Any]] else { return [] }
@@ -177,14 +181,17 @@ final class DeezerClient: StreamingSource {
     }
 
     private func fetchUserData(arl: String) async throws -> (apiToken: String, licenseToken: String) {
-        var comps = URLComponents(string: gwBase)!
+        guard var comps = URLComponents(string: gwBase) else {
+            throw StreamingError.authenticationFailed
+        }
         comps.queryItems = [
             URLQueryItem(name: "method", value: "deezer.getUserData"),
             URLQueryItem(name: "api_version", value: "1.0"),
             URLQueryItem(name: "api_token", value: "null"),
             URLQueryItem(name: "input", value: "3"),
         ]
-        var req = URLRequest(url: comps.url!)
+        guard let url = comps.url else { throw StreamingError.authenticationFailed }
+        var req = URLRequest(url: url)
         req.setValue("arl=\(arl)", forHTTPHeaderField: "Cookie")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
@@ -201,13 +208,16 @@ final class DeezerClient: StreamingSource {
     }
 
     private func fetchTrackToken(trackID: String, apiToken: String) async throws -> String {
-        var comps = URLComponents(string: gwBase)!
+        guard var comps = URLComponents(string: gwBase) else {
+            throw StreamingError.trackNotFound
+        }
         comps.queryItems = [
             URLQueryItem(name: "method", value: "song.getListData"),
             URLQueryItem(name: "api_version", value: "1.0"),
             URLQueryItem(name: "api_token", value: apiToken),
         ]
-        var req = URLRequest(url: comps.url!)
+        guard let url = comps.url else { throw StreamingError.trackNotFound }
+        var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("arl=\(arl ?? "")", forHTTPHeaderField: "Cookie")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -236,7 +246,10 @@ final class DeezerClient: StreamingSource {
             ]]],
             "track_tokens": [trackToken],
         ]
-        var req = URLRequest(url: URL(string: "https://media.deezer.com/v1/get_url")!)
+        guard let mediaURL = URL(string: "https://media.deezer.com/v1/get_url") else {
+            throw StreamingError.trackNotFound
+        }
+        var req = URLRequest(url: mediaURL)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
