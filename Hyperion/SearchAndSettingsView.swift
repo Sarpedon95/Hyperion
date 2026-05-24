@@ -666,26 +666,7 @@ struct SearchResultsView: View {
 
                 if !results.albums.isEmpty {
                     searchSection("ALBUMS") {
-                        LazyVStack(spacing: 0) {
-                            ForEach(results.albums) { album in
-                                NavigationLink {
-                                    AlbumDetailView(album: album)
-                                } label: {
-                                    AlbumListRow(album: album)
-                                        .padding(.horizontal, 14)
-                                        .padding(.vertical, 8)
-                                }
-                                .buttonStyle(.plain)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .contentShape(Rectangle())
-                                if album.id != results.albums.last?.id {
-                                    Color.roonBorder.frame(height: 0.5).padding(.leading, 68)
-                                }
-                            }
-                        }
-                        .background(Color.roonSurface)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                        .padding(.horizontal, 16)
+                        AlbumArtworkGrid(albums: results.albums, horizontalPadding: 16)
                     }
                 }
 

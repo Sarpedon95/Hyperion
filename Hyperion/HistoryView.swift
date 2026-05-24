@@ -46,20 +46,11 @@ struct HistoryView: View {
         if albums.isEmpty {
             emptyState(icon: "clock.arrow.circlepath", text: "No plays recorded yet")
         } else {
-            List {
-                ForEach(albums) { album in
-                    NavigationLink(destination: AlbumDetailView(album: album)) {
-                        AlbumListRow(album: album)
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 4)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-                    .listRowBackground(Color.clear)
-                    .listRowSeparatorTint(Color.roonBorder)
-                }
+            ScrollView {
+                AlbumArtworkGrid(albums: albums)
+                    .padding(.top, 12)
+                    .padding(.bottom, 24)
             }
-            .listStyle(.plain)
             .scrollContentBackground(.hidden)
             .bottomOverlayAwareScroll()
         }

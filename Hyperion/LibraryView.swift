@@ -1275,32 +1275,124 @@ struct AlbumGridCell: View {
     }
 }
 
-// MARK: - Album list row (used in search results)
+// MARK: - Reusable artwork-led album grid
+//
+// The single album presentation used everywhere albums are browsed (library,
+// genres, search, history, …) so there is no list-style album row left. Adaptive
+// columns + an artwork card; taps push AlbumDetailView; long-press gives the
+// standard album actions.
 
-struct AlbumListRow: View {
+struct AlbumArtworkGrid: View {
+    let albums: [Album]
+    var horizontalPadding: CGFloat = 14
+
+    private let columns = [GridItem(.adaptive(minimum: 148, maximum: 180), spacing: 12)]
+
+    var body: some View {
+        LazyVGrid(columns: columns, spacing: 12) {
+            ForEach(albums) { album in
+                NavigationLink {
+                    AlbumDetailView(album: album)
+                } label: {
+                    AlbumArtworkCard(album: album)
+                }
+                .buttonStyle(.plain)
+                .albumGridContextMenu(album: album)
+            }
+        }
+        .padding(.horizontal, horizontalPadding)
+    }
+}
+
+struct AlbumArtworkCard: View {
     let album: Album
 
     var body: some View {
-        HStack(spacing: 14) {
-            ArtworkView(coverid: album.artwork_track_id, size: 52)
-                .clipShape(RoundedRectangle(cornerRadius: 4))
-            VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: 0) {
+            ArtworkView(coverid: album.artwork_track_id, size: 156)
+                .frame(height: 156)
+                .clipped()
+
+            VStack(alignment: .leading, spacing: 2) {
                 Text(album.album)
-                    .font(.roonBody(15, weight: .medium))
+                    .font(.roonBody(13, weight: .semibold))
                     .foregroundColor(.roonPrimary)
-                    .lineLimit(1)
+                    .lineLimit(2)
                 if let artist = album.artist, !artist.isEmpty {
                     Text(artist)
-                        .font(.roonBody(13))
+                        .font(.roonBody(11))
+                        .foregroundColor(.roonSecondary)
+                        .lineLimit(1)
+                } else if let composer = album.composer, !composer.isEmpty {
+                    Text(composer)
+                        .font(.roonBody(11))
                         .foregroundColor(.roonSecondary)
                         .lineLimit(1)
                 }
+                if let year = album.year, year > 0 {
+                    Text(String(year))
+                        .font(.roonMono(11))
+                        .foregroundColor(.roonTertiary)
+                }
             }
-            Spacer()
-            Image(systemName: "chevron.right")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(.roonTertiary)
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .background(Color.roonSurface)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+// MARK: - Shared album long-press actions
+
+private struct AlbumGridContextMenu: ViewModifier {
+    let album: Album
+    @State private var showAddToPlaylist = false
+    @State private var playlistTracks: [Track] = []
+
+    func body(content: Content) -> some View {
+        content
+            .contextMenu {
+                Button("Play Now", systemImage: "play.fill") {
+                    Task {
+                        let groups = (try? await LibraryViewModel.shared.getWorkGroupsForAlbum(album.id)) ?? []
+                        guard !groups.isEmpty else { return }
+                        await MainActor.run { PlayerViewModel.shared.playAlbum(groups) }
+                    }
+                }
+                Button("Play Next", systemImage: "text.insert") {
+                    Task {
+                        let tracks = (try? await LibraryViewModel.shared.getTracksForAlbum(album.id)) ?? []
+                        await MainActor.run { PlayerViewModel.shared.playNext(tracks) }
+                    }
+                }
+                Button("Add to Queue", systemImage: "text.badge.plus") {
+                    Task {
+                        let groups = (try? await LibraryViewModel.shared.getWorkGroupsForAlbum(album.id)) ?? []
+                        await MainActor.run { PlayerViewModel.shared.addWorkGroupsToQueue(groups) }
+                    }
+                }
+                Button("Add to Playlist", systemImage: "music.note.list") {
+                    Task {
+                        let tracks = (try? await LibraryViewModel.shared.getTracksForAlbum(album.id)) ?? []
+                        await MainActor.run {
+                            playlistTracks = tracks
+                            if !tracks.isEmpty { showAddToPlaylist = true }
+                        }
+                    }
+                }
+            }
+            .sheet(isPresented: $showAddToPlaylist) {
+                AddToPlaylistSheet(tracks: playlistTracks)
+                    .environment(\.hyperionBottomOverlayHeight, 0)
+            }
+    }
+}
+
+extension View {
+    func albumGridContextMenu(album: Album) -> some View {
+        modifier(AlbumGridContextMenu(album: album))
     }
 }
 
@@ -3187,18 +3279,11 @@ struct GenreAlbumListView: View {
     @State private var isLoading: Bool = true
 
     var body: some View {
-        List {
-            ForEach(albums) { album in
-                NavigationLink {
-                    AlbumDetailView(album: album)
-                } label: {
-                    AlbumListRow(album: album)
-                }
-                .listRowBackground(Color.clear)
-                .listRowSeparatorTint(Color.roonBorder)
-            }
+        ScrollView {
+            AlbumArtworkGrid(albums: albums)
+                .padding(.top, 12)
+                .padding(.bottom, 24)
         }
-        .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .bottomOverlayAwareScroll()
         .background(Color.roonBase)
