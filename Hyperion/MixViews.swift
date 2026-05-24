@@ -127,6 +127,7 @@ struct AudiomuseMixCard: View {
             Task {
                 let tracks = await AudiomuseManager.shared.resolvedTracks(for: mix)
                 guard !tracks.isEmpty else {
+                    Haptics.warning()
                     player.error = "Couldn't load tracks for \(mix.title)."
                     return
                 }
@@ -139,6 +140,7 @@ struct AudiomuseMixCard: View {
             Task {
                 let tracks = await AudiomuseManager.shared.resolvedTracks(for: mix)
                 guard !tracks.isEmpty else {
+                    Haptics.warning()
                     player.error = "Couldn't load tracks for \(mix.title)."
                     return
                 }

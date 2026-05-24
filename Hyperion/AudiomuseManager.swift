@@ -205,6 +205,7 @@ final class AudiomuseManager: ObservableObject {
     func play(mix: AudiomuseMix, using player: PlayerViewModel) async -> Bool {
         let tracks = await resolvedTracks(for: mix)
         guard !tracks.isEmpty else {
+            Haptics.warning()
             player.error = "Couldn't load tracks for \(mix.title)."
             return false
         }

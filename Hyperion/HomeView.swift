@@ -229,6 +229,7 @@ struct HomeView: View {
                             let player = PlayerViewModel.shared
                             let tracks = await LibraryViewModel.shared.resolveTracks(ids: ids).shuffled()
                             guard !tracks.isEmpty else {
+                                Haptics.warning()
                                 player.error = "Couldn't load the AI mixes."
                                 return
                             }

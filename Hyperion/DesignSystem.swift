@@ -200,6 +200,7 @@ enum Haptics {
     private static let _light  = UIImpactFeedbackGenerator(style: .light)
     private static let _medium = UIImpactFeedbackGenerator(style: .medium)
     private static let _heavy  = UIImpactFeedbackGenerator(style: .heavy)
+    private static let _notification = UINotificationFeedbackGenerator()
 
     /// Tap confirmation, list selection, minor actions.
     static func light()  { _light.impactOccurred() }
@@ -207,4 +208,10 @@ enum Haptics {
     static func medium() { _medium.impactOccurred() }
     /// Destructive / irreversible actions.
     static func heavy()  { _heavy.impactOccurred() }
+    /// Action succeeded — paired with a confirmation toast.
+    static func success() { _notification.notificationOccurred(.success) }
+    /// Action failed in a way the user should notice but not be alarmed by.
+    static func warning() { _notification.notificationOccurred(.warning) }
+    /// Action failed unrecoverably — paired with an error banner.
+    static func error()   { _notification.notificationOccurred(.error) }
 }
