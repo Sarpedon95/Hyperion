@@ -1384,15 +1384,9 @@ struct AlbumDetailView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(spacing: 0) {
-                    // Header: artwork + title + artist + year + conductor/orchestra
-                    CenteredArtworkHeader(
-                        coverid:        album.artwork_track_id,
-                        title:          album.album,
-                        subtitle:       album.artist ?? album.composer,
-                        year:           album.year,
-                        subtitleAction: albumArtist != nil ? { showArtistDetail = true } : nil,
-                        performerLine:  albumPerformerLine
-                    )
+                    // Roon-style hero: large cover floating over a blurred
+                    // album-art backdrop, with title / artist / metadata.
+                    albumHero
 
                     // Recording annotation (rating + note preview)
                     if let ann = annotations.annotation(forAlbumID: album.id) {
@@ -1457,8 +1451,8 @@ struct AlbumDetailView: View {
         .environment(\.highlightedTrackID, highlightedTrackID)
         .background(Color.roonBase.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
-        .toolbarBackground(Color.roonBase, for: .navigationBar)
-        .toolbarBackground(.visible, for: .navigationBar)
+        // Transparent nav bar so the blurred hero backdrop reads through it.
+        .toolbarBackground(.hidden, for: .navigationBar)
         .toolbarColorScheme(.dark, for: .navigationBar)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
@@ -1609,6 +1603,74 @@ struct AlbumDetailView: View {
             }
         }
         return result.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
+    private var albumHero: some View {
+        let totalTracks = workGroups.reduce(0) { $0 + $1.tracks.count }
+        let totalDuration = workGroups.reduce(0.0) { $0 + $1.totalDuration }
+        var metaParts: [String] = []
+        if let y = album.year, y > 0 { metaParts.append(String(y)) }
+        if totalTracks > 0 { metaParts.append("\(totalTracks) track\(totalTracks == 1 ? "" : "s")") }
+        if totalDuration > 0 { metaParts.append("\(max(1, Int((totalDuration / 60).rounded()))) min") }
+        let meta = metaParts.joined(separator: " · ")
+
+        return VStack(spacing: 14) {
+            ArtworkView(coverid: album.artwork_track_id, size: 230)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .shadow(color: .black.opacity(0.6), radius: 28, x: 0, y: 14)
+
+            VStack(spacing: 6) {
+                Text(album.album)
+                    .font(.roonTitle(26))
+                    .foregroundColor(.roonPrimary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(3)
+
+                if let subtitle = album.artist ?? album.composer, !subtitle.isEmpty {
+                    Button {
+                        if albumArtist != nil { showArtistDetail = true }
+                    } label: {
+                        Text(subtitle)
+                            .font(.roonBody(16, weight: .semibold))
+                            .foregroundColor(.roonAccent)
+                            .multilineTextAlignment(.center)
+                            .lineLimit(2)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(albumArtist == nil)
+                }
+
+                if let performerLine = albumPerformerLine, !performerLine.isEmpty {
+                    Text(performerLine)
+                        .font(.roonBody(13))
+                        .foregroundColor(.roonSecondary)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                }
+
+                if !meta.isEmpty {
+                    Text(meta)
+                        .font(.roonBody(12))
+                        .foregroundColor(.roonTertiary)
+                        .padding(.top, 2)
+                }
+            }
+            .padding(.horizontal, 24)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 24)
+        .padding(.bottom, 18)
+        .background(
+            FlatTintBackground(coverid: album.artwork_track_id ?? "")
+                .overlay(
+                    LinearGradient(
+                        colors: [.clear, .clear, Color.roonBase],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                .ignoresSafeArea(edges: .top)
+        )
     }
 
     private var albumPlaybackButtons: some View {
