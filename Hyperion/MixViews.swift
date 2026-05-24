@@ -47,11 +47,10 @@ struct AudiomuseMixCard: View {
     @ObservedObject private var player  = PlayerViewModel.shared
     @ObservedObject private var library = LibraryViewModel.shared
 
-    private var artworkIDs: [String?] {
-        mix.albumIDs.prefix(4).map { id in
-            library.albums.first { $0.id == id }?.artwork_track_id
-        }
-    }
+    /// Coverids resolved for `mix.albumIDs`. Seeded from the in-memory album
+    /// cache and topped up with a server fetch when entries are missing, so
+    /// the artwork grid still renders cold (before Albums tab pagination).
+    @State private var resolvedCoverIDs: [String?] = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -72,13 +71,14 @@ struct AudiomuseMixCard: View {
                 .frame(width: 160, alignment: .leading)
         }
         .frame(width: 160)
-        .onTapGesture { AudiomuseManager.shared.play(mix: mix, using: player) }
+        .onTapGesture { Task { await AudiomuseManager.shared.play(mix: mix, using: player) } }
         .contextMenu { contextMenuItems }
+        .task(id: mix.id) { await resolveArtworkIfNeeded() }
     }
 
     @ViewBuilder
     private var artworkGrid: some View {
-        let ids = artworkIDs
+        let ids = resolvedCoverIDs.isEmpty ? localArtworkIDs : resolvedCoverIDs
         if ids.count >= 4 {
             Grid(horizontalSpacing: 2, verticalSpacing: 2) {
                 GridRow {
@@ -95,24 +95,55 @@ struct AudiomuseMixCard: View {
         }
     }
 
+    /// Initial best-effort lookup from the in-memory album cache.
+    private var localArtworkIDs: [String?] {
+        mix.albumIDs.prefix(4).map { id in
+            library.albums.first { $0.id == id }?.artwork_track_id
+        }
+    }
+
+    /// Resolve any missing coverids via a server fetch. No-op when the local
+    /// cache already covers every requested album ID.
+    private func resolveArtworkIfNeeded() async {
+        let local = localArtworkIDs
+        guard local.contains(where: { $0 == nil }) else {
+            resolvedCoverIDs = local
+            return
+        }
+        let ids = Array(mix.albumIDs.prefix(4))
+        guard let albums = try? await LyrionAPI.shared.getAlbumsByIDs(ids, count: ids.count) else { return }
+        let lookup = Dictionary(uniqueKeysWithValues: albums.map { ($0.id, $0.artwork_track_id) })
+        resolvedCoverIDs = ids.map { lookup[$0] ?? nil }
+    }
+
     @ViewBuilder
     private var contextMenuItems: some View {
-        Button { AudiomuseManager.shared.play(mix: mix, using: player) } label: {
+        Button {
+            Task { await AudiomuseManager.shared.play(mix: mix, using: player) }
+        } label: {
             Label("Play Now", systemImage: "play.fill")
         }
         Button {
-            let songs = library.songs
-            let tracks = mix.trackIDs.compactMap { id in songs.first(where: { $0.id == id }) }
-            guard !tracks.isEmpty else { return }
-            player.playNext(tracks.shuffled())
+            Task {
+                let tracks = await AudiomuseManager.shared.resolvedTracks(for: mix)
+                guard !tracks.isEmpty else {
+                    player.error = "Couldn't load tracks for \(mix.title)."
+                    return
+                }
+                player.playNext(tracks.shuffled())
+            }
         } label: {
             Label("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward")
         }
         Button {
-            let songs = library.songs
-            let tracks = mix.trackIDs.compactMap { id in songs.first(where: { $0.id == id }) }
-            guard !tracks.isEmpty else { return }
-            player.addTracksToQueue(tracks.shuffled())
+            Task {
+                let tracks = await AudiomuseManager.shared.resolvedTracks(for: mix)
+                guard !tracks.isEmpty else {
+                    player.error = "Couldn't load tracks for \(mix.title)."
+                    return
+                }
+                player.addTracksToQueue(tracks.shuffled())
+            }
         } label: {
             Label("Add to Queue", systemImage: "text.badge.plus")
         }

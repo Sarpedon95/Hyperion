@@ -106,9 +106,9 @@ private struct OfflineTrackRow: View {
         .contentShape(Rectangle())
         .onTapGesture {
             // Build a Track from the DownloadedTrack so it can be queued.
-            if let src = LibraryViewModel.shared.songs.first(where: { $0.id == track.id }) {
-                player.playTracks([src])
-            }
+            // Use the canonical helper so we get a real Track even when
+            // LibraryViewModel.songs hasn't been paginated in.
+            player.playTracks([downloads.playableTrack(for: track)])
         }
         .swipeActions(edge: .trailing) {
             Button(role: .destructive) {

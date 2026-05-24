@@ -84,10 +84,7 @@ struct DownloadsView: View {
                     Section("Downloaded") {
                         ForEach(dm.downloadedTracks) { downloaded in
                             Button {
-                                let songs = LibraryViewModel.shared.songs
-                                if let track = songs.first(where: { $0.id == downloaded.id }) {
-                                    player.playSingleTrack(track)
-                                }
+                                player.playSingleTrack(dm.playableTrack(for: downloaded))
                             } label: {
                                 DownloadedRow(downloaded: downloaded,
                                               isActive: player.currentTrack?.id == downloaded.id)
@@ -106,16 +103,10 @@ struct DownloadsView: View {
                             }
                             .contextMenu {
                                 Button("Play", systemImage: "play.fill") {
-                                    let songs = LibraryViewModel.shared.songs
-                                    if let track = songs.first(where: { $0.id == downloaded.id }) {
-                                        player.playSingleTrack(track)
-                                    }
+                                    player.playSingleTrack(dm.playableTrack(for: downloaded))
                                 }
                                 Button("Add to Queue", systemImage: "text.badge.plus") {
-                                    let songs = LibraryViewModel.shared.songs
-                                    if let track = songs.first(where: { $0.id == downloaded.id }) {
-                                        player.addTracksToQueue([track])
-                                    }
+                                    player.addTracksToQueue([dm.playableTrack(for: downloaded)])
                                 }
                                 Divider()
                                 Button("Delete Download", systemImage: "trash", role: .destructive) {
@@ -144,9 +135,13 @@ struct DownloadsView: View {
 private struct InProgressRow: View {
     let trackID: Int
     let progress: DownloadProgress
+    @ObservedObject private var dm = DownloadManager.shared
 
     private var trackTitle: String {
-        LibraryViewModel.shared.songs.first(where: { $0.id == trackID })?.title
+        // Prefer the metadata captured at download start; fall back to library
+        // (rarely populated cold) and finally to a numeric placeholder.
+        dm.pendingTitles[trackID]
+            ?? LibraryViewModel.shared.songs.first(where: { $0.id == trackID })?.title
             ?? "Track \(trackID)"
     }
 

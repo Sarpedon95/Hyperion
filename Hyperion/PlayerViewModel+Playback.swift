@@ -1479,10 +1479,13 @@ extension PlayerViewModel {
             let tracks = nonClassical((try? await LyrionAPI.shared.getTracksForGenre(genreID: genre.id, count: 30)) ?? [])
             if !tracks.isEmpty { return Array(tracks.shuffled().prefix(10)) }
         }
-        // Fallback: random songs from library
-        let songs = nonClassical(LibraryViewModel.shared.songs)
-        if !songs.isEmpty { return Array(songs.shuffled().prefix(10)) }
-        return []
+        // Fallback: random songs. Prefer the in-memory library when populated,
+        // otherwise pull a server-randomised page so radio still works before
+        // the Songs tab has been paginated in.
+        let local = nonClassical(LibraryViewModel.shared.songs)
+        if !local.isEmpty { return Array(local.shuffled().prefix(10)) }
+        let serverSongs = nonClassical((try? await LyrionAPI.shared.getRandomSongs(count: 60)) ?? [])
+        return Array(serverSongs.shuffled().prefix(10))
     }
 
     // MARK: - Work-boundary gapless (Stage 6)

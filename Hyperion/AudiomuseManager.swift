@@ -173,11 +173,12 @@ final class AudiomuseManager: ObservableObject {
         }
         guard !ids.isEmpty else { return nil }
 
-        // Derive album IDs for artwork grid from the library.
-        let songs = LibraryViewModel.shared.songs
+        // Derive album IDs for the artwork grid. Resolve the first handful of
+        // track IDs through the library (in-memory first, server fallback) so
+        // the grid still populates when `songs` has not been paginated in.
+        let resolved = await LibraryViewModel.shared.resolveTracks(ids: Array(ids.prefix(12)))
         let albumIDs: [Int] = Array(
-            Set(ids.compactMap { id in songs.first(where: { $0.id == id })?.albumID })
-                .prefix(4)
+            Set(resolved.compactMap { $0.albumID }).prefix(4)
         )
 
         return AudiomuseMix(
@@ -192,12 +193,23 @@ final class AudiomuseManager: ObservableObject {
 
     // MARK: - Play a mix
 
-    func play(mix: AudiomuseMix, using player: PlayerViewModel) {
-        let songs = LibraryViewModel.shared.songs
-        var tracks = mix.trackIDs.compactMap { id in songs.first(where: { $0.id == id }) }
-        if tracks.isEmpty { return }
-        tracks.shuffle()
-        player.playTracks(tracks)
+    /// Resolves a mix's track IDs to playable tracks (in-memory first, server
+    /// fallback). Returns an empty array only when nothing could be resolved.
+    func resolvedTracks(for mix: AudiomuseMix) async -> [Track] {
+        await LibraryViewModel.shared.resolveTracks(ids: mix.trackIDs)
+    }
+
+    /// Plays a mix. Returns `false` (and surfaces an error on the player) when
+    /// no tracks could be resolved, so callers never fail silently.
+    @discardableResult
+    func play(mix: AudiomuseMix, using player: PlayerViewModel) async -> Bool {
+        let tracks = await resolvedTracks(for: mix)
+        guard !tracks.isEmpty else {
+            player.error = "Couldn't load tracks for \(mix.title)."
+            return false
+        }
+        player.playTracks(tracks.shuffled())
+        return true
     }
 
     // MARK: - Networking

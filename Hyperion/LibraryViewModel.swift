@@ -418,6 +418,40 @@ final class LibraryViewModel: ObservableObject {
         return try await LyrionAPI.shared.searchTracks(term: query, count: limit)
     }
 
+    // MARK: - Track resolution (server-backed)
+
+    /// Resolves track IDs to `Track` objects, preferring the in-memory library
+    /// and fetching anything not yet paginated in from the server via
+    /// `getSong(id:)`. Order of `ids` is preserved; IDs that cannot be resolved
+    /// (deleted tracks, server offline) are dropped.
+    ///
+    /// This is the canonical way for features (AI Mixes, Focus Mode, Siri,
+    /// downloads) to turn stored track IDs into playable tracks. Filtering the
+    /// in-memory `songs` array directly is unsafe because `songs` is lazily
+    /// paginated and is empty on a cold launch.
+    func resolveTracks(ids: [Int]) async -> [Track] {
+        guard !ids.isEmpty else { return [] }
+
+        var byID = [Int: Track](minimumCapacity: songs.count)
+        for track in songs { byID[track.id] = track }
+
+        let missing = ids.filter { byID[$0] == nil }
+        if !missing.isEmpty {
+            let fetched = await withTaskGroup(of: Track?.self) { group -> [Track] in
+                for id in missing {
+                    group.addTask { try? await LyrionAPI.shared.getSong(id: id) }
+                }
+                var out: [Track] = []
+                out.reserveCapacity(missing.count)
+                for await track in group { if let track { out.append(track) } }
+                return out
+            }
+            for track in fetched { byID[track.id] = track }
+        }
+
+        return ids.compactMap { byID[$0] }
+    }
+
     // MARK: - Works
 
     func loadWorks(composerID: Int? = nil) async throws -> [Work] {

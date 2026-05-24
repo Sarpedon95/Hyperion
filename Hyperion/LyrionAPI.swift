@@ -435,6 +435,17 @@ final class LyrionAPI {
         return raw
     }
 
+    /// A server-randomised page of tracks. Used as a fallback by features
+    /// (Focus Mode, radio seeding) that need a candidate pool when the
+    /// in-memory library has not been fully paginated into `LibraryViewModel`.
+    func getRandomSongs(count: Int = 100) async throws -> [Track] {
+        try Task.checkCancellation()
+        let result = try await request(params: [
+            "titles", 0, count, "tags:\(trackTags)", "sort:random"
+        ])
+        return Self.parseTracks(result["titles_loop"] as? [[String: Any]] ?? [])
+    }
+
     func getAllArtists(start: Int = 0, count: Int = 500) async throws -> [Artist] {
         try Task.checkCancellation()
         let result = try await request(params: ["artists", start, count])

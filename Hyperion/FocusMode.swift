@@ -86,23 +86,15 @@ final class FocusMode: ObservableObject {
             defer { self?.refillTask = nil }
             guard let self, self.isActive else { return }
 
-            let library = LibraryViewModel.shared
-            let player  = PlayerViewModel.shared
+            let player = PlayerViewModel.shared
 
-            // Build a pool of tracks matching the seed
-            var candidates = library.songs.filter { track in
-                if let genre = self.seedGenre,
-                   let trackGenres = track.genres,
-                   !trackGenres.lowercased().contains(genre.lowercased()) {
-                    // Only apply genre filter if we have a seed genre
-                    return false
-                }
-                if let composer = self.seedComposer,
-                   let trackComposer = track.composer,
-                   !trackComposer.lowercased().contains(composer.lowercased()) {
-                    return false
-                }
-                return true
+            // Prefer the in-memory library when it has been paginated in; fall
+            // back to a server-side pool so Focus Mode keeps refilling on a cold
+            // launch (when LibraryViewModel.songs is still empty).
+            var candidates = LibraryViewModel.shared.songs.filter { self.matchesSeed($0) }
+            if candidates.isEmpty {
+                candidates = await self.serverCandidatePool()
+                guard self.isActive else { return }
             }
 
             // Shuffle and avoid repeating what's already in the queue
@@ -110,10 +102,57 @@ final class FocusMode: ObservableObject {
             candidates = candidates.filter { !queueIDs.contains($0.id) }.shuffled()
 
             let toAdd = Array(candidates.prefix(8))
-            guard !toAdd.isEmpty else { return }
+            guard !toAdd.isEmpty else {
+                ServerLogStore.shared.warn("Focus Mode: no candidate tracks found for current seed")
+                return
+            }
             player.addTracksToQueue(toAdd)
             ServerLogStore.shared.info("Focus Mode: added \(toAdd.count) tracks to queue")
         }
+    }
+
+    /// True when a track matches the active genre/composer seed.
+    private func matchesSeed(_ track: Track) -> Bool {
+        if let genre = seedGenre,
+           let trackGenres = track.genres,
+           !trackGenres.lowercased().contains(genre.lowercased()) {
+            return false
+        }
+        if let composer = seedComposer,
+           let trackComposer = track.composer,
+           !trackComposer.lowercased().contains(composer.lowercased()) {
+            return false
+        }
+        return true
+    }
+
+    /// Server-side candidate pool used when the in-memory library is empty.
+    /// Resolves the seed to a concrete LMS query rather than scanning a
+    /// (possibly empty) local song list.
+    private func serverCandidatePool() async -> [Track] {
+        // Composer seed → resolve contributor ID → tracks by that composer.
+        if let composer = seedComposer, !composer.isEmpty {
+            if let artists = try? await LyrionAPI.shared.searchArtists(term: composer, count: 5),
+               let id = (artists.first { $0.name.localizedCaseInsensitiveCompare(composer) == .orderedSame }?.id
+                         ?? artists.first?.id),
+               let tracks = try? await LyrionAPI.shared.getTracksForComposer(composerID: id),
+               !tracks.isEmpty {
+                return tracks
+            }
+        }
+        // Genre seed → resolve genre ID → a server-randomised page.
+        if let genreName = seedGenre, !genreName.isEmpty {
+            await LibraryViewModel.shared.loadGenres()
+            if let genre = LibraryViewModel.shared.genres.first(where: {
+                   $0.name.localizedCaseInsensitiveCompare(genreName) == .orderedSame
+               }),
+               let tracks = try? await LyrionAPI.shared.getTracksForGenre(genreID: genre.id, count: 100),
+               !tracks.isEmpty {
+                return tracks
+            }
+        }
+        // No usable seed → a random page so the queue still grows.
+        return (try? await LyrionAPI.shared.getRandomSongs(count: 100)) ?? []
     }
 }
 

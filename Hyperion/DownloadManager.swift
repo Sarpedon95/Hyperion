@@ -29,6 +29,9 @@ final class DownloadManager: NSObject, ObservableObject {
 
     @Published private(set) var downloadedTracks: [DownloadedTrack] = []
     @Published private(set) var downloads: [Int: DownloadProgress]  = [:]
+    /// Titles of in-progress downloads, captured when the download starts so the
+    /// UI can label rows without consulting the (lazily-loaded) song library.
+    @Published private(set) var pendingTitles: [Int: String]        = [:]
 
     /// Set by AppDelegate when the system wakes the app for a background session event.
     var backgroundCompletionHandler: (() -> Void)?
@@ -36,6 +39,10 @@ final class DownloadManager: NSObject, ObservableObject {
     private var session: URLSession!
     private var taskToTrackID: [Int: Int]              = [:]
     private var trackToTask: [Int: URLSessionDownloadTask] = [:]
+    /// In-memory cache of full Track metadata for in-progress downloads. Used
+    /// by handleFinishedDownload to build a DownloadedTrack record without
+    /// touching LibraryViewModel.songs (which is lazily paginated).
+    private var pendingTracks: [Int: Track]            = [:]
 
     private let manifestFilename = "hyperion_downloads.json"
 
@@ -83,6 +90,12 @@ final class DownloadManager: NSObject, ObservableObject {
         task.taskDescription = String(track.id)
         taskToTrackID[task.taskIdentifier] = track.id
         trackToTask[track.id]              = task
+        // Cache the full track so handleFinishedDownload can build a
+        // DownloadedTrack without reading library.songs (which is lazily
+        // paginated and may be empty when the download finishes — especially
+        // for background completions after relaunch).
+        pendingTracks[track.id] = track
+        pendingTitles[track.id] = track.title
         downloads[track.id] = DownloadProgress(state: .pending, progress: 0)
         task.resume()
     }
@@ -91,6 +104,8 @@ final class DownloadManager: NSObject, ObservableObject {
         trackToTask[trackID]?.cancel()
         trackToTask[trackID] = nil
         downloads[trackID]   = nil
+        pendingTracks[trackID] = nil
+        pendingTitles[trackID] = nil
     }
 
     func cancelDownload(for track: Track) { cancelDownload(trackID: track.id) }
@@ -131,6 +146,35 @@ final class DownloadManager: NSObject, ObservableObject {
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
+    /// Build a playable `Track` from a downloaded manifest entry. Preferred
+    /// over filtering `LibraryViewModel.songs` (which may be empty cold) so
+    /// downloaded items always remain playable, including offline.
+    func playableTrack(for downloaded: DownloadedTrack) -> Track {
+        // Use any richer in-memory metadata when available (genres, work tags,
+        // etc.), but fall back to the manifest fields so playback never blocks.
+        if let live = LibraryViewModel.shared.songs.first(where: { $0.id == downloaded.id }) {
+            return live
+        }
+        return Track(
+            id:          downloaded.id,
+            title:       downloaded.title,
+            album:       downloaded.album.isEmpty ? nil : downloaded.album,
+            albumID:     nil,
+            albumartist: downloaded.artist.isEmpty ? nil : downloaded.artist,
+            composer:    nil,
+            trackartist: downloaded.artist.isEmpty ? nil : downloaded.artist,
+            work:        nil,
+            duration:    downloaded.duration,
+            tracknum:    nil,
+            discnum:     nil,
+            year:        nil,
+            coverid:     downloaded.coverid,
+            url:         nil,
+            genres:      nil,
+            isClassical: nil
+        )
+    }
+
     func isDownloaded(trackID: Int) -> Bool {
         guard let entry = downloadedTracks.first(where: { $0.id == trackID }) else { return false }
         let url = Self.downloadsDir.appendingPathComponent(entry.localFilename)
@@ -161,21 +205,57 @@ final class DownloadManager: NSObject, ObservableObject {
             return
         }
 
-        let songs = LibraryViewModel.shared.songs
-        if let track = songs.first(where: { $0.id == trackID }) {
+        // Resolve metadata for the manifest record. Order of preference:
+        //   1. Track captured at download start (always available for
+        //      foreground downloads in this session).
+        //   2. In-memory library (paginated subset).
+        //   3. Server fetch via getSong(id:) — required for background
+        //      completions that fire after a relaunch, when neither (1)
+        //      nor (2) is populated.
+        // The audio file is already on disk; metadata fallback never blocks
+        // playback, only the manifest entry / row label.
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let cached = self.pendingTracks[trackID]
+            let library = LibraryViewModel.shared.songs.first { $0.id == trackID }
+            let resolved = cached ?? library ?? (try? await LyrionAPI.shared.getSong(id: trackID)) ?? nil
+
+            let title:  String
+            let artist: String
+            let album:  String
+            let duration: Double?
+            let coverid:  String?
+            if let track = resolved {
+                title    = track.title
+                artist   = track.trackartist ?? track.albumartist ?? ""
+                album    = track.album ?? ""
+                duration = track.duration
+                coverid  = track.coverid
+            } else {
+                // Last-resort placeholder so a successful file download is not
+                // dropped from the manifest just because metadata is unknown.
+                title    = "Track \(trackID)"
+                artist   = ""
+                album    = ""
+                duration = nil
+                coverid  = nil
+            }
+
             let record = DownloadedTrack(
-                id:            track.id,
-                title:         track.title,
-                artist:        track.trackartist ?? track.albumartist ?? "",
-                album:         track.album ?? "",
-                duration:      track.duration,
-                coverid:       track.coverid,
+                id:            trackID,
+                title:         title,
+                artist:        artist,
+                album:         album,
+                duration:      duration,
+                coverid:       coverid,
                 localFilename: filename,
                 downloadedAt:  Date()
             )
-            downloadedTracks.removeAll { $0.id == trackID }
-            downloadedTracks.insert(record, at: 0)
-            saveManifest()
+            self.downloadedTracks.removeAll { $0.id == trackID }
+            self.downloadedTracks.insert(record, at: 0)
+            self.saveManifest()
+            self.pendingTracks[trackID] = nil
+            self.pendingTitles[trackID] = nil
         }
     }
 

@@ -224,13 +224,17 @@ struct HomeView: View {
                 if showAI {
                     // Play all AI mixes button
                     Button {
-                        let player = PlayerViewModel.shared
-                        let library = LibraryViewModel.shared
-                        let trackIDs = Set(audiomuse.mixes.flatMap(\.trackIDs))
-                        let tracks = library.songs.filter { trackIDs.contains($0.id) }.shuffled()
-                        guard !tracks.isEmpty else { return }
-                        player.playTracks(tracks)
-                        Haptics.medium()
+                        let ids = audiomuse.mixes.flatMap(\.trackIDs)
+                        Task {
+                            let player = PlayerViewModel.shared
+                            let tracks = await LibraryViewModel.shared.resolveTracks(ids: ids).shuffled()
+                            guard !tracks.isEmpty else {
+                                player.error = "Couldn't load the AI mixes."
+                                return
+                            }
+                            player.playTracks(tracks)
+                            Haptics.medium()
+                        }
                     } label: {
                         Label("Play All", systemImage: "play.fill")
                             .font(.roonBody(11, weight: .semibold))
