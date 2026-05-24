@@ -49,22 +49,100 @@ extension Color {
     }
 }
 
-// MARK: - Typography tokens
+// MARK: - Typography tokens — Dynamic Type aware
+//
+// All Hyperion text routes through three factories that take a raw point size
+// (preserving the original visual layout) and return a Font whose point size
+// has been scaled by `UIFontMetrics(forTextStyle:)`. The size is recomputed
+// every time SwiftUI rebuilds the view, so Dynamic Type changes propagate.
+//
+// Why UIFontMetrics for all three: SwiftUI's `Font.system(size:relativeTo:)`
+// only accepts the default design family, so we can't use it for `.serif`
+// (roonTitle) or `.monospaced` (roonMono). To keep behaviour consistent,
+// `roonBody` also goes through UIFontMetrics rather than mixing two
+// scaling APIs.
+//
+// Mapping (point size → UIFont.TextStyle anchor for scaling):
+//   ≥34: .largeTitle  ≥28: .title1    ≥22: .title2   ≥20: .title3
+//   ≥17: .body        ≥15: .callout   ≥13: .subheadline
+//   ≥12: .footnote    ≥11: .caption1  otherwise: .caption2
 
 extension Font {
-    /// Serif title font — track/work/composer headings.
-    static func roonTitle(_ size: CGFloat, weight: Font.Weight = .bold) -> Font {
-        .system(size: size, weight: weight, design: .serif)
+
+    /// Maps a raw point size to the closest standard UIFont.TextStyle so the
+    /// font scales with Dynamic Type while preserving the visual hierarchy.
+    fileprivate static func uiKitTextStyle(forPointSize size: CGFloat) -> UIFont.TextStyle {
+        switch size {
+        case 34...:   return .largeTitle
+        case 28..<34: return .title1
+        case 22..<28: return .title2
+        case 20..<22: return .title3
+        case 17..<20: return .body
+        case 15..<17: return .callout
+        case 13..<15: return .subheadline
+        case 12..<13: return .footnote
+        case 11..<12: return .caption1
+        default:      return .caption2
+        }
     }
 
-    /// Default body font — labels, descriptions, UI copy.
+    /// UIFontMetrics-scaled point size, anchored to the matched text style.
+    /// Pure function — re-runs each SwiftUI redraw so it picks up Dynamic
+    /// Type changes automatically.
+    fileprivate static func scaledPointSize(_ size: CGFloat) -> CGFloat {
+        let style = uiKitTextStyle(forPointSize: size)
+        return UIFontMetrics(forTextStyle: style).scaledValue(for: size)
+    }
+
+    /// Serif title font — track/work/composer headings. Scales with Dynamic Type.
+    static func roonTitle(_ size: CGFloat, weight: Font.Weight = .bold) -> Font {
+        .system(size: scaledPointSize(size), weight: weight, design: .serif)
+    }
+
+    /// Default body font — labels, descriptions, UI copy. Scales with Dynamic Type.
     static func roonBody(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        .system(size: size, weight: weight, design: .default)
+        .system(size: scaledPointSize(size), weight: weight, design: .default)
     }
 
     /// Monospaced font — time displays, track numbers, and compact controls.
+    /// Scales with Dynamic Type.
     static func roonMono(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        .system(size: size, weight: weight, design: .monospaced)
+        .system(size: scaledPointSize(size), weight: weight, design: .monospaced)
+    }
+}
+
+// MARK: - ScaledFont view modifier (explicit anchor variant)
+//
+// For text whose call site wants to control the Dynamic Type anchor
+// independently of the base point size (e.g. a small "caption" that should
+// still scale at the body rate). Observes `dynamicTypeSize` directly so
+// SwiftUI recomputes the size when the user changes Settings.
+
+private struct ScaledFontModifier: ViewModifier {
+    let size: CGFloat
+    let weight: Font.Weight
+    let design: Font.Design
+    let textStyle: UIFont.TextStyle
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    func body(content: Content) -> some View {
+        let metrics = UIFontMetrics(forTextStyle: textStyle)
+        let scaled  = metrics.scaledValue(for: size)
+        content.font(.system(size: scaled, weight: weight, design: design))
+    }
+}
+
+extension View {
+    /// Drop-in alternative to `.font(.roonBody(size, weight:))` that takes an
+    /// explicit Dynamic Type anchor. Useful for hero titles where the body
+    /// anchor would scale too aggressively, or icons sized in points.
+    func scaledFont(
+        size: CGFloat,
+        weight: Font.Weight = .regular,
+        design: Font.Design = .default,
+        relativeTo style: UIFont.TextStyle = .body
+    ) -> some View {
+        modifier(ScaledFontModifier(size: size, weight: weight, design: design, textStyle: style))
     }
 }
 

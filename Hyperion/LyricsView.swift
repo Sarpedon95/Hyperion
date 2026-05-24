@@ -178,7 +178,7 @@ struct LyricsView: View {
                 .clipShape(Capsule())
 
                 Text(text)
-                    .font(.system(size: 17, weight: .regular))
+                    .font(.roonBody(17))
                     .foregroundColor(.white.opacity(0.72))
                     .multilineTextAlignment(.center)
                     .lineSpacing(8)

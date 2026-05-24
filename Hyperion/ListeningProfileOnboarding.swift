@@ -63,13 +63,13 @@ struct WelcomeView: View {
 
                     // App name
                     Text("Hyperion")
-                        .font(.system(size: 38, weight: .bold, design: .default))
+                        .font(.roonBody(38, weight: .bold))
                         .foregroundColor(.white)
                         .padding(.top, 22)
 
                     // Subtitle
                     Text("Your music, anywhere.\nStream from your Lyrion Music Server.")
-                        .font(.system(size: 16))
+                        .font(.roonBody(16))
                         .foregroundColor(Color(white: 0.5))
                         .multilineTextAlignment(.center)
                         .lineLimit(2)
@@ -89,10 +89,10 @@ struct WelcomeView: View {
 
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(feature.title)
-                                        .font(.system(size: 15, weight: .semibold))
+                                        .font(.roonBody(15, weight: .semibold))
                                         .foregroundColor(.white)
                                     Text(feature.subtitle)
-                                        .font(.system(size: 13))
+                                        .font(.roonBody(13))
                                         .foregroundColor(Color(white: 0.5))
                                 }
 
@@ -107,7 +107,7 @@ struct WelcomeView: View {
                     // Get Started button
                     Button(action: onGetStarted) {
                         Text("Get Started")
-                            .font(.system(size: 17, weight: .semibold))
+                            .font(.roonBody(17, weight: .semibold))
                             .foregroundColor(.white)
                             .frame(maxWidth: .infinity)
                             .frame(height: 56)
