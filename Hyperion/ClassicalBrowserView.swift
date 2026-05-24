@@ -1,89 +1,396 @@
 import SwiftUI
 
-// MARK: - Classical Browser (4-tab)
+// MARK: - Classical home
+//
+// A Home-style landing page for classical content: recently played / added
+// classical albums, plus horizontal rails for composers, conductors, ensembles
+// and soloists. Each rail's "See All" pushes the corresponding full browser.
 
 struct ClassicalBrowserView: View {
 
-    @StateObject private var vm = ClassicalBrowserViewModel()
-    @State private var selectedTab: ClassicalTab = .composers
+    @StateObject private var vm = ClassicalHomeViewModel()
+    @ObservedObject private var library = LibraryViewModel.shared
+    @State private var recentTab: RecentTab = .played
 
-    enum ClassicalTab: String, CaseIterable {
-        case composers   = "Composers"
-        case works       = "Works"
-        case conductors  = "Conductors"
-        case performers  = "Performers"
-        case search      = "Search"
-
-        var icon: String {
-            switch self {
-            case .composers:  return "person.3"
-            case .works:      return "music.quarternote.3"
-            case .conductors: return "wand.and.stars"
-            case .performers: return "person.wave.2"
-            case .search:     return "magnifyingglass"
-            }
-        }
-    }
+    enum RecentTab { case played, added }
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                ClassicalTabBar(selected: $selectedTab)
-                    .padding(.top, 4)
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
 
-                switch selectedTab {
-                case .composers:
-                    ComposersTab(vm: vm)
-                case .works:
-                    WorksTab()
-                case .conductors:
-                    ConductorsBrowserTab()
-                case .performers:
-                    PerformersTab()
-                case .search:
-                    ClassicalSearchTab()
+                    header
+
+                    recentActivitySection
+
+                    composersRail
+                    conductorsRail
+                    ensemblesRail
+                    soloistsRail
+
+                    worksRow
+
+                    Spacer(minLength: 40)
                 }
             }
-            .navigationTitle("Classical")
-            .navigationBarTitleDisplayMode(.large)
+            .scrollContentBackground(.hidden)
+            .bottomOverlayAwareScroll()
+            .background(Color.roonBase.ignoresSafeArea())
+            .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(.hidden, for: .navigationBar)
             .toolbarColorScheme(.dark, for: .navigationBar)
-            .background(Color.roonBase.ignoresSafeArea())
+            .refreshable { await load(force: true) }
         }
-        .task { await vm.loadInitial() }
+        .task { await load(force: false) }
+    }
+
+    // MARK: - Header
+
+    private var header: some View {
+        HStack(alignment: .center) {
+            Text("Classical")
+                .font(.roonTitle(32))
+                .foregroundColor(.roonPrimary)
+            Spacer()
+            NavigationLink { ClassicalSearchTab() } label: {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 19))
+                    .foregroundColor(.roonSecondary)
+                    .frame(width: 44, height: 44)
+            }
+            .accessibilityLabel("Search classical")
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+        .padding(.bottom, 20)
+    }
+
+    // MARK: - Recent activity (classical albums only)
+
+    @ViewBuilder
+    private var recentActivitySection: some View {
+        HStack(alignment: .center, spacing: 0) {
+            HomeSectionHeader(label: "RECENT ACTIVITY", title: "History")
+            Spacer()
+            HStack(spacing: 0) {
+                recentTabButton("Played", tab: .played)
+                recentTabButton("Added", tab: .added)
+            }
+            .background(Color.roonSurface)
+            .clipShape(Capsule())
+            .overlay(Capsule().strokeBorder(Color.roonBorder, lineWidth: 1))
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 14)
+
+        let raw = recentTab == .played ? library.recentlyPlayed : library.recentAlbums
+        let albums = raw.filter { $0.looksClassical }
+
+        if albums.isEmpty {
+            emptyCard(
+                icon: recentTab == .played ? "clock.arrow.circlepath" : "plus.square.on.square",
+                title: recentTab == .played ? "No recent classical plays" : "No recent classical additions",
+                subtitle: "Classical albums you \(recentTab == .played ? "play" : "add") will appear here."
+            )
+            .padding(.horizontal, 16)
+            .padding(.bottom, 32)
+        } else {
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: 14) {
+                    ForEach(albums) { album in
+                        NavigationLink { AlbumDetailView(album: album) } label: {
+                            RecentAlbumCard(album: album)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 16)
+            }
+            .padding(.bottom, 32)
+        }
+    }
+
+    @ViewBuilder
+    private func recentTabButton(_ label: String, tab: RecentTab) -> some View {
+        let isActive = recentTab == tab
+        Button { withAnimation(.easeInOut(duration: 0.18)) { recentTab = tab } } label: {
+            Text(label)
+                .font(.roonBody(12, weight: isActive ? .semibold : .regular))
+                .foregroundColor(isActive ? .roonPrimary : .roonTertiary)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(isActive ? Color.roonElevated : Color.clear)
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - Rails
+
+    @ViewBuilder
+    private var composersRail: some View {
+        if !library.composers.isEmpty {
+            railHeader("YOUR LIBRARY", "Composers") { ClassicalComposersScreen() }
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: 16) {
+                    ForEach(library.composers.prefix(25)) { composer in
+                        NavigationLink {
+                            WorkListView(composerID: composer.id, composerName: composer.artist)
+                        } label: {
+                            ComposerCircleCard(composer: composer)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 16)
+            }
+            .padding(.bottom, 32)
+        }
+    }
+
+    @ViewBuilder
+    private var conductorsRail: some View {
+        if !vm.conductors.isEmpty {
+            railHeader("PERFORMERS", "Conductors") { ConductorBrowserView() }
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: 16) {
+                    ForEach(vm.conductors.prefix(25)) { conductor in
+                        NavigationLink { ConductorDetailView(conductor: conductor) } label: {
+                            ClassicalPersonCircle(name: conductor.name)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 16)
+            }
+            .padding(.bottom, 32)
+        }
+    }
+
+    @ViewBuilder
+    private var ensemblesRail: some View {
+        if !vm.ensembles.isEmpty {
+            railHeader("PERFORMERS", "Ensembles") { EnsembleBrowserView() }
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: 14) {
+                    ForEach(vm.ensembles.prefix(25)) { ensemble in
+                        NavigationLink { EnsembleDetailView(ensemble: ensemble) } label: {
+                            ClassicalEnsembleRailCard(ensemble: ensemble)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 16)
+            }
+            .padding(.bottom, 32)
+        }
+    }
+
+    @ViewBuilder
+    private var soloistsRail: some View {
+        if !vm.soloists.isEmpty {
+            railHeader("PERFORMERS", "Soloists") { SoloistBrowserView() }
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: 16) {
+                    ForEach(vm.soloists.prefix(25)) { soloist in
+                        NavigationLink { SoloistDetailView(soloist: soloist) } label: {
+                            ClassicalPersonCircle(name: soloist.name)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 16)
+            }
+            .padding(.bottom, 32)
+        }
+    }
+
+    // MARK: - Works discovery
+
+    private var worksRow: some View {
+        NavigationLink { RandomWorksView() } label: {
+            HStack(spacing: 14) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(Color.roonElevated)
+                        .frame(width: 52, height: 52)
+                    Image(systemName: "music.quarternote.3")
+                        .font(.system(size: 22))
+                        .foregroundColor(.roonAccent)
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Discover Works")
+                        .font(.roonBody(16, weight: .semibold))
+                        .foregroundColor(.roonPrimary)
+                    Text("Explore works across your library")
+                        .font(.roonBody(12))
+                        .foregroundColor(.roonSecondary)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.roonTertiary)
+            }
+            .padding(14)
+            .background(Color.roonSurface)
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .padding(.horizontal, 16)
+        }
+        .buttonStyle(.plain)
+        .padding(.bottom, 32)
+    }
+
+    // MARK: - Helpers
+
+    @ViewBuilder
+    private func railHeader<Dest: View>(
+        _ label: String, _ title: String,
+        @ViewBuilder destination: @escaping () -> Dest
+    ) -> some View {
+        HStack(alignment: .lastTextBaseline) {
+            HomeSectionHeader(label: label, title: title)
+            Spacer()
+            NavigationLink(destination: destination()) {
+                Text("See All")
+                    .font(.roonBody(12, weight: .semibold))
+                    .foregroundColor(.roonAccent)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 14)
+    }
+
+    @ViewBuilder
+    private func emptyCard(icon: String, title: String, subtitle: String) -> some View {
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.white.opacity(0.07))
+                    .frame(width: 52, height: 52)
+                Image(systemName: icon)
+                    .font(.system(size: 22, weight: .medium))
+                    .foregroundColor(.roonAccent)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.roonBody(15, weight: .semibold))
+                    .foregroundColor(.roonPrimary)
+                Text(subtitle)
+                    .font(.roonBody(12))
+                    .foregroundColor(.roonSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(14)
+        .background(Color.roonSurface)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
+            .strokeBorder(Color.white.opacity(0.08), lineWidth: 1))
+    }
+
+    private func load(force: Bool) async {
+        async let composers: Void   = library.loadComposers()
+        async let recentPlayed: Void = library.loadRecentlyPlayed(force: force)
+        async let recentAdded: Void  = library.loadRecentAlbums(force: force)
+        async let performers: Void   = vm.load(force: force)
+        _ = await (composers, recentPlayed, recentAdded, performers)
     }
 }
 
-// MARK: - Tab bar
+// MARK: - Classical home rail cards
 
-private struct ClassicalTabBar: View {
-    @Binding var selected: ClassicalBrowserView.ClassicalTab
+struct ClassicalPersonCircle: View {
+    let name: String
+    private let size: CGFloat = 80
 
     var body: some View {
-        HStack(spacing: 0) {
-            ForEach(ClassicalBrowserView.ClassicalTab.allCases, id: \.self) { tab in
-                Button {
-                    withAnimation(.easeInOut(duration: 0.16)) { selected = tab }
-                } label: {
-                    VStack(spacing: 5) {
-                        Text(tab.rawValue)
-                            .font(.roonBody(13, weight: selected == tab ? .semibold : .regular))
-                            .foregroundColor(selected == tab ? .roonPrimary : .roonTertiary)
-                        Rectangle()
-                            .fill(selected == tab ? Color.roonAccent : Color.clear)
-                            .frame(height: 2)
-                            .clipShape(Capsule())
-                    }
-                }
-                .buttonStyle(.plain)
-                .frame(maxWidth: .infinity)
+        VStack(spacing: 8) {
+            ZStack {
+                Circle().fill(Color.roonElevated).frame(width: size, height: size)
+                Text(NameFormatting.initials(name))
+                    .font(.roonTitle(24))
+                    .foregroundColor(.roonAccent)
             }
+            Text(NameFormatting.lastName(name))
+                .font(.roonBody(12, weight: .medium))
+                .foregroundColor(.roonSecondary)
+                .lineLimit(1)
+                .frame(width: size + 16)
         }
-        .padding(.horizontal, 16)
-        .padding(.bottom, 4)
-        .overlay(alignment: .bottom) {
-            Color.roonBorder.frame(height: 0.5)
+        .contentShape(Rectangle())
+    }
+}
+
+struct ClassicalEnsembleRailCard: View {
+    let ensemble: Ensemble
+    private let size: CGFloat = 132
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(Color.roonElevated)
+                    .frame(width: size, height: size)
+                Image(systemName: "music.quarternote.3")
+                    .font(.system(size: 34))
+                    .foregroundColor(.roonAccent)
+            }
+            Text(ensemble.name)
+                .font(.roonBody(13, weight: .semibold))
+                .foregroundColor(.roonPrimary)
+                .lineLimit(2)
+                .frame(width: size, height: 36, alignment: .topLeading)
         }
+        .contentShape(Rectangle())
+    }
+}
+
+// MARK: - Classical home view model
+
+@MainActor
+final class ClassicalHomeViewModel: ObservableObject {
+
+    @Published var conductors: [Conductor] = []
+    @Published var ensembles:  [Ensemble]  = []
+    @Published var soloists:   [SoloistEntry] = []
+
+    private var didLoad = false
+
+    func load(force: Bool) async {
+        if didLoad && !force { return }
+        didLoad = true
+
+        async let c = LyrionAPI.shared.fetchAllConductors()
+        async let e = LyrionAPI.shared.fetchAllEnsembles()
+        async let s = LyrionAPI.shared.fetchAllSoloists()
+        let (cc, ee, ss) = await (c, e, s)
+        conductors = cc
+        ensembles  = ee
+        soloists   = ss
+
+        // Build the OO↔LMS link index in the background on first open.
+        LMSLibraryLinker.shared.startLinkingFromLibrary()
+    }
+}
+
+// MARK: - Composers browse screen (OpenOpus grid)
+//
+// Reached from the Classical home "Composers → See All". Hosts the OpenOpus
+// composer grid (portraits, epoch + alphabet filters, search).
+
+private struct ClassicalComposersScreen: View {
+    @StateObject private var vm = ClassicalBrowserViewModel()
+
+    var body: some View {
+        ComposersTab(vm: vm)
+            .navigationTitle("Composers")
+            .navigationBarTitleDisplayMode(.large)
+            .toolbarBackground(Color.roonBase, for: .navigationBar)
+            .toolbarColorScheme(.dark, for: .navigationBar)
+            .background(Color.roonBase.ignoresSafeArea())
+            .task { await vm.loadInitial() }
     }
 }
 
@@ -187,148 +494,6 @@ private struct ComposersTab: View {
             .scrollContentBackground(.hidden)
         .bottomOverlayAwareScroll()
         }
-    }
-}
-
-// MARK: - Works Tab
-
-private struct WorksTab: View {
-    var body: some View {
-        RandomWorksView()
-    }
-}
-
-// MARK: - Performers Tab
-
-private struct PerformersTab: View {
-
-    @State private var searchText: String = ""
-    @State private var results: [OOOmnisearchResult] = []
-    @State private var isSearching: Bool = false
-    @State private var searchTask: Task<Void, Never>? = nil
-
-    var body: some View {
-        VStack(spacing: 0) {
-            performerSearchBar
-
-            if isSearching {
-                Spacer()
-                ProgressView().tint(.roonAccent)
-                Spacer()
-            } else if results.isEmpty && !searchText.isEmpty {
-                Spacer()
-                Text("No performers found")
-                    .font(.roonBody(14))
-                    .foregroundColor(.roonTertiary)
-                Spacer()
-            } else if results.isEmpty {
-                emptyState
-            } else {
-                List(results) { result in
-                    PerformerRow(result: result)
-                        .listRowBackground(Color.clear)
-                        .listRowSeparatorTint(Color.roonBorder)
-                }
-                .listStyle(.plain)
-                .scrollContentBackground(.hidden)
-        .bottomOverlayAwareScroll()
-            }
-        }
-        .background(Color.roonBase.ignoresSafeArea())
-    }
-
-    private var performerSearchBar: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 15))
-                .foregroundColor(.roonTertiary)
-            TextField("Search performers...", text: $searchText)
-                .font(.roonBody(15))
-                .foregroundColor(.roonPrimary)
-                .onChange(of: searchText) { _, new in runSearch(new) }
-            if !searchText.isEmpty {
-                Button { searchText = "" } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 15))
-                        .foregroundColor(.roonTertiary)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(Color.roonElevated)
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-        .padding(.horizontal, 16)
-        .padding(.top, 12)
-        .padding(.bottom, 8)
-    }
-
-    private var emptyState: some View {
-        VStack(spacing: 12) {
-            Spacer()
-            Image(systemName: "person.wave.2")
-                .font(.system(size: 44))
-                .foregroundColor(.roonTertiary)
-            Text("Search for conductors,\nsoloists and ensembles")
-                .font(.roonBody(14))
-                .foregroundColor(.roonTertiary)
-                .multilineTextAlignment(.center)
-            Spacer()
-        }
-    }
-
-    private func runSearch(_ text: String) {
-        searchTask?.cancel()
-        guard !text.trimmingCharacters(in: .whitespaces).isEmpty else {
-            results = []
-            return
-        }
-        searchTask = Task {
-            try? await Task.sleep(nanoseconds: 300_000_000)
-            guard !Task.isCancelled else { return }
-            isSearching = true
-            let all = (try? await OpenOpusService.shared.omnisearch(text)) ?? []
-            guard !Task.isCancelled else { isSearching = false; return }
-            results = all.filter { $0.type == "performer" }
-            isSearching = false
-        }
-    }
-}
-
-private struct PerformerRow: View {
-    let result: OOOmnisearchResult
-
-    var body: some View {
-        HStack(spacing: 14) {
-            ZStack {
-                Circle()
-                    .fill(Color.roonElevated)
-                    .frame(width: 44, height: 44)
-                if let url = result.portrait.flatMap(URL.init) {
-                    CachedRemoteImage(url: url, size: 44) { Color.clear }
-                        .frame(width: 44, height: 44)
-                        .clipShape(Circle())
-                } else {
-                    Text(NameFormatting.initials(result.name))
-                        .font(.roonTitle(14))
-                        .foregroundColor(.roonAccent)
-                }
-            }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(result.name)
-                    .font(.roonBody(15, weight: .medium))
-                    .foregroundColor(.roonPrimary)
-                    .lineLimit(1)
-                if let epoch = result.epoch, !epoch.isEmpty {
-                    Text(epoch)
-                        .font(.roonBody(12))
-                        .foregroundColor(.roonAccent)
-                }
-            }
-            Spacer()
-        }
-        .padding(.vertical, 6)
     }
 }
 
@@ -556,39 +721,6 @@ struct ComposerGridCard: View {
     }
 }
 
-// MARK: - Compact card for HomeView rows
-
-struct ClassicalComposerCard: View {
-    let composer: OOComposer
-
-    var body: some View {
-        VStack(spacing: 6) {
-            CachedRemoteImage(url: portraitURL, size: 72) {
-                ZStack {
-                    Circle().fill(Color.roonElevated)
-                    Text(NameFormatting.initials(composer.complete_name))
-                        .font(.roonTitle(22))
-                        .foregroundColor(.roonAccent)
-                }
-            }
-            .frame(width: 72, height: 72)
-            .clipShape(Circle())
-
-            Text(NameFormatting.lastName(composer.complete_name))
-                .font(.roonBody(11, weight: .medium))
-                .foregroundColor(.roonSecondary)
-                .lineLimit(1)
-                .frame(width: 80)
-        }
-        .contentShape(Rectangle())
-    }
-
-    private var portraitURL: URL? {
-        guard let p = composer.portrait, !p.isEmpty else { return nil }
-        return URL(string: p)
-    }
-}
-
 // MARK: - Cached portrait image
 
 /// Wraps ArtworkCache for OpenOpus portrait URLs. Caches decoded UIImages in
@@ -710,65 +842,3 @@ final class ClassicalBrowserViewModel: ObservableObject {
     }
 }
 
-// MARK: - Library performers (Ensembles / Conductors / Soloists)
-//
-// Hosts the three new Stage-3 LMS-backed browsers behind a pill segment
-// selector. State persists within the tab so navigating away and back
-// keeps the user on the segment they were last using.
-//
-// Replaces the previous heuristic-based ConductorsBrowserTab which built
-// conductor/ensemble lists by string-matching track artist fields. The
-// new browsers query LMS contributor roles directly (role_id:3 / :4) and
-// the ClassicalTags plugin for soloists.
-
-private struct ConductorsBrowserTab: View {
-
-    enum Segment: String, CaseIterable, Identifiable {
-        case ensembles  = "Ensembles"
-        case conductors = "Conductors"
-        case soloists   = "Soloists"
-
-        var id: String { rawValue }
-    }
-
-    @State private var selected: Segment = .ensembles
-
-    var body: some View {
-        VStack(spacing: 0) {
-            segmentSelector
-
-            Group {
-                switch selected {
-                case .ensembles:  EnsembleBrowserView()
-                case .conductors: ConductorBrowserView()
-                case .soloists:   SoloistBrowserView()
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .background(Color.roonBase)
-    }
-
-    private var segmentSelector: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(Segment.allCases) { segment in
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.15)) { selected = segment }
-                    } label: {
-                        Text(segment.rawValue)
-                            .font(.roonBody(12, weight: selected == segment ? .semibold : .regular))
-                            .foregroundColor(selected == segment ? .roonBase : .roonSecondary)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .background(selected == segment ? Color.roonAccent : Color.roonElevated)
-                            .clipShape(Capsule())
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
-        }
-    }
-}
