@@ -678,9 +678,6 @@ struct SearchResultsView: View {
                                 .buttonStyle(.plain)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .contentShape(Rectangle())
-                                .simultaneousGesture(DragGesture(minimumDistance: 0)
-                                    .onChanged { _ in Task { try? await library.getTracksForAlbum(album.id) } }
-                                )
                                 if album.id != results.albums.last?.id {
                                     Color.roonBorder.frame(height: 0.5).padding(.leading, 68)
                                 }
