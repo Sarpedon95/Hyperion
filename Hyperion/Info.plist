@@ -24,19 +24,100 @@
 	<true/>
 	<key>NSAppTransportSecurity</key>
 	<dict>
-		<!-- AUDIT-FIX #6 — ATS scope note:
+		<!-- ATS scope (audit phase 4):
 		     Hyperion connects to user-supplied LMS URLs: bare LAN HTTP
 		     (192.168.x.x:9000), Tailscale (100.64.x.x:9000), or HTTPS
 		     reverse proxies. iOS ATS NSExceptionDomains requires literal
-		     hostnames; it cannot match CIDR ranges. NSAllowsArbitraryLoads
+		     hostnames and cannot match CIDR ranges, so NSAllowsArbitraryLoads
 		     must remain true to allow arbitrary LAN IPs over plain HTTP.
-		     NSAllowsLocalNetworking is redundant (ArbitraryLoads already
-		     covers it) but kept for clarity. No domain-specific exceptions
-		     are listed — they would require hardcoding server IPs. -->
+		     We cannot remove this without making the app unusable for the
+		     LAN-server use case it was built around.
+
+		     What we CAN do: re-tighten ATS for known third-party domains
+		     (streaming services, scrobbling, metadata) via NSExceptionDomains.
+		     With NSAllowsArbitraryLoads=true these exceptions BLOCK insecure
+		     loads back on, ensuring those connections stay HTTPS + forward
+		     secret even though the umbrella switch is open for LMS.
+		     -->
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
+		<key>NSExceptionDomains</key>
+		<dict>
+			<!-- Qobuz streaming + auth — always HTTPS, must not be downgraded. -->
+			<key>qobuz.com</key>
+			<dict>
+				<key>NSIncludesSubdomains</key>
+				<true/>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<false/>
+				<key>NSExceptionRequiresForwardSecrecy</key>
+				<true/>
+				<key>NSExceptionMinimumTLSVersion</key>
+				<string>TLSv1.2</string>
+			</dict>
+			<!-- Deezer streaming + auth -->
+			<key>deezer.com</key>
+			<dict>
+				<key>NSIncludesSubdomains</key>
+				<true/>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<false/>
+				<key>NSExceptionRequiresForwardSecrecy</key>
+				<true/>
+				<key>NSExceptionMinimumTLSVersion</key>
+				<string>TLSv1.2</string>
+			</dict>
+			<!-- Last.fm scrobbling API -->
+			<key>last.fm</key>
+			<dict>
+				<key>NSIncludesSubdomains</key>
+				<true/>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<false/>
+				<key>NSExceptionRequiresForwardSecrecy</key>
+				<true/>
+				<key>NSExceptionMinimumTLSVersion</key>
+				<string>TLSv1.2</string>
+			</dict>
+			<!-- Discogs metadata -->
+			<key>discogs.com</key>
+			<dict>
+				<key>NSIncludesSubdomains</key>
+				<true/>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<false/>
+				<key>NSExceptionRequiresForwardSecrecy</key>
+				<true/>
+				<key>NSExceptionMinimumTLSVersion</key>
+				<string>TLSv1.2</string>
+			</dict>
+			<!-- Internet radio station directory -->
+			<key>radio-browser.info</key>
+			<dict>
+				<key>NSIncludesSubdomains</key>
+				<true/>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<false/>
+				<key>NSExceptionRequiresForwardSecrecy</key>
+				<true/>
+				<key>NSExceptionMinimumTLSVersion</key>
+				<string>TLSv1.2</string>
+			</dict>
+			<!-- OpenOpus classical metadata -->
+			<key>openopus.org</key>
+			<dict>
+				<key>NSIncludesSubdomains</key>
+				<true/>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<false/>
+				<key>NSExceptionRequiresForwardSecrecy</key>
+				<true/>
+				<key>NSExceptionMinimumTLSVersion</key>
+				<string>TLSv1.2</string>
+			</dict>
+		</dict>
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Hyperion needs local network access to connect to your Lyrion Music Server.</string>

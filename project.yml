@@ -32,8 +32,45 @@ targets:
       path: Hyperion/Info.plist
       properties:
         NSAppTransportSecurity:
+          # Arbitrary loads must remain enabled: Hyperion connects to
+          # user-supplied LAN HTTP LMS servers (CIDR can't be encoded as an
+          # ATS exception). NSExceptionDomains re-tightens ATS for the
+          # third-party domains we DO know about so streaming, scrobbling
+          # and metadata stay HTTPS + forward-secret. See Info.plist for
+          # the canonical comment.
           NSAllowsArbitraryLoads: true
           NSAllowsLocalNetworking: true
+          NSExceptionDomains:
+            qobuz.com:
+              NSIncludesSubdomains: true
+              NSExceptionAllowsInsecureHTTPLoads: false
+              NSExceptionRequiresForwardSecrecy: true
+              NSExceptionMinimumTLSVersion: TLSv1.2
+            deezer.com:
+              NSIncludesSubdomains: true
+              NSExceptionAllowsInsecureHTTPLoads: false
+              NSExceptionRequiresForwardSecrecy: true
+              NSExceptionMinimumTLSVersion: TLSv1.2
+            last.fm:
+              NSIncludesSubdomains: true
+              NSExceptionAllowsInsecureHTTPLoads: false
+              NSExceptionRequiresForwardSecrecy: true
+              NSExceptionMinimumTLSVersion: TLSv1.2
+            discogs.com:
+              NSIncludesSubdomains: true
+              NSExceptionAllowsInsecureHTTPLoads: false
+              NSExceptionRequiresForwardSecrecy: true
+              NSExceptionMinimumTLSVersion: TLSv1.2
+            radio-browser.info:
+              NSIncludesSubdomains: true
+              NSExceptionAllowsInsecureHTTPLoads: false
+              NSExceptionRequiresForwardSecrecy: true
+              NSExceptionMinimumTLSVersion: TLSv1.2
+            openopus.org:
+              NSIncludesSubdomains: true
+              NSExceptionAllowsInsecureHTTPLoads: false
+              NSExceptionRequiresForwardSecrecy: true
+              NSExceptionMinimumTLSVersion: TLSv1.2
         NSLocalNetworkUsageDescription: Hyperion needs local network access to connect to your Lyrion Music Server.
         NSBluetoothAlwaysUsageDescription: Hyperion uses Bluetooth to detect connected headphones and automatically load matching EQ presets.
         UIBackgroundModes:
