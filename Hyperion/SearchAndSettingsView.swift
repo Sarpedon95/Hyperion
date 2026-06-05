@@ -161,18 +161,21 @@ final class SearchViewModel: ObservableObject {
 
             async let qTracks = QobuzClient.shared.search(query: key)
             async let dTracks = DeezerClient.shared.search(query: key)
+            async let sTracks = SquidClient.shared.search(query: key)
             async let qAlbums = QobuzClient.shared.searchAlbums(query: key)
             async let dAlbums = DeezerClient.shared.searchAlbums(query: key)
-            let (qt, dt, qa, da) = await (qTracks, dTracks, qAlbums, dAlbums)
+            async let sAlbums = SquidClient.shared.searchAlbums(query: key)
+            let (qt, dt, st, qa, da, sa) = await (qTracks, dTracks, sTracks, qAlbums, dAlbums, sAlbums)
             guard !Task.isCancelled, self.searchSequence == sequence else { return }
 
             await MainActor.run {
-                ServerLogStore.shared.debug("[Streaming search] '\(key)' → Qobuz \(qt.count)t/\(qa.count)a, Deezer \(dt.count)t/\(da.count)a (admin=\(UserSession.shared.isAdmin), scope=\(self.scope.rawValue))")
+                ServerLogStore.shared.debug("[Streaming search] '\(key)' → Qobuz \(qt.count)t/\(qa.count)a, Deezer \(dt.count)t/\(da.count)a, Squid \(st.count)t/\(sa.count)a (admin=\(UserSession.shared.isAdmin), scope=\(self.scope.rawValue))")
             }
 
             self.streamingSections = [
                 SearchResultSection(id: "qobuz",  title: "Qobuz",  source: .qobuz,  tracks: qt, albums: qa),
                 SearchResultSection(id: "deezer", title: "Deezer", source: .deezer, tracks: dt, albums: da),
+                SearchResultSection(id: "squid",  title: "Squid",  source: .squid,  tracks: st, albums: sa),
             ].filter { !$0.tracks.isEmpty || !$0.albums.isEmpty }
         }
     }
@@ -2257,10 +2260,13 @@ private struct CrossfadeShapePreview: View {
 // never live in source or UserDefaults. Saving takes effect immediately.
 
 private struct StreamingCredentialsView: View {
-    @State private var deezerARL   = ""
-    @State private var qobuzToken  = ""
-    @State private var qobuzUserID = ""
-    @State private var qobuzSecret = ""
+    @State private var deezerARL      = ""
+    @State private var qobuzToken     = ""
+    @State private var qobuzUserID    = ""
+    @State private var qobuzSecret    = ""
+    @State private var squidServerURL = ""
+    @State private var squidUsername  = ""
+    @State private var squidPassword  = ""
     @State private var savedAt: Date? = nil
     @Environment(\.dismiss) private var dismiss
 
@@ -2280,6 +2286,16 @@ private struct StreamingCredentialsView: View {
                 credField("App Secret (optional)", text: $qobuzSecret)
             } header: { Text("QOBUZ") } footer: {
                 Text("Token + user ID are all you need — the app secret used to sign stream requests is detected automatically from Qobuz. Only fill in App Secret if auto-detection fails.")
+                    .font(.roonBody(12)).foregroundColor(.roonTertiary)
+            }
+            .listRowBackground(Color.roonSurface)
+
+            Section {
+                credField("Server URL", text: $squidServerURL)
+                credField("Username",   text: $squidUsername)
+                credField("Password",   text: $squidPassword)
+            } header: { Text("SQUID") } footer: {
+                Text("Base URL of your SquidWTF (Subsonic-compatible) server plus your account credentials. Passwords are sent as a salted MD5 token, not in the clear.")
                     .font(.roonBody(12)).foregroundColor(.roonTertiary)
             }
             .listRowBackground(Color.roonSurface)
@@ -2326,10 +2342,13 @@ private struct StreamingCredentialsView: View {
     }
 
     private func load() {
-        deezerARL   = KeychainManager.shared.load(key: "deezer.arl")   ?? ""
-        qobuzToken  = KeychainManager.shared.load(key: "qobuz.token")  ?? ""
-        qobuzUserID = KeychainManager.shared.load(key: "qobuz.userID") ?? ""
-        qobuzSecret = KeychainManager.shared.load(key: "qobuz.secret") ?? ""
+        deezerARL      = KeychainManager.shared.load(key: "deezer.arl")      ?? ""
+        qobuzToken     = KeychainManager.shared.load(key: "qobuz.token")     ?? ""
+        qobuzUserID    = KeychainManager.shared.load(key: "qobuz.userID")    ?? ""
+        qobuzSecret    = KeychainManager.shared.load(key: "qobuz.secret")    ?? ""
+        squidServerURL = KeychainManager.shared.load(key: "squid.serverURL") ?? ""
+        squidUsername  = KeychainManager.shared.load(key: "squid.username")  ?? ""
+        squidPassword  = KeychainManager.shared.load(key: "squid.password")  ?? ""
     }
 
     private func save() {
@@ -2338,10 +2357,13 @@ private struct StreamingCredentialsView: View {
             if trimmed.isEmpty { KeychainManager.shared.delete(key: key) }
             else { KeychainManager.shared.save(key: key, value: trimmed) }
         }
-        write("deezer.arl",   deezerARL)
-        write("qobuz.token",  qobuzToken)
-        write("qobuz.userID", qobuzUserID)
-        write("qobuz.secret", qobuzSecret)
+        write("deezer.arl",      deezerARL)
+        write("qobuz.token",     qobuzToken)
+        write("qobuz.userID",    qobuzUserID)
+        write("qobuz.secret",    qobuzSecret)
+        write("squid.serverURL", squidServerURL)
+        write("squid.username",  squidUsername)
+        write("squid.password",  squidPassword)
         savedAt = Date()
         Haptics.light()
     }
@@ -2400,7 +2422,7 @@ private struct StreamingSourcePriorityView: View {
     private func loadFromRouter() {
         let stored = PlaybackRouter.shared.sourcePriority
         // Strip "local" and keep only known streaming keys, preserving order.
-        let known: Set<String> = ["qobuz", "deezer"]
+        let known: Set<String> = ["qobuz", "deezer", "squid"]
         var ordered = stored.filter { known.contains($0) }
         // Backfill any missing source (e.g. if defaults were mutated externally).
         for k in known where !ordered.contains(k) { ordered.append(k) }
@@ -2418,6 +2440,7 @@ private struct StreamingSourcePriorityView: View {
             switch key {
             case "qobuz":  return Color(red: 0,     green: 0.706, blue: 0.847)
             case "deezer": return Color(red: 0.937, green: 0.329, blue: 0.4)
+            case "squid":  return Color(red: 0.2,   green: 0.8,   blue: 0.4)
             default:       return .roonAccent
             }
         }()

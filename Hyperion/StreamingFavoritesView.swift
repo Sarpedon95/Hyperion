@@ -18,6 +18,7 @@ struct StreamingFavoritesView: View {
         switch source {
         case .qobuz:  return "Qobuz Favorites"
         case .deezer: return "Deezer Favorites"
+        case .squid:  return "Squid Favorites"
         case .local:  return "Library"
         }
     }
@@ -82,6 +83,7 @@ struct StreamingFavoritesView: View {
         switch source {
         case .qobuz:  return await QobuzClient.shared.getUserFavorites()
         case .deezer: return await DeezerClient.shared.getUserFavorites()
+        case .squid:  return await SquidClient.shared.getUserFavorites()
         case .local:  return []
         }
     }
@@ -90,6 +92,7 @@ struct StreamingFavoritesView: View {
         switch source {
         case .qobuz:  return await QobuzClient.shared.getUserFavoriteAlbums()
         case .deezer: return await DeezerClient.shared.getUserFavoriteAlbums()
+        case .squid:  return await SquidClient.shared.getUserFavoriteAlbums()
         case .local:  return []
         }
     }
@@ -171,6 +174,7 @@ struct StreamingAlbumView: View {
         switch album.source {
         case .qobuz:  tracks = await QobuzClient.shared.getAlbumTracks(albumID: album.id)
         case .deezer: tracks = await DeezerClient.shared.getAlbumTracks(albumID: album.id)
+        case .squid:  tracks = await SquidClient.shared.getAlbumTracks(albumID: album.id)
         case .local:  tracks = []
         }
         isLoading = false
@@ -283,6 +287,7 @@ struct SourceBadge: View {
         switch source {
         case .qobuz:  return "Q"
         case .deezer: return "D"
+        case .squid:  return "S"
         case .local:  return "L"
         }
     }
@@ -291,6 +296,7 @@ struct SourceBadge: View {
         switch source {
         case .qobuz:  return Color(red: 0, green: 0.706, blue: 0.847)   // #00B4D8
         case .deezer: return Color(red: 0.937, green: 0.329, blue: 0.4) // #EF5466
+        case .squid:  return Color(red: 0.2, green: 0.8, blue: 0.4)
         case .local:  return .secondary
         }
     }

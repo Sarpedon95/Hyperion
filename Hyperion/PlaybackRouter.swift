@@ -10,12 +10,13 @@ final class PlaybackRouter {
     private init() {}
 
     // Priority order stored in UserDefaults — admin can reorder in Control Room
-    @UserDefault(key: "playback.sourcePriority", defaultValue: ["local", "qobuz", "deezer"])
+    @UserDefault(key: "playback.sourcePriority", defaultValue: ["local", "qobuz", "deezer", "squid"])
     var sourcePriority: [String]
 
     private var clients: [String: any StreamingSource] = [
         "qobuz": QobuzClient.shared,
         "deezer": DeezerClient.shared,
+        "squid": SquidClient.shared,
     ]
 
     // Resolve stream URL for a StreamTrack (from search/favorites)
@@ -30,6 +31,10 @@ final class PlaybackRouter {
                 }
             case "deezer" where track.source == .deezer || track.isrc != nil:
                 if let url = try? await DeezerClient.shared.getStreamURL(for: track) {
+                    return url
+                }
+            case "squid" where track.source == .squid:
+                if let url = try? await SquidClient.shared.getStreamURL(for: track) {
                     return url
                 }
             default:

@@ -10,6 +10,7 @@ enum StreamSourceType: String, Codable {
     case local
     case deezer
     case qobuz
+    case squid
 }
 
 // MARK: - Models

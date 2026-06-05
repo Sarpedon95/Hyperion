@@ -1578,11 +1578,13 @@ private struct StreamSourcePill: View {
 
     private var qobuzColor: Color { Color(red: 0,     green: 0.706, blue: 0.847) }
     private var deezerColor: Color { Color(red: 0.937, green: 0.329, blue: 0.4)   }
+    private var squidColor: Color  { Color(red: 0.2,   green: 0.8,   blue: 0.4)   }
 
     private var pillText: String {
         switch track.source {
         case .qobuz:  return "Qobuz"
         case .deezer: return "Deezer"
+        case .squid:  return "Squid"
         case .local:  return ""
         }
     }
@@ -1591,6 +1593,7 @@ private struct StreamSourcePill: View {
         switch track.source {
         case .qobuz:  return qobuzColor
         case .deezer: return deezerColor
+        case .squid:  return squidColor
         case .local:  return .roonAccent
         }
     }
@@ -1600,6 +1603,7 @@ private struct StreamSourcePill: View {
         switch track.source {
         case .deezer: return "FLAC"
         case .qobuz:  return nil
+        case .squid:  return nil
         case .local:  return nil
         }
     }

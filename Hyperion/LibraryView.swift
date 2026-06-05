@@ -176,6 +176,15 @@ struct LibraryView: View {
                             .buttonStyle(.plain)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .contentShape(Rectangle())
+
+                            Color.roonBorder.frame(height: 0.5).padding(.leading, 66)
+
+                            NavigationLink(destination: StreamingFavoritesView(source: .squid)) {
+                                StreamingLibraryRow(source: .squid, label: "Squid Favorites")
+                            }
+                            .buttonStyle(.plain)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
                         }
                         .background(Color.roonSurface)
                         .clipShape(RoundedRectangle(cornerRadius: 14))
@@ -205,6 +214,7 @@ struct StreamingLibraryRow: View {
         switch source {
         case .qobuz:  return Color(red: 0,     green: 0.706, blue: 0.847)
         case .deezer: return Color(red: 0.937, green: 0.329, blue: 0.4)
+        case .squid:  return Color(red: 0.2,   green: 0.8,   blue: 0.4)
         case .local:  return .roonAccent
         }
     }
@@ -213,6 +223,7 @@ struct StreamingLibraryRow: View {
         switch source {
         case .qobuz:  return "Q"
         case .deezer: return "D"
+        case .squid:  return "S"
         case .local:  return "L"
         }
     }
