@@ -950,8 +950,8 @@ struct SearchTrackRow: View {
                     .clipShape(RoundedRectangle(cornerRadius: 4))
 
                 // Streaming service badge (small, for compact row)
-                if let service = track.detectedService, service != .local {
-                    StreamingServiceBadge(service: service, size: 40 * 0.2)
+                if track.detectedService != .local {
+                    StreamingServiceBadge(service: track.detectedService, size: 40 * 0.2)
                         .padding(2)
                 }
             }

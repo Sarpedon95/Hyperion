@@ -37,12 +37,6 @@ enum StreamingServiceDetector {
             return .deezer
         }
 
-        // Tidal URL patterns
-        if lowercased.contains("tidal") ||
-           lowercased.contains("tidalhifi") {
-            return .tidal
-        }
-
         // Squid (or other local playback service) patterns
         if lowercased.contains("squid") ||
            lowercased.contains("squeezebox") {
@@ -53,14 +47,11 @@ enum StreamingServiceDetector {
     }
 
     /// Detects service from LMS extid field if present.
-    /// LMS may provide extid like "tidal://12345" format.
+    /// LMS may provide extid like "qobuz://12345" format.
     static func detectFromExtID(_ extid: String?) -> StreamSourceType {
         guard let extid = extid else { return .local }
         let lowercased = extid.lowercased()
 
-        if lowercased.hasPrefix("tidal://") {
-            return .tidal
-        }
         if lowercased.hasPrefix("qobuz://") {
             return .qobuz
         }

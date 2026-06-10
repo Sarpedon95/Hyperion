@@ -22,7 +22,7 @@ struct StreamingServiceBadge: View {
 
     private var backgroundColor: Color {
         switch service {
-        case .tidal, .squid:
+        case .squid:
             return Color(red: 0, green: 0, blue: 0) // Black
         case .qobuz:
             return Color(red: 0, green: 0.17, blue: 0.36) // #002B5C
@@ -35,9 +35,7 @@ struct StreamingServiceBadge: View {
 
     private var foregroundColor: Color {
         switch service {
-        case .deezer:
-            return .white
-        case .qobuz, .tidal, .squid:
+        case .deezer, .squid, .qobuz:
             return .white
         case .local:
             return .clear
@@ -48,8 +46,6 @@ struct StreamingServiceBadge: View {
 extension StreamSourceType {
     var badgeLabel: String {
         switch self {
-        case .tidal:
-            return "TIDAL"
         case .qobuz:
             return "Qobuz"
         case .deezer:
@@ -63,7 +59,7 @@ extension StreamSourceType {
 
     var brandColor: Color {
         switch self {
-        case .tidal, .squid:
+        case .squid:
             return Color(red: 0, green: 0, blue: 0)
         case .qobuz:
             return Color(red: 0, green: 0.17, blue: 0.36)
