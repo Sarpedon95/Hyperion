@@ -183,7 +183,7 @@ final class DownloadManager: NSObject, ObservableObject {
 
     // MARK: - Private
 
-    private func handleFinishedDownload(task: URLSessionDownloadTask, tempURL: URL) {
+    private func handleFinishedDownload(task: URLSessionDownloadTask, tempURL: URL) async {
         guard let trackID = taskToTrackID[task.taskIdentifier] else {
             try? FileManager.default.removeItem(at: tempURL)
             return
@@ -214,49 +214,46 @@ final class DownloadManager: NSObject, ObservableObject {
         //      nor (2) is populated.
         // The audio file is already on disk; metadata fallback never blocks
         // playback, only the manifest entry / row label.
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            let cached = self.pendingTracks[trackID]
-            let library = LibraryViewModel.shared.songs.first { $0.id == trackID }
-            let resolved = cached ?? library ?? (try? await LyrionAPI.shared.getSong(id: trackID)) ?? nil
+        let cached  = pendingTracks[trackID]
+        let library = LibraryViewModel.shared.songs.first { $0.id == trackID }
+        let resolved = cached ?? library ?? (try? await LyrionAPI.shared.getSong(id: trackID))
 
-            let title:  String
-            let artist: String
-            let album:  String
-            let duration: Double?
-            let coverid:  String?
-            if let track = resolved {
-                title    = track.title
-                artist   = track.trackartist ?? track.albumartist ?? ""
-                album    = track.album ?? ""
-                duration = track.duration
-                coverid  = track.coverid
-            } else {
-                // Last-resort placeholder so a successful file download is not
-                // dropped from the manifest just because metadata is unknown.
-                title    = "Track \(trackID)"
-                artist   = ""
-                album    = ""
-                duration = nil
-                coverid  = nil
-            }
-
-            let record = DownloadedTrack(
-                id:            trackID,
-                title:         title,
-                artist:        artist,
-                album:         album,
-                duration:      duration,
-                coverid:       coverid,
-                localFilename: filename,
-                downloadedAt:  Date()
-            )
-            self.downloadedTracks.removeAll { $0.id == trackID }
-            self.downloadedTracks.insert(record, at: 0)
-            self.saveManifest()
-            self.pendingTracks[trackID] = nil
-            self.pendingTitles[trackID] = nil
+        let title:  String
+        let artist: String
+        let album:  String
+        let duration: Double?
+        let coverid:  String?
+        if let track = resolved {
+            title    = track.title
+            artist   = track.trackartist ?? track.albumartist ?? ""
+            album    = track.album ?? ""
+            duration = track.duration
+            coverid  = track.coverid
+        } else {
+            // Last-resort placeholder so a successful file download is not
+            // dropped from the manifest just because metadata is unknown.
+            title    = "Track \(trackID)"
+            artist   = ""
+            album    = ""
+            duration = nil
+            coverid  = nil
         }
+
+        let record = DownloadedTrack(
+            id:            trackID,
+            title:         title,
+            artist:        artist,
+            album:         album,
+            duration:      duration,
+            coverid:       coverid,
+            localFilename: filename,
+            downloadedAt:  Date()
+        )
+        downloadedTracks.removeAll { $0.id == trackID }
+        downloadedTracks.insert(record, at: 0)
+        saveManifest()
+        pendingTracks[trackID] = nil
+        pendingTitles[trackID] = nil
     }
 
     private func loadManifest() {
@@ -285,7 +282,8 @@ extension DownloadManager: URLSessionDownloadDelegate {
             .appendingPathComponent(UUID().uuidString)
         try? FileManager.default.copyItem(at: location, to: tempCopy)
         Task { @MainActor [weak self] in
-            self?.handleFinishedDownload(task: downloadTask, tempURL: tempCopy)
+            guard let self else { return }
+            await self.handleFinishedDownload(task: downloadTask, tempURL: tempCopy)
         }
     }
 

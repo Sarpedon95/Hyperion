@@ -1235,7 +1235,7 @@ final class LyrionAPI {
         do {
             let result = try await request(playerID: "", params: ["players", 0, 99])
             guard let arr = result["players_loop"] as? [[String: Any]] else { return [] }
-            return arr.compactMap { dict in
+            return arr.compactMap { dict -> LMSPlayer? in
                 guard let id = JSON.string(dict["playerid"]) ?? JSON.string(dict["uuid"]),
                       let name = JSON.string(dict["name"]) ?? JSON.string(dict["modelname"]) else {
                     return nil
