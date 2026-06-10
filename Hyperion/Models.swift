@@ -156,14 +156,20 @@ struct Album: Identifiable, Hashable, Codable {
     let conductor: String?
     let band: String?
     let dynamicRange: Int?
+    /// Album-level genre tag(s) from LMS, when the server provides them
+    /// (tag `G` on the albums query). Optional — many LMS album rows omit it,
+    /// in which case `isClassicalContent` falls back to flag/composer.
+    let genres: String?
 
     init(id: Int, album: String, artist: String?, year: Int?,
          artwork_track_id: String?, composer: String?, isClassical: Int?,
-         conductor: String? = nil, band: String? = nil, dynamicRange: Int? = nil) {
+         conductor: String? = nil, band: String? = nil, dynamicRange: Int? = nil,
+         genres: String? = nil) {
         self.id = id; self.album = album; self.artist = artist; self.year = year
         self.artwork_track_id = artwork_track_id; self.composer = composer
         self.isClassical = isClassical; self.conductor = conductor
         self.band = band; self.dynamicRange = dynamicRange
+        self.genres = genres
     }
 }
 

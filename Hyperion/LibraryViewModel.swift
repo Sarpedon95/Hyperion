@@ -7,13 +7,33 @@ final class LibraryViewModel: ObservableObject {
 
     static let shared = LibraryViewModel()
 
-    @Published var composers: [Composer] = []
+    @Published var composers: [Composer] = [] { didSet { rebuildClassicalContributorIndex() } }
     @Published var artists: [Artist] = []
     @Published var songs: [Track] = []
-    @Published var albums: [Album] = []
+    @Published var albums: [Album] = [] { didSet { rebuildClassicalContributorIndex() } }
     @Published var recentAlbums: [Album] = []
     @Published var recentlyPlayed: [Album] = []
     @Published var genres: [Genre] = []
+
+    // MARK: - Home ⇄ Classical split outputs
+    //
+    // Pre-filtered slices so each tab consumes ONLY its own data. Populated by
+    // the same load paths that fill `recentlyPlayed` / `recentAlbums`; views
+    // never re-derive the split. `home*` = non-classical, `classical*` = classical.
+    @Published var homeRecentlyPlayed:      [Album] = []
+    @Published var classicalRecentlyPlayed: [Album] = []
+    @Published var homeRecentAlbums:        [Album] = []
+    @Published var classicalRecentAlbums:   [Album] = []
+
+    /// Genres rail, partitioned by the canonical genre rule.
+    var homeGenres:      [Genre] { genres.filter { !$0.isClassicalContent } }
+    var classicalGenres: [Genre] { genres.filter {  $0.isClassicalContent } }
+
+    /// Folded names of contributors treated as classical (composers + artists
+    /// credited on classical albums). Lets the Home Artists rail/list drop
+    /// classical performers without a per-artist genre lookup. Rebuilt whenever
+    /// `composers` or `albums` change.
+    private(set) var classicalContributorNames: Set<String> = []
     @Published var isLoadingComposers: Bool = false
     @Published var isLoadingWorks: Bool = false
     @Published var isLoadingAlbums: Bool = false
@@ -556,6 +576,14 @@ final class LibraryViewModel: ObservableObject {
         }
     }
 
+    /// Recently-added albums are split by the album-level classifier (genre tag
+    /// when present, else server `isClassical` flag / composer credit).
+    private func applyRecentAlbums(_ albums: [Album]) {
+        recentAlbums          = albums
+        homeRecentAlbums      = albums.filter { !$0.isClassicalContent }
+        classicalRecentAlbums = albums.filter {  $0.isClassicalContent }
+    }
+
     func loadRecentAlbums(force: Bool = false) async {
         if !force && !recentAlbums.isEmpty { return }
         if force {
@@ -566,7 +594,7 @@ final class LibraryViewModel: ObservableObject {
             do {
                 let albums = try await existing.value
                 guard !Task.isCancelled else { return }
-                recentAlbums = albums
+                applyRecentAlbums(albums)
             } catch { }
             return
         }
@@ -587,7 +615,7 @@ final class LibraryViewModel: ObservableObject {
         do {
             let albums = try await task.value
             guard !Task.isCancelled, recentAlbumsTaskID == taskID else { return }
-            recentAlbums = albums
+            applyRecentAlbums(albums)
         } catch is CancellationError {
             // Ignore.
         } catch {
@@ -596,11 +624,28 @@ final class LibraryViewModel: ObservableObject {
         }
     }
 
+    /// Rebuilds the recently-played outputs. The local history store is the
+    /// genre-accurate source (it captured each track's genre at play time);
+    /// the server list is partitioned with the album-level classifier.
+    private func applyRecentlyPlayed(server: [Album], limit: Int = 20) {
+        let store = PlaybackHistoryStore.shared
+        let localAll       = store.recentlyPlayedAlbums(limit: limit)
+        let localClassical = store.recentlyPlayedAlbums(classical: true,  limit: limit)
+        let localNon       = store.recentlyPlayedAlbums(classical: false, limit: limit)
+
+        let serverClassical = server.filter {  $0.isClassicalContent }
+        let serverNon       = server.filter { !$0.isClassicalContent }
+
+        recentlyPlayed          = mergeRecentlyPlayed(local: localAll,       server: server,          limit: limit)
+        classicalRecentlyPlayed = mergeRecentlyPlayed(local: localClassical, server: serverClassical, limit: limit)
+        homeRecentlyPlayed      = mergeRecentlyPlayed(local: localNon,       server: serverNon,       limit: limit)
+    }
+
     func loadRecentlyPlayed(force: Bool = false) async {
         if !force && !recentlyPlayed.isEmpty { return }
 
-        let local = PlaybackHistoryStore.shared.recentlyPlayedAlbums(limit: 20)
-        recentlyPlayed = local
+        // Genre-accurate local history first; server enrichment merges in below.
+        applyRecentlyPlayed(server: [])
 
         if force {
             recentlyPlayedTask?.cancel()
@@ -610,7 +655,7 @@ final class LibraryViewModel: ObservableObject {
             do {
                 let server = try await existing.value
                 guard !Task.isCancelled else { return }
-                recentlyPlayed = mergeRecentlyPlayed(local: local, server: server, limit: 20)
+                applyRecentlyPlayed(server: server)
             } catch { }
             return
         }
@@ -631,7 +676,7 @@ final class LibraryViewModel: ObservableObject {
         do {
             let server = try await task.value
             guard !Task.isCancelled, recentlyPlayedTaskID == taskID else { return }
-            recentlyPlayed = mergeRecentlyPlayed(local: local, server: server, limit: 20)
+            applyRecentlyPlayed(server: server)
         } catch is CancellationError {
             // Ignore.
         } catch {
@@ -640,12 +685,19 @@ final class LibraryViewModel: ObservableObject {
     }
 
     func recordPlayback(_ track: Track) {
-        PlaybackHistoryStore.shared.recordPlayback(of: track)
+        let store = PlaybackHistoryStore.shared
+        store.recordPlayback(of: track)
+        // Re-merge each slice with its own genre-accurate local history so a new
+        // play only ever lands in the correct tab.
         recentlyPlayed = mergeRecentlyPlayed(
-            local:  PlaybackHistoryStore.shared.recentlyPlayedAlbums(limit: 20),
-            server: recentlyPlayed,
-            limit:  20
-        )
+            local:  store.recentlyPlayedAlbums(limit: 20),
+            server: recentlyPlayed, limit: 20)
+        homeRecentlyPlayed = mergeRecentlyPlayed(
+            local:  store.recentlyPlayedAlbums(classical: false, limit: 20),
+            server: homeRecentlyPlayed, limit: 20)
+        classicalRecentlyPlayed = mergeRecentlyPlayed(
+            local:  store.recentlyPlayedAlbums(classical: true, limit: 20),
+            server: classicalRecentlyPlayed, limit: 20)
     }
 
     private func mergeRecentlyPlayed(local: [Album], server: [Album], limit: Int) -> [Album] {
@@ -659,6 +711,37 @@ final class LibraryViewModel: ObservableObject {
             if merged.count == limit { break }
         }
         return merged
+    }
+
+    // MARK: - Artist classification (Home ⇄ Classical)
+
+    /// True when an artist should be treated as classical and kept off Home.
+    /// Backed by `classicalContributorNames`; unknown artists default to
+    /// non-classical (shown on Home) until composer/album data has loaded.
+    func isClassicalArtist(_ name: String) -> Bool {
+        let folded = SearchTextNormalizer.folded(name)
+        guard !folded.isEmpty else { return false }
+        return classicalContributorNames.contains(folded)
+    }
+
+    /// Non-classical artists for the Home rail/list.
+    var homeArtists: [Artist] {
+        artists.filter { !isClassicalArtist($0.name) }
+    }
+
+    private func rebuildClassicalContributorIndex() {
+        var names = Set<String>()
+        for composer in composers {
+            let f = SearchTextNormalizer.folded(composer.artist)
+            if !f.isEmpty { names.insert(f) }
+        }
+        for album in albums where album.isClassicalContent {
+            if let artist = album.artist {
+                let f = SearchTextNormalizer.folded(artist)
+                if !f.isEmpty { names.insert(f) }
+            }
+        }
+        classicalContributorNames = names
     }
 
     // MARK: - Tracks
@@ -996,6 +1079,10 @@ final class LibraryViewModel: ObservableObject {
         albums             = []
         recentAlbums       = []
         recentlyPlayed     = []
+        homeRecentlyPlayed      = []
+        classicalRecentlyPlayed = []
+        homeRecentAlbums        = []
+        classicalRecentAlbums   = []
         totalWorks         = nil
         totalAlbums        = nil
         totalSongs         = nil

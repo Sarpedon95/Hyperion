@@ -411,7 +411,7 @@ final class LyrionAPI {
     func getAlbumsForGenre(genreID: Int, count: Int = 200) async throws -> [Album] {
         try Task.checkCancellation()
         let result = try await request(params: [
-            "albums", 0, count, "genre_id:\(genreID)", "tags:aljySC"
+            "albums", 0, count, "genre_id:\(genreID)", "tags:aljySCG"
         ])
         let arr = result["albums_loop"] as? [[String: Any]] ?? []
         return Self.parseAlbums(arr)
@@ -460,7 +460,7 @@ final class LyrionAPI {
     func getAlbumsForArtist(artistID: Int) async throws -> [Album] {
         try Task.checkCancellation()
         let result = try await request(params: [
-            "albums", 0, 500, "artist_id:\(artistID)", "tags:aljySC"
+            "albums", 0, 500, "artist_id:\(artistID)", "tags:aljySCG"
         ])
         let arr = result["albums_loop"] as? [[String: Any]] ?? []
         return Self.parseAlbums(arr)
@@ -748,7 +748,7 @@ final class LyrionAPI {
     private func fetchAlbumsForContributor(contributorID: Int) async -> [Album] {
         do {
             let result = try await request(params: [
-                "albums", 0, 999, "artist_id:\(contributorID)", "tags:aljySC"
+                "albums", 0, 999, "artist_id:\(contributorID)", "tags:aljySCG"
             ])
             return Self.parseAlbums(result["albums_loop"] as? [[String: Any]] ?? [])
         } catch {
@@ -878,7 +878,7 @@ final class LyrionAPI {
         sort: AlbumSortOrder = .album
     ) async throws -> [Album] {
         try Task.checkCancellation()
-        var params: [Any] = ["albums", start, count, "tags:aljySC", "sort:\(sort.lmsValue)"]
+        var params: [Any] = ["albums", start, count, "tags:aljySCG", "sort:\(sort.lmsValue)"]
         if let search, !search.isEmpty { params.append("search:\(search)") }
 
         let result = try await request(params: params)
@@ -904,7 +904,7 @@ final class LyrionAPI {
             let chunk = Array(unique[index..<min(index + 50, unique.count)])
             let joined = chunk.map(String.init).joined(separator: ",")
             let result = try await request(params: [
-                "albums", 0, chunk.count, "album_id:\(joined)", "tags:aljySC"
+                "albums", 0, chunk.count, "album_id:\(joined)", "tags:aljySCG"
             ])
             let arr = result["albums_loop"] as? [[String: Any]] ?? []
             hydrated.append(contentsOf: Self.parseAlbums(arr))
@@ -922,7 +922,7 @@ final class LyrionAPI {
         for sort in sortCandidates {
             do {
                 let result = try await request(params: [
-                    "albums", 0, count, "tags:aljySC", "sort:\(sort)"
+                    "albums", 0, count, "tags:aljySCG", "sort:\(sort)"
                 ])
                 let arr = result["albums_loop"] as? [[String: Any]] ?? []
                 let albums = Self.parseAlbums(arr)
@@ -1064,7 +1064,7 @@ final class LyrionAPI {
                 group.addTask {
                     let result: [String: Any]
                     do {
-                        result = try await self.request(params: ["albums", 0, count, "artist_id:\(id)", "tags:aljySC"])
+                        result = try await self.request(params: ["albums", 0, count, "artist_id:\(id)", "tags:aljySCG"])
                     } catch is CancellationError {
                         throw CancellationError()
                     } catch {
@@ -1451,7 +1451,8 @@ final class LyrionAPI {
                 isClassical:      JSON.int(dict["isClassical"] ?? dict["classical"]),
                 conductor:        Self.normalizeString(JSON.string(dict["conductor"])),
                 band:             Self.normalizeString(JSON.string(dict["band"] ?? dict["orchestra"] ?? dict["ensemble"])),
-                dynamicRange:     JSON.int(dict["dynamic_range"] ?? dict["DR"])
+                dynamicRange:     JSON.int(dict["dynamic_range"] ?? dict["DR"]),
+                genres:           Self.normalizeString(JSON.string(dict["genres"] ?? dict["genre"]))
             )
         }
     }

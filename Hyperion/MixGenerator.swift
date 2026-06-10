@@ -64,8 +64,8 @@ final class MixGenerator: ObservableObject {
         let composers = library.composers.shuffled(using: &composerRNG)
         for composer in composers.prefix(3) {
             let albums = library.albums.filter {
-                $0.composer?.localizedCaseInsensitiveContains(composer.artist) == true ||
-                $0.isClassical == 1
+                $0.isClassicalContent &&
+                ($0.composer?.localizedCaseInsensitiveContains(composer.artist) == true || $0.isClassical == 1)
             }
             guard albums.count >= 4 else { continue }
             var albumRNG = SeededRNG(seed: weekSeed &+ UInt64(composer.id))
@@ -84,13 +84,11 @@ final class MixGenerator: ObservableObject {
             if generated.count >= maxMixes / 2 { break }
         }
 
-        // Non-classical mixes — seeded by genre
+        // Non-classical mixes — seeded by genre (non-classical genres only)
         var genreRNG = SeededRNG(seed: weekSeed &+ 1)
-        let genres = library.genres.shuffled(using: &genreRNG)
+        let genres = library.homeGenres.shuffled(using: &genreRNG)
         for genre in genres.prefix(5) {
-            let albums = library.albums.filter {
-                $0.isClassical != 1 && $0.composer == nil
-            }
+            let albums = library.albums.filter { !$0.isClassicalContent }
             guard albums.count >= 4 else { continue }
             var albumRNG = SeededRNG(seed: weekSeed &+ UInt64(genre.id))
             let selected = Array(albums.shuffled(using: &albumRNG).prefix(20))

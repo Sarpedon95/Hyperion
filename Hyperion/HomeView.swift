@@ -13,8 +13,6 @@ struct HomeView: View {
     @ObservedObject private var mixGen     = MixGenerator.shared
     @ObservedObject private var audiomuse  = AudiomuseManager.shared
 
-    @AppStorage(ClassicalMode.defaultsKey) private var classicalModeEnabled: Bool = true
-
     @State private var showingSettings: Bool = false
     @State private var recentActivityTab: RecentActivityTab = .played
 
@@ -50,21 +48,21 @@ struct HomeView: View {
 
                     HStack(spacing: 10) {
                         NavigationLink {
-                            SongListView()
+                            SongListView(scope: .nonClassical)
                         } label: {
                             RoonStatTile(icon: "music.note", value: library.totalSongs, label: "SONGS")
                         }
                         .buttonStyle(.plain)
 
                         NavigationLink {
-                            AlbumListView()
+                            AlbumListView(scope: .nonClassical)
                         } label: {
                             RoonStatTile(icon: "square.stack", value: library.totalAlbums, label: "ALBUMS")
                         }
                         .buttonStyle(.plain)
 
                         NavigationLink {
-                            ArtistListView()
+                            ArtistListView(scope: .nonClassical)
                         } label: {
                             RoonStatTile(
                                 icon: "person.crop.circle",
@@ -90,15 +88,16 @@ struct HomeView: View {
                     // the Classical tab now and never appears on Home.
                     nonClassicalSection
 
-                    // MARK: Artists
-                    if !library.artists.isEmpty {
+                    // MARK: Artists — non-classical performers only.
+                    let homeArtists = library.homeArtists
+                    if !homeArtists.isEmpty {
                         HomeSectionHeader(label: "YOUR LIBRARY", title: "Artists")
                             .padding(.horizontal, 16)
                             .padding(.bottom, 14)
 
                         ScrollView(.horizontal, showsIndicators: false) {
                             LazyHStack(spacing: 16) {
-                                ForEach(library.artists.prefix(25)) { artist in
+                                ForEach(homeArtists.prefix(25)) { artist in
                                     NavigationLink {
                                         ArtistDetailView(artist: artist)
                                     } label: {
@@ -152,15 +151,16 @@ struct HomeView: View {
 
     @ViewBuilder
     private var nonClassicalSection: some View {
-        // Top Genres row
-        if !library.genres.isEmpty {
+        // Top Genres row — non-classical genres only.
+        let homeGenres = library.homeGenres
+        if !homeGenres.isEmpty {
             HomeSectionHeader(label: "YOUR LIBRARY", title: "Genres")
                 .padding(.horizontal, 16)
                 .padding(.bottom, 14)
 
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: 10) {
-                    ForEach(library.genres.prefix(20)) { genre in
+                    ForEach(homeGenres.prefix(20)) { genre in
                         NavigationLink {
                             GenreAlbumListView(genre: genre)
                         } label: {
@@ -337,13 +337,12 @@ struct HomeView: View {
         .padding(.horizontal, 16)
         .padding(.bottom, 14)
 
-        let rawItems: [Album] = recentActivityTab == .played
-            ? library.recentlyPlayed
-            : library.recentAlbums
-        // Keep purely-classical albums out of Home when classical mode is off.
-        let activeItems: [Album] = classicalModeEnabled
-            ? rawItems
-            : rawItems.filter { !$0.looksClassical }
+        // Home is ALWAYS non-classical: read the pre-split slice from the
+        // repository so classical plays/additions never appear here. Classical
+        // listening lives exclusively on the Classical tab.
+        let activeItems: [Album] = recentActivityTab == .played
+            ? library.homeRecentlyPlayed
+            : library.homeRecentAlbums
 
         if activeItems.isEmpty {
             if recentActivityTab == .played {

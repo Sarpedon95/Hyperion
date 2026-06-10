@@ -974,6 +974,9 @@ struct MovementRowView: View {
 
 struct AlbumListView: View {
 
+    /// Home passes `.nonClassical`; the Library tab uses the default `.all`.
+    var scope: LibraryContentScope = .all
+
     @ObservedObject private var library = LibraryViewModel.shared
 
     @AppStorage(ClassicalMode.defaultsKey) private var classicalModeEnabled: Bool = true
@@ -1013,6 +1016,12 @@ struct AlbumListView: View {
 
     private var displayedAlbums: [Album] {
         var albums = library.albums
+        // Repository-level Home/Classical split (genre tag first).
+        switch scope {
+        case .all:          break
+        case .nonClassical: albums = albums.filter { !$0.isClassicalContent }
+        case .classical:    albums = albums.filter {  $0.isClassicalContent }
+        }
         // Hide purely-classical albums entirely when classical mode is off.
         if !classicalModeEnabled {
             albums = albums.filter { !$0.looksClassical }
@@ -2252,6 +2261,9 @@ enum FormatFilter: String, CaseIterable, Identifiable {
 
 struct SongListView: View {
 
+    /// Home passes `.nonClassical`; the Library tab uses the default `.all`.
+    var scope: LibraryContentScope = .all
+
     @ObservedObject private var library = LibraryViewModel.shared
     @ObservedObject private var player  = PlayerViewModel.shared
     @State private var searchText: String = ""
@@ -2263,6 +2275,12 @@ struct SongListView: View {
 
     private var filtered: [Track] {
         var tracks = library.songs
+        // Repository-level Home/Classical split (genre tag first).
+        switch scope {
+        case .all:          break
+        case .nonClassical: tracks = tracks.filter { !$0.isClassicalContent }
+        case .classical:    tracks = tracks.filter {  $0.isClassicalContent }
+        }
         if !searchNeedle.isEmpty {
             tracks = tracks.filter {
                 searchNeedle.matches($0.title) ||
@@ -2614,13 +2632,24 @@ struct LikedTracksView: View {
 
 struct ArtistListView: View {
 
+    /// Home passes `.nonClassical`; the Library tab uses the default `.all`.
+    var scope: LibraryContentScope = .all
+
     @ObservedObject private var library = LibraryViewModel.shared
     @State private var searchText: String = ""
     @State private var searchNeedle: SearchTextNormalizer.Needle = .empty
 
     private var filtered: [Artist] {
-        guard !searchNeedle.isEmpty else { return library.artists }
-        return library.artists.filter { searchNeedle.matches($0.name) }
+        var artists = library.artists
+        // Repository-level Home/Classical split. Classical = composers + artists
+        // credited on classical albums (best-effort without per-artist genre).
+        switch scope {
+        case .all:          break
+        case .nonClassical: artists = artists.filter { !library.isClassicalArtist($0.name) }
+        case .classical:    artists = artists.filter {  library.isClassicalArtist($0.name) }
+        }
+        guard !searchNeedle.isEmpty else { return artists }
+        return artists.filter { searchNeedle.matches($0.name) }
     }
 
     var body: some View {

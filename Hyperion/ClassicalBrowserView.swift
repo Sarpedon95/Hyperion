@@ -83,8 +83,11 @@ struct ClassicalBrowserView: View {
         .padding(.horizontal, 16)
         .padding(.bottom, 14)
 
-        let raw = recentTab == .played ? library.recentlyPlayed : library.recentAlbums
-        let albums = raw.filter { $0.looksClassical }
+        // Classical tab reads only the pre-split classical slice from the
+        // repository — never the shared, undifferentiated lists.
+        let albums = recentTab == .played
+            ? library.classicalRecentlyPlayed
+            : library.classicalRecentAlbums
 
         if albums.isEmpty {
             emptyCard(

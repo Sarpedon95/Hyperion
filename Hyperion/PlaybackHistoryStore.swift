@@ -9,6 +9,26 @@ final class PlaybackHistoryStore: ObservableObject {
     private struct AlbumEntry: Codable, Hashable {
         let album: Album
         let playedAt: Date
+        /// Genre category captured at play time, so the Home and Classical tabs
+        /// can query their slice without re-deriving it from incomplete album
+        /// metadata. Derived from the played track's genre tag.
+        let isClassical: Bool
+
+        init(album: Album, playedAt: Date, isClassical: Bool) {
+            self.album = album
+            self.playedAt = playedAt
+            self.isClassical = isClassical
+        }
+
+        // Backward-compatible decode: entries written before the split lack the
+        // flag — fall back to classifying the stored album so existing history
+        // is partitioned sensibly instead of wiping the file on upgrade.
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            album = try c.decode(Album.self, forKey: .album)
+            playedAt = try c.decode(Date.self, forKey: .playedAt)
+            isClassical = (try? c.decode(Bool.self, forKey: .isClassical)) ?? album.isClassicalContent
+        }
     }
 
     struct TrackPlayRecord: Codable, Identifiable {
@@ -89,15 +109,25 @@ final class PlaybackHistoryStore: ObservableObject {
 
     // MARK: - Public API
 
-    func recentlyPlayedAlbums(limit: Int = 20) -> [Album] {
-        Array(loadEntries().map(\.album).prefix(limit))
+    /// Recently-played albums. When `classical` is nil the full history is
+    /// returned; otherwise only the matching genre category — this is how the
+    /// Home (`classical: false`) and Classical (`classical: true`) tabs stay
+    /// fully separated at the data layer.
+    func recentlyPlayedAlbums(classical: Bool? = nil, limit: Int = 20) -> [Album] {
+        var entries = loadEntries()
+        if let classical {
+            entries = entries.filter { $0.isClassical == classical }
+        }
+        return Array(entries.map(\.album).prefix(limit))
     }
 
     func recordPlayback(of track: Track, playedAt: Date = Date()) {
+        let trackIsClassical = track.isClassicalContent
+
         // Album entry
         if let album = makeAlbum(from: track) {
             var entries = loadEntries().filter { $0.album.id != album.id }
-            entries.insert(AlbumEntry(album: album, playedAt: playedAt), at: 0)
+            entries.insert(AlbumEntry(album: album, playedAt: playedAt, isClassical: trackIsClassical), at: 0)
             if entries.count > maxStoredAlbums { entries = Array(entries.prefix(maxStoredAlbums)) }
             cachedEntries = entries
         }
@@ -184,7 +214,8 @@ final class PlaybackHistoryStore: ObservableObject {
             year:             track.year,
             artwork_track_id: track.coverid,
             composer:         track.composer,
-            isClassical:      track.isClassical
+            isClassical:      track.isClassical,
+            genres:           track.genres
         )
     }
 
