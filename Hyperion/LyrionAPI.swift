@@ -1244,8 +1244,8 @@ final class LyrionAPI {
                     id:           id,
                     name:         name,
                     model:        JSON.string(dict["model"])     ?? JSON.string(dict["modelname"]),
-                    isConnected:  (JSON.bool(dict["connected"]) ?? (JSON.int(dict["connected"]) ?? 0) != 0),
-                    isPoweredOn:  (JSON.bool(dict["power"])     ?? (JSON.int(dict["power"])     ?? 0) != 0),
+                    isConnected:  (JSON.bool(dict["connected"]) ?? ((JSON.int(dict["connected"]) ?? 0) != 0)),
+                    isPoweredOn:  (JSON.bool(dict["power"])     ?? ((JSON.int(dict["power"])     ?? 0) != 0)),
                     canPowerOff:  (JSON.bool(dict["canpoweroff"]) ?? false),
                     ip:           JSON.string(dict["ip"])
                 )

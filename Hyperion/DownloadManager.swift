@@ -216,7 +216,10 @@ final class DownloadManager: NSObject, ObservableObject {
         // playback, only the manifest entry / row label.
         let cached  = pendingTracks[trackID]
         let library = LibraryViewModel.shared.songs.first { $0.id == trackID }
-        let resolved = cached ?? library ?? (try? await LyrionAPI.shared.getSong(id: trackID))
+        var resolved: Track? = cached ?? library
+        if resolved == nil {
+            resolved = try? await LyrionAPI.shared.getSong(id: trackID)
+        }
 
         let title:  String
         let artist: String
