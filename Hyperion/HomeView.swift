@@ -503,13 +503,22 @@ struct RoonStatTile: View {
 
 struct RecentAlbumCard: View {
     let album: Album
+    var streamingService: StreamSourceType? = nil
     private let size: CGFloat = 148
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ArtworkView(coverid: album.artwork_track_id, size: size)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-                .shadow(color: .black.opacity(0.5), radius: 8, y: 4)
+            ZStack(alignment: .bottomLeading) {
+                ArtworkView(coverid: album.artwork_track_id, size: size)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .shadow(color: .black.opacity(0.5), radius: 8, y: 4)
+
+                // Streaming service badge
+                if let service = streamingService, service != .local {
+                    StreamingServiceBadge(service: service, size: size * 0.2)
+                        .padding(size * 0.04)
+                }
+            }
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(album.album)

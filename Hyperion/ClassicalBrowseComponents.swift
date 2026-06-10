@@ -61,14 +61,23 @@ struct ClassicalAlbumSortPicker: View {
 
 struct ClassicalAlbumGridCard: View {
     let album: Album
+    var streamingService: StreamSourceType? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Color.clear
-                .aspectRatio(1, contentMode: .fit)
-                .overlay { ArtworkView(coverid: album.artwork_track_id, size: 320) }
-                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                .shadow(color: .black.opacity(0.4), radius: 8, x: 0, y: 4)
+            ZStack(alignment: .bottomLeading) {
+                Color.clear
+                    .aspectRatio(1, contentMode: .fit)
+                    .overlay { ArtworkView(coverid: album.artwork_track_id, size: 320) }
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .shadow(color: .black.opacity(0.4), radius: 8, x: 0, y: 4)
+
+                // Streaming service badge
+                if let service = streamingService, service != .local {
+                    StreamingServiceBadge(service: service, size: 320 * 0.22)
+                        .padding(320 * 0.05)
+                }
+            }
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(album.album)

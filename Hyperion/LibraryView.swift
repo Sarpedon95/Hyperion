@@ -1326,6 +1326,7 @@ struct AlbumArtworkGrid: View {
 
 struct AlbumArtworkCard: View {
     let album: Album
+    var streamingService: StreamSourceType? = nil
 
     private var subtitle: String? {
         if let artist = album.artist, !artist.isEmpty { return artist }
@@ -1336,11 +1337,19 @@ struct AlbumArtworkCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             // Square cover filling the column, floating on the page (no card box).
-            Color.clear
-                .aspectRatio(1, contentMode: .fit)
-                .overlay { ArtworkView(coverid: album.artwork_track_id, size: 320) }
-                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                .shadow(color: .black.opacity(0.4), radius: 8, x: 0, y: 4)
+            ZStack(alignment: .bottomLeading) {
+                Color.clear
+                    .aspectRatio(1, contentMode: .fit)
+                    .overlay { ArtworkView(coverid: album.artwork_track_id, size: 320) }
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .shadow(color: .black.opacity(0.4), radius: 8, x: 0, y: 4)
+
+                // Streaming service badge
+                if let service = streamingService, service != .local {
+                    StreamingServiceBadge(service: service, size: 320 * 0.22)
+                        .padding(320 * 0.05)
+                }
+            }
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(album.album)

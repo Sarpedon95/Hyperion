@@ -945,8 +945,16 @@ struct SearchTrackRow: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            ArtworkView(coverid: track.coverid, size: 40)
-                .clipShape(RoundedRectangle(cornerRadius: 4))
+            ZStack(alignment: .bottomLeading) {
+                ArtworkView(coverid: track.coverid, size: 40)
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+
+                // Streaming service badge (small, for compact row)
+                if let service = track.detectedService, service != .local {
+                    StreamingServiceBadge(service: service, size: 40 * 0.2)
+                        .padding(2)
+                }
+            }
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(track.title)

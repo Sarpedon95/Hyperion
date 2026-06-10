@@ -432,15 +432,23 @@ struct NowPlayingView: View {
             .compactMap { $0 as? UIWindowScene }
             .first?.screen.bounds.width ?? 390
         let side = screenWidth - 48
-        return ArtworkView(
-            coverid:     player.currentTrack?.coverid,
-            size:        side,
-            contentMode: .fit
-        )
-        .frame(width: side, height: side)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .shadow(color: .black.opacity(0.4), radius: 16, x: 0, y: 8)
-        .id(player.currentTrack?.id ?? -1)
+        return ZStack(alignment: .bottomLeading) {
+            ArtworkView(
+                coverid:     player.currentTrack?.coverid,
+                size:        side,
+                contentMode: .fit
+            )
+            .frame(width: side, height: side)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .shadow(color: .black.opacity(0.4), radius: 16, x: 0, y: 8)
+            .id(player.currentTrack?.id ?? -1)
+
+            // Streaming service badge
+            if let service = player.currentTrack?.detectedService, service != .local {
+                StreamingServiceBadge(service: service, size: side * 0.18)
+                    .padding(side * 0.04)
+            }
+        }
         // fullScreenCover has no built-in swipe-to-dismiss; handle it on the
         // artwork only so it never conflicts with the scrubber's horizontal drag.
         .gesture(
