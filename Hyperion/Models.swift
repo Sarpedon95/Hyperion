@@ -30,6 +30,10 @@ struct Track: Identifiable, Hashable, Codable {
     let albumReplayGain: Double?
     let isRemote: Bool?
 
+    // Streaming service source. Nil for local library content, set to .deezer, .qobuz, etc.
+    // for content originating from a streaming service via LMS integration.
+    let streamingService: StreamSourceType?
+
     // Populated lazily by ClassicalMetadataResolver when a track is needed
     // for display or playback. Nil for non-classical tracks and for tracks
     // whose metadata has not been resolved yet.
@@ -59,7 +63,8 @@ struct Track: Identifiable, Hashable, Codable {
         lossless: Bool? = nil,
         replayGain: Double? = nil,
         albumReplayGain: Double? = nil,
-        isRemote: Bool? = nil
+        isRemote: Bool? = nil,
+        streamingService: StreamSourceType? = nil
     ) {
         self.id = id
         self.title = title
@@ -85,6 +90,7 @@ struct Track: Identifiable, Hashable, Codable {
         self.replayGain = replayGain
         self.albumReplayGain = albumReplayGain
         self.isRemote = isRemote
+        self.streamingService = streamingService
     }
 
     // Equality on id so mid-session tag changes don't break queue lookups.
@@ -121,7 +127,8 @@ struct Track: Identifiable, Hashable, Codable {
             lossless: lossless,
             replayGain: replayGain,
             albumReplayGain: albumReplayGain,
-            isRemote: isRemote
+            isRemote: isRemote,
+            streamingService: streamingService
         )
         copy.classicalMetadata = classicalMetadata
         return copy
